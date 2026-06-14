@@ -1,5 +1,16 @@
 # Agent notes
 
+## Project purpose
+
+pdf-to-musicxml converts a PDF or image of printed sheet music into MusicXML
+**entirely in the browser** — client-side Optical Music Recognition (OMR). The
+input is a PDF/PNG/JPG of printed Western notation; the output is a downloadable
+`.musicxml` file. No image ever leaves the device: all inference runs locally via
+ONNX Runtime Web (WebGPU, WASM fallback), so the app ships as static files with
+no backend. The recognition pipeline is segment → locate staves → transcribe
+each staff with a transformer → assemble MusicXML, targeting the piano grand
+staff (reached in phases, monophonic single staff first).
+
 Design and full build plan live in `PLAN.md`. This file covers how to work in
 the repo (tooling, conventions). Keep it current when the workflow changes.
 
