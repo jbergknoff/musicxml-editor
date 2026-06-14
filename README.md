@@ -1,1 +1,101 @@
 # pdf-to-musicxml
+
+Convert a PDF or image of printed sheet music into [MusicXML](https://www.musicxml.com/),
+**entirely in the browser**. Drop in a score, get back a downloadable `.musicxml`
+file — no image ever leaves your device.
+
+This is client-side [Optical Music Recognition (OMR)](https://en.wikipedia.org/wiki/Optical_music_recognition):
+all inference runs locally via [ONNX Runtime Web](https://onnxruntime.ai/docs/tutorials/web/)
+(WebGPU, with a WASM fallback), so the app is hostable as static files with no
+backend.
+
+## Intent
+
+- **In:** a PDF or image (PNG/JPG) of printed Western music notation.
+  **Out:** a downloadable `.musicxml` file.
+- **100% client-side.** No network round-trip for the image; works offline once
+  assets are cached.
+- **Piano grand staff** is the target output, reached in phases (monophonic
+  single staff first).
+
+The recognition pipeline follows the proven segment → locate staves →
+transcribe → assemble design: a UNet segmentation model finds the staves, a
+transformer reads each cropped staff into a token sequence, and an algorithmic
+decoder reassembles notes, measures, and voices into MusicXML. See
+[`PLAN.md`](./PLAN.md) for the full design, model/licensing strategy, pipeline
+details, and phased build order.
+
+## Status
+
+**Phase 0 (toolchain scaffold) — complete.** This proves the foundations before
+any recognition work:
+
+- `bun build` bundles ONNX Runtime Web's threaded WASM backend (no Vite needed).
+- The page is cross-origin isolated (COOP/COEP) so ORT Web can use
+  `SharedArrayBuffer`, in both dev (`scripts/serve.ts`) and production
+  (`netlify.toml`).
+- A runtime-agnostic inference interface (`lib/runtime/inference-backend.ts`)
+  keeps `lib/` free of any concrete ORT import; the browser implementation lives
+  in `src/runtime/web-backend.ts`.
+- A diagnostic page (`src/main.tsx`) reports `crossOriginIsolated`, WebGPU
+  availability, and the resolved execution provider.
+
+Nothing recognizes music yet. The next phases — segmentation, staff structure,
+transcription, assembly — are described in [`PLAN.md`](./PLAN.md) §7.
+
+## Development
+
+The only local requirements are `make` and `docker`; the toolchain (Bun, Biome,
+tsc, Playwright) runs inside containers via `docker compose`.
+
+```sh
+make build            # bun build src/ -> dist/ (+ ORT wasm, index.html)
+make dev              # build, then rebuild on change
+make up / make down   # start/stop the static server on :3456
+make format           # biome format --write
+make lint             # biome lint
+make typecheck        # tsc --noEmit
+make unit-test        # bun test src lib
+make integration-test # Playwright: cross-origin isolation + provider check
+make pr-ready         # format, lint, typecheck, build, unit-test
+```
+
+Run `make pr-ready` before committing; CI (`.github/workflows/ci.yml`) runs the
+same target. See [`AGENTS.md`](./AGENTS.md) for conventions and architecture
+notes.
+
+## Licensing
+
+This project's own source is intended to be permissively licensed. The
+recognition pipeline is deliberately assembled from permissively-licensed parts:
+
+| Component | Role | License |
+|---|---|---|
+| [oemer](https://github.com/BreezeWhite/oemer) | UNet segmentation models (`.onnx`) | MIT |
+| [Polyphonic-TrOMR](https://github.com/NetEase/Polyphonic-TrOMR) | Staff-transcription transformer + vocabulary | Apache-2.0 |
+| [homr](https://github.com/liebharc/homr) | Orchestration **reference only** | AGPL-3.0 |
+
+`homr` is **reference only** — we read it to understand the orchestration and
+reimplement clean-room in TypeScript. We do **not** copy its code or ship its
+assets, because AGPL §13 (the network clause) would otherwise push this entire
+app to AGPL. MIT/Apache notices from the components we do use will be retained.
+
+**Caveat (non-blocking):** the training datasets behind these weights
+(DeepScores, MUSCIMA/CvcMuscima) carry research/non-commercial-leaning terms, so
+weight provenance is a grey area. Fine for a personal/open tool; confirm before
+any commercial use.
+
+## TODO
+
+- **Revisit the integration tests once there is real behavior to verify.** Today
+  `tests/integration/` holds only the Phase 0 cross-origin-isolation smoke check,
+  which is kept out of `make pr-ready` (it needs the heavy Playwright browser
+  image) and is therefore **not run in CI**. When an end-to-end path exists
+  (e.g. Phase 3's "PDF in → MusicXML out" round-trip), either drop the
+  placeholder spec or wire `make integration-test` into CI — as its own job, or
+  folded into `pr-ready` — so the browser-level checks actually gate changes.
+- Build the round-trip evaluation harness (engrave public-domain MusicXML →
+  PDF → pipeline → diff recovered events) for an automatable accuracy metric.
+- Work through the phased build order in [`PLAN.md`](./PLAN.md) §7:
+  segmentation, staff structure, transcription, assembly, grand staff,
+  robustness, polish.
