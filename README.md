@@ -27,8 +27,7 @@ details, and phased build order.
 
 ## Status
 
-**Phase 0 (toolchain scaffold) — complete.** This proves the foundations before
-any recognition work:
+**Phase 0 (toolchain scaffold) — complete:**
 
 - `bun build` bundles ONNX Runtime Web's threaded WASM backend (no Vite needed).
 - The page is cross-origin isolated (COOP/COEP) so ORT Web can use
@@ -37,11 +36,23 @@ any recognition work:
 - A runtime-agnostic inference interface (`lib/runtime/inference-backend.ts`)
   keeps `lib/` free of any concrete ORT import; the browser implementation lives
   in `src/runtime/web-backend.ts`.
-- A diagnostic page (`src/main.tsx`) reports `crossOriginIsolated`, WebGPU
-  availability, and the resolved execution provider.
 
-Nothing recognizes music yet. The next phases — segmentation, staff structure,
-transcription, assembly — are described in [`PLAN.md`](./PLAN.md) §7.
+**Phase 1 (segmentation) — complete:** drop a PDF or image and the two
+[oemer](https://github.com/BreezeWhite/oemer) UNets run in the browser, with the
+detected stafflines and symbols overlaid on the page.
+
+- Input decoding (raster via `createImageBitmap`, PDF via pdf.js) and
+  preprocessing into oemer's training pixel budget.
+- Tiled inference: a sliding window over the page, batched through ORT Web, with
+  the per-tile softmax outputs averaged back together (`lib/segmentation/`).
+- The first model (`unet_big`) separates stafflines from symbols; the second
+  (`seg_net`) splits symbols into noteheads, stems/rests, and clefs/keys. The
+  resulting masks are composited over the page with per-layer toggles.
+- The ~109 MB weights (oemer's MIT release) are downloaded out of band via
+  `make models` and cached client-side; they are not committed.
+
+Nothing transcribes notes yet. The next phases — staff structure, transcription,
+assembly — are described in [`PLAN.md`](./PLAN.md) §7.
 
 ## Development
 
@@ -49,7 +60,8 @@ The only local requirements are `make` and `docker`; the toolchain (Bun, Biome,
 tsc, Playwright) runs inside containers via `docker compose`.
 
 ```sh
-make build            # bun build src/ -> dist/ (+ ORT wasm, index.html)
+make models           # download oemer ONNX weights -> public/models/ (once)
+make build            # bun build src/ -> dist/ (+ ORT wasm, pdf worker, public/)
 make dev              # build, then rebuild on change
 make up / make down   # start/stop the static server on :3456
 make format           # biome format --write

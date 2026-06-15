@@ -17,6 +17,7 @@ function createDoublingBackend(): InferenceBackend {
           const output: Record<string, Tensor> = {};
           for (const [name, tensor] of Object.entries(feeds)) {
             output[name] = {
+              type: tensor.type,
               data: tensor.data.map((value) => value * 2),
               dims: tensor.dims,
             };
@@ -38,9 +39,14 @@ describe("InferenceBackend contract", () => {
     const backend = createDoublingBackend();
     const session = await backend.createSession(new Uint8Array());
     const result = await session.run({
-      input: { data: new Float32Array([1, 2, 3]), dims: [1, 3] },
+      input: {
+        type: "float32",
+        data: new Float32Array([1, 2, 3]),
+        dims: [1, 3],
+      },
     });
     expect(Array.from(result.input.data)).toEqual([2, 4, 6]);
     expect(result.input.dims).toEqual([1, 3]);
+    expect(result.input.type).toBe("float32");
   });
 });

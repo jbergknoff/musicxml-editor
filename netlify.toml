@@ -1,5 +1,8 @@
 [build]
-  command = "make build"
+  # `make models` downloads the ONNX weights (gitignored, ~109 MB) into
+  # public/models/ so the build copies them into dist/ and serves them
+  # same-origin (required under COEP). It is a no-op once they are cached.
+  command = "make models build"
   publish = "dist"
 
 [build.environment]

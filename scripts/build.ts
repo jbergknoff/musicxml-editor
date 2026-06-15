@@ -1,12 +1,14 @@
 /**
  * Builds the SPA into dist/.
  *
- * Phase 0 goal: prove `bun build` can bundle ORT Web's threaded WASM glue. ORT
- * fetches its `.wasm` (and threaded `.mjs` workers) at runtime rather than
- * inlining them, so we copy those alongside the bundle under dist/ort/ and
- * point ORT at "/ort/" (see src/runtime/web-backend.ts).
+ * Bundles the app with `bun build`, then stages the runtime assets that are
+ * fetched (not inlined) at run time:
+ *   - ORT Web's `.wasm` / threaded `.mjs` under dist/ort/ (ORT points at /ort/).
+ *   - pdf.js's worker bundle at the site root (decode.ts points at it).
+ *   - anything under public/ (e.g. public/models/*.onnx) copied as-is, so the
+ *     large model weights are served same-origin (required under COEP).
  */
-import { cp, mkdir, readdir } from "node:fs/promises";
+import { cp, mkdir, readdir, stat } from "node:fs/promises";
 
 await Bun.build({
   entrypoints: ["src/main.tsx"],
@@ -23,6 +25,26 @@ for (const entry of await readdir(ortSource)) {
   }
 }
 
+// pdf.js loads its worker by URL at runtime; serve it from the site root.
+await cp(
+  "node_modules/pdfjs-dist/build/pdf.worker.min.mjs",
+  "dist/pdf.worker.min.mjs",
+);
+
+// Copy static assets (model weights, etc.) if present. public/ is optional —
+// the weights are downloaded out of band (see `make models`) and gitignored.
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+if (await exists("public")) {
+  await cp("public", "dist", { recursive: true });
+}
+
 await cp("index.html", "dist/index.html");
 
-console.log("Built dist/ (bundle + index.html + ORT WASM under dist/ort/)");
+console.log("Built dist/ (bundle + index.html + ORT WASM + pdf.js worker)");
