@@ -2,19 +2,27 @@
  * Single source of truth for the segmentation model weights: where they come
  * from, the versioned file name they are served under, and the URL/blob-key
  * mapping. This module is plain data (no DOM, ORT, or Netlify imports) so it can
- * be shared by the browser registry (`src/models`), the build-time stage script
- * (`scripts/stage-models.ts`), and the Netlify serving function
+ * be shared by the browser registry (`src/models`), the out-of-band upload
+ * script (`scripts/upload-models.ts`), and the Netlify serving function
  * (`netlify/functions`).
  *
  * The weights are served from Netlify Blobs (not bundled into the static
- * deploy): the build seeds them into `.netlify/blobs/deploy/` and a function
- * streams them back at `/models/<file>`. The file names are **versioned**
+ * deploy): they are uploaded once with the Netlify CLI and a function streams
+ * them back at `/models/<file>`. The file names are **versioned**
  * (`MODEL_VERSION`) so each URL is immutable — clients can cache it forever, and
  * bumping the version is how new weights are rolled out.
  */
 
 /** Bump when the underlying weights change to invalidate caches. */
 export const MODEL_VERSION = "v1";
+
+/**
+ * Name of the Netlify Blobs store the weights live in. They are uploaded once,
+ * out of band, with the Netlify CLI (`scripts/upload-models.ts`) rather than at
+ * deploy time — the ~109 MB upload is too slow for the build. The serving
+ * function reads this same site-wide store.
+ */
+export const MODEL_STORE_NAME = "models";
 
 /** Same-origin path prefix the weights are requested under. */
 export const MODEL_URL_PREFIX = "/models/";

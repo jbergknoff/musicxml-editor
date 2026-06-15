@@ -80,13 +80,19 @@ notes.
 
 The ONNX weights (~109 MB, oemer's MIT release) are not committed. Locally,
 `make models` downloads them into `public/models/`, which the dev server
-(`scripts/serve.ts`) serves at `/models/<file>`. On Netlify the build runs
-`make stage-models`, which seeds the weights into the deploy's **Netlify Blobs**
-store (`.netlify/blobs/deploy/`); a function (`netlify/functions/models.mts`)
-streams them back same-origin at the same `/models/<file>` URLs (kept out of the
-static deploy, and same-origin is required under COEP). File names are versioned
-so the URLs are immutable and cache forever; bump `MODEL_VERSION` in
-`lib/models/manifest.ts` to roll out new weights.
+(`scripts/serve.ts`) serves at `/models/<file>`.
+
+For Netlify they are uploaded **once, out of band** to a site-wide
+[Netlify Blobs](https://docs.netlify.com/blobs/overview/) store — not by the
+build (the ~109 MB upload was too slow to do per deploy). Set
+`NETLIFY_AUTH_TOKEN` and `NETLIFY_SITE_ID` and run `make upload-models`: it
+downloads the weights and runs `netlify blobs:set` per file in a Node container
+(nothing is installed on the host). A function
+(`netlify/functions/models.mts`) then streams them back same-origin at the same
+`/models/<file>` URLs (same-origin is required under COEP). File names are
+versioned so the URLs are immutable and cache forever; bump `MODEL_VERSION` in
+`lib/models/manifest.ts` and re-run `make upload-models` to roll out new
+weights.
 
 ## Licensing
 

@@ -33,7 +33,7 @@ await cp(
 
 // Copy static assets from public/ if present. The model weights under
 // public/models/ are deliberately excluded — they are served from Netlify Blobs
-// (see scripts/stage-models.ts + netlify/functions/models.mts), not the static
+// (see scripts/upload-models.ts + netlify/functions/models.mts), not the static
 // deploy. Locally they stay in public/models/ and scripts/serve.ts serves them.
 async function exists(path: string): Promise<boolean> {
   try {

@@ -1,15 +1,16 @@
-import { getDeployStore } from "@netlify/blobs";
+import { getStore } from "@netlify/blobs";
 import type { Config, Context } from "@netlify/functions";
-import { blobKeyFromPath } from "../../lib/models/manifest";
+import { blobKeyFromPath, MODEL_STORE_NAME } from "../../lib/models/manifest";
 
 /**
  * Streams the ONNX model weights from Netlify Blobs at `/models/<file>`.
  *
- * The weights are seeded into the deploy's blob store at build time
- * (scripts/stage-models.ts writes them under `.netlify/blobs/deploy/`, keyed by
- * file name). Because the file names are versioned, each URL is immutable, so we
- * serve a long-lived cache header. Same-origin delivery keeps the cross-origin
- * isolated page (COEP `require-corp`) happy.
+ * The weights are uploaded once, out of band, into a site-wide blob store with
+ * the Netlify CLI (scripts/upload-models.ts) — deploy-time staging of the
+ * ~109 MB was too slow. We read that same store here. Because the file names are
+ * versioned (and the contents immutable), we serve a long-lived cache header.
+ * Same-origin delivery keeps the cross-origin isolated page (COEP
+ * `require-corp`) happy.
  */
 export default async (
   request: Request,
@@ -21,7 +22,7 @@ export default async (
     return new Response("Not found", { status: 404 });
   }
 
-  const store = getDeployStore();
+  const store = getStore(MODEL_STORE_NAME);
   const blob = await store.get(key, { type: "stream" });
   if (blob === null) {
     return new Response(`Unknown model "${key}"`, { status: 404 });

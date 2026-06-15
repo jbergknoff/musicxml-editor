@@ -37,11 +37,13 @@ build: node_modules
 models: node_modules
 	$(bun) run scripts/download-models.ts
 
-# Stage the weights into .netlify/blobs/deploy/ so Netlify seeds them into the
-# deploy's blob store (served by netlify/functions/models.mts). Run during the
-# Netlify build, before `build`.
-stage-models: node_modules
-	$(bun) run scripts/stage-models.ts
+# Upload the weights to Netlify Blobs once, out of band (deploy-time upload was
+# too slow). Downloads them in the bun container, then runs `netlify blobs:set`
+# per file in a Node container. Requires NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID
+# in your environment.
+upload-models: node_modules
+	$(bun) run scripts/upload-models.ts
+	docker compose run --rm netlify-cli node scripts/blob-upload.mjs
 
 # Pre-create the output directory as the host user so Docker (running as root)
 # writes into it rather than creating a root-owned directory.

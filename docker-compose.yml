@@ -38,3 +38,18 @@ services:
     depends_on:
       server:
         condition: service_healthy
+
+  # One-off: upload the model weights to Netlify Blobs with the Netlify CLI (run
+  # via `make upload-models`). Uses a Node image so `npx netlify-cli` works
+  # without installing anything on the host. The env vars are passed through from
+  # the host shell.
+  netlify-cli:
+    image: node:22-slim
+    command: echo
+    volumes:
+      - ${PWD}:${PWD}
+    working_dir: ${PWD}
+    environment:
+      - NETLIFY_AUTH_TOKEN
+      - NETLIFY_SITE_ID
+      - NETLIFY_CLI_VERSION
