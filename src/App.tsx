@@ -71,7 +71,12 @@ export function App({ backend }: AppProps) {
 
       <FileDrop onFile={handleFile} disabled={busy} />
 
-      {status !== null ? <p class="app__status">{status}</p> : null}
+      {status !== null ? (
+        <p class="app__status">
+          {busy ? <span class="spinner" aria-hidden="true" /> : null}
+          {status}
+        </p>
+      ) : null}
       {error !== null ? <p class="app__error">Error: {error}</p> : null}
 
       {result !== null ? (

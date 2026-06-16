@@ -55,7 +55,28 @@ body {
 }
 
 .app__status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   color: #2563eb;
+}
+
+/* Transform-based animation runs on the compositor, so the spinner keeps
+   turning even while the main thread is busy running inference. */
+.spinner {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid #bfdbfe;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: spinner-rotate 0.8s linear infinite;
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .app__error {

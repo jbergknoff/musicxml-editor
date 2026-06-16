@@ -10,8 +10,9 @@ import {
 describe("model manifest", () => {
   it("versions each file name and keeps url/key in lockstep", () => {
     const entry = MODEL_MANIFEST.staffSymbol;
-    expect(entry.fileName).toBe(`1st_model.${MODEL_VERSION}.onnx`);
-    expect(modelUrl(entry)).toBe(`/models/1st_model.${MODEL_VERSION}.onnx`);
+    expect(entry.fileName).toContain(MODEL_VERSION);
+    expect(entry.fileName.endsWith(".onnx")).toBe(true);
+    expect(modelUrl(entry)).toBe(`/models/${entry.fileName}`);
     // The served URL's key round-trips back to the blob key (the file name).
     expect(blobKeyFromPath(modelUrl(entry))).toBe(entry.fileName);
   });

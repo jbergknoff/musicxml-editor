@@ -48,12 +48,13 @@ export const MODEL_MANIFEST: Record<ModelId, ModelManifestEntry> = {
   staffSymbol: {
     id: "staffSymbol",
     sourceUrl: `${RELEASE_BASE}/1st_model.onnx`,
-    fileName: `1st_model.${MODEL_VERSION}.onnx`,
+    // <source>-<arch>-<role>.<version>.onnx
+    fileName: `oemer-unet_big-staffline-symbol-seg.${MODEL_VERSION}.onnx`,
   },
   symbolDetail: {
     id: "symbolDetail",
     sourceUrl: `${RELEASE_BASE}/2nd_model.onnx`,
-    fileName: `2nd_model.${MODEL_VERSION}.onnx`,
+    fileName: `oemer-seg_net-symbol-class-seg.${MODEL_VERSION}.onnx`,
   },
 };
 
