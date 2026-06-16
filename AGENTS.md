@@ -75,10 +75,25 @@ Phase 2 staff structure (pure algorithm in `lib/staves/`, fully unit-tested):
   size, cut the lines into five-line staves (new staff at a large gap or every
   fifth line), drop non-five-line groups, and measure each staff's horizontal
   extent from a vertical projection over its own row band.
-- `src/App.tsx` runs `detectStaves(masks.staff)` after segmentation;
-  `src/components/SegmentationView.tsx` strokes each staff's bounding box and
-  five lines over the canvas (toggleable) and reports the staff count + unit
-  size.
+- `src/components/SegmentationView.tsx` strokes each detected staff's bounding
+  box and five lines over the canvas (toggleable) and reports the staff count +
+  unit size.
+
+Worker (responsiveness — model loading + inference + staff detection run off
+the main thread so the long WASM pass never freezes the UI):
+
+- `src/worker/omr.worker.ts` — owns the inference backend and model weights;
+  per request it runs `segment` then `detectStaves`, streaming phase/fraction
+  progress and posting the masks (buffers transferred) + staff structure back.
+  Reports its provider on startup so the UI can show it before any file drop.
+- `src/worker/omr-client.ts` — main-thread handle that starts the worker, waits
+  for the provider, and exposes `process(image, onProgress)`.
+- `src/worker/protocol.ts` — the typed message protocol shared by both sides.
+- `src/main.tsx` starts the client (gated on cross-origin isolation) and mounts
+  `App` once the provider is known; `src/App.tsx` decodes the file on the main
+  thread (pdf.js / canvas are DOM-bound), then hands the raster to the client.
+- `scripts/build.ts` bundles the worker as a second entry point to
+  `dist/omr.worker.js` (flattened naming), loaded via `new Worker(...)`.
 
 The model weights (~109 MB, oemer's MIT release) are **not** committed. Run
 `make models` to download them into `public/models/` (gitignored) before

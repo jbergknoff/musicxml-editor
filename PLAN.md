@@ -125,7 +125,7 @@ PascalCase / everything else kebab-case, commit `bun.lock` with package.json.
 | PDF raster | `pdfjs-dist` | pages → canvas at ~300 DPI. |
 | Image preprocessing | hand-rolled canvas ops | avoid OpenCV.js (~8 MB). |
 | Result preview | `opensheetmusicdisplay` | render output so the user verifies before download. |
-| Off-main-thread | Web Worker | whole pipeline in a worker; stream progress. **Deferred — not yet built; segmentation currently runs on the main thread (see §7).** |
+| Off-main-thread | Web Worker | model loading + inference + staff detection run in a worker, streaming progress; decode stays on the main thread (`src/worker/`). |
 
 ### Deployment specifics (critical)
 - **WebGPU first, WASM fallback:** `executionProviders: ['webgpu','wasm']`.
@@ -291,7 +291,7 @@ Status: **Phases 0–2 are done** (see `AGENTS.md` for the as-built notes).
 | **7 — Polish** | caching, offline service worker, download/correction UX. | production feel. |
 
 Deferred / not-yet-done from the early phases (pull in before or alongside Phase 3):
-- **Web Worker** — the whole pipeline still runs on the main thread, so segmentation pegs the UI (the page can't repaint smooth progress and feels frozen on the WASM backend). Moving inference + model loading into `src/worker/` is the next responsiveness fix. Originally listed under Phase 0; not built yet.
+- **Web Worker** — done. Model loading + segmentation + staff detection run in `src/worker/omr.worker.ts` (driven by `omr-client.ts`), so the heavy WASM pass no longer pegs the UI. File decode stays on the main thread (pdf.js / canvas are DOM-bound).
 - **PDF→canvas decode** landed in Phase 1 (not Phase 0) — done.
 - **int8 quantization** of the weights (download-size/perf) — not done; revisit in Phase 6.
 
