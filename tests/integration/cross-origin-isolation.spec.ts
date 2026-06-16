@@ -1,14 +1,15 @@
 import { expect, test } from "@playwright/test";
 
-// Phase 0 acceptance, automated: the page must be cross-origin isolated (so ORT
-// Web's threaded WASM backend can use SharedArrayBuffer) and the backend must
-// resolve an execution provider. WebGPU is usually absent in headless CI, so we
-// accept either webgpu or the wasm fallback.
-test("page is cross-origin isolated and reports an inference provider", async ({
+// The app only mounts when the page is cross-origin isolated (so ORT Web's
+// threaded WASM backend can use SharedArrayBuffer) and an execution provider
+// resolves. WebGPU is usually absent in headless CI, so we accept the wasm
+// fallback. This exercises the page shell only — it does not load the ~109 MB
+// model weights or run inference.
+test("cross-origin isolated page mounts the app with an inference provider", async ({
   page,
 }) => {
   await page.goto("/");
   const app = page.locator("#app");
-  await expect(app).toContainText("crossOriginIsolated: true");
-  await expect(app).toContainText(/selected provider:\s+(webgpu|wasm)/);
+  await expect(app).toContainText(/Inference provider:\s+(webgpu|wasm)/);
+  await expect(app).toContainText("Drop a PDF or image");
 });

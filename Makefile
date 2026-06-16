@@ -32,6 +32,19 @@ unit-test: node_modules
 build: node_modules
 	$(bun) run scripts/build.ts
 
+# Download the oemer ONNX weights into public/models/ (gitignored, ~109 MB).
+# Needed once before `make build`/`make dev` can serve a working app locally.
+models: node_modules
+	$(bun) run scripts/download-models.ts
+
+# Upload the weights to Netlify Blobs once, out of band (deploy-time upload was
+# too slow). Downloads them in the bun container, then runs `netlify blobs:set`
+# per file in a Node container. Requires NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID
+# in your environment.
+upload-models: node_modules
+	$(bun) run scripts/upload-models.ts
+	docker compose run --rm netlify-cli node scripts/blob-upload.mjs
+
 # Pre-create the output directory as the host user so Docker (running as root)
 # writes into it rather than creating a root-owned directory.
 tests/integration/results:

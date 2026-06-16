@@ -1,0 +1,113 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #1f2937;
+  background: #f9fafb;
+}
+
+body {
+  margin: 0;
+}
+
+.app {
+  max-width: 70rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.app__header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.app__provider {
+  margin: 0.25rem 0 1rem;
+  color: #6b7280;
+  font-size: 0.9rem;
+}
+
+.file-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 2rem;
+  border: 2px dashed #9ca3af;
+  border-radius: 0.75rem;
+  background: #fff;
+  color: #4b5563;
+  cursor: pointer;
+  text-align: center;
+}
+
+.file-drop--active {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.file-drop--disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.file-drop input[type="file"] {
+  display: none;
+}
+
+.app__status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #2563eb;
+}
+
+/* Transform-based animation runs on the compositor, so the spinner keeps
+   turning even while the main thread is busy running inference. */
+.spinner {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid #bfdbfe;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: spinner-rotate 0.8s linear infinite;
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.app__error {
+  color: #dc2626;
+}
+
+.segmentation-view__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.segmentation-view__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+}
+
+.segmentation-view__swatch {
+  display: inline-block;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 0.2rem;
+}
+
+.segmentation-view__canvas {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  background: #fff;
+}
