@@ -51,6 +51,11 @@ detected stafflines and symbols overlaid on the page.
 - The ~109 MB weights (oemer's MIT release) are downloaded out of band via
   `make models` and cached client-side; they are not committed.
 
+**Known limitation:** segmentation currently runs on the main thread, so on the
+WASM backend (no WebGPU) it pegs the CPU and the UI can't paint smooth progress.
+Moving the pipeline into a Web Worker is the next responsiveness fix (deferred
+from Phase 0; see [`PLAN.md`](./PLAN.md) §7).
+
 Nothing transcribes notes yet. The next phases — staff structure, transcription,
 assembly — are described in [`PLAN.md`](./PLAN.md) §7.
 
