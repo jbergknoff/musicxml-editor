@@ -34,7 +34,9 @@ for (const entry of MODEL_ENTRIES) {
   if (!response.ok) {
     throw new Error(`Failed to download ${entry.fileName}: ${response.status}`);
   }
-  await Bun.write(target, response);
+  // Buffer then write: passing the Response straight to Bun.write streams
+  // pathologically slowly (minutes for ~70 MB); arrayBuffer + write is ~1 s.
+  await Bun.write(target, await response.arrayBuffer());
   console.log(`✓ ${entry.fileName}`);
 }
 

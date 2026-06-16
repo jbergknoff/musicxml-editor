@@ -40,7 +40,9 @@ for (const entry of MODEL_ENTRIES) {
         `Failed to download ${entry.fileName}: ${response.status}`,
       );
     }
-    await Bun.write(file, response);
+    // Buffer then write: passing the Response straight to Bun.write streams
+    // pathologically slowly (minutes for ~70 MB); arrayBuffer + write is ~1 s.
+    await Bun.write(file, await response.arrayBuffer());
     console.log(`✓ ${entry.fileName}`);
   }
   // The blob key is the (versioned) file name, matching the serving function.
