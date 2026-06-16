@@ -5,8 +5,51 @@ import {
   createProbabilityAccumulator,
   cropPatch,
   finalizeProbabilityMap,
+  isTileBlank,
   planTiles,
 } from "./tiling";
+
+/** Build a solid-gray RGBA image for blank-tile tests. */
+function solidGrayImage(
+  width: number,
+  height: number,
+  gray: number,
+): RgbaImage {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let pixel = 0; pixel < width * height; pixel++) {
+    data[pixel * 4] = gray;
+    data[pixel * 4 + 1] = gray;
+    data[pixel * 4 + 2] = gray;
+    data[pixel * 4 + 3] = 255;
+  }
+  return { data, width, height };
+}
+
+describe("isTileBlank", () => {
+  it("treats an all-white region as blank", () => {
+    const image = solidGrayImage(8, 8, 255);
+    expect(isTileBlank(image, { x: 0, y: 0 }, 8, 160)).toBe(true);
+  });
+
+  it("keeps a tile containing a single ink pixel", () => {
+    const image = solidGrayImage(8, 8, 255);
+    // One dark pixel at (3, 2).
+    const source = (2 * 8 + 3) * 4;
+    image.data[source] = 10;
+    image.data[source + 1] = 10;
+    image.data[source + 2] = 10;
+    expect(isTileBlank(image, { x: 0, y: 0 }, 8, 160)).toBe(false);
+  });
+
+  it("keeps a light-gray tile only above the ink threshold", () => {
+    expect(isTileBlank(solidGrayImage(8, 8, 200), { x: 0, y: 0 }, 8, 160)).toBe(
+      true,
+    );
+    expect(isTileBlank(solidGrayImage(8, 8, 120), { x: 0, y: 0 }, 8, 160)).toBe(
+      false,
+    );
+  });
+});
 
 describe("planTiles", () => {
   it("covers a page smaller than the window with a single origin", () => {

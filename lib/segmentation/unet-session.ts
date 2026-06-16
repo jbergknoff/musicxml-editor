@@ -9,6 +9,7 @@ import {
   createProbabilityAccumulator,
   cropPatch,
   finalizeProbabilityMap,
+  isTileBlank,
   planTiles,
   type Tile,
 } from "./tiling";
@@ -41,6 +42,11 @@ export interface RunSegmentationOptions {
 // dispatch and sync. 16 was a good balance of throughput vs. memory in practice.
 const DEFAULT_BATCH_SIZE = 16;
 
+// A tile whose every pixel is lighter than this (Rec. 601 luma, 0–255) holds no
+// printed notation, so it is skipped. Set conservatively low: dark/faint marks
+// keep the tile, only genuine page background is dropped.
+const INK_LUMINANCE = 160;
+
 /**
  * Run `model` over `image`, returning the averaged per-pixel class
  * probabilities at the image's resolution. Tiles are inferred in batches and
@@ -55,7 +61,13 @@ export async function runSegmentationModel(
   const { windowSize, stepSize, channels, inputName, outputName } = spec;
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
 
-  const tiles = planTiles(image.width, image.height, windowSize, stepSize);
+  const allTiles = planTiles(image.width, image.height, windowSize, stepSize);
+  // Skip pure-background tiles (margins, inter-system gaps): they only ever
+  // produce the background class, so inferring them is wasted work. Uncovered
+  // pixels finalize to background anyway.
+  const tiles = allTiles.filter(
+    (tile) => !isTileBlank(image, tile, windowSize, INK_LUMINANCE),
+  );
   const accumulator = createProbabilityAccumulator(
     image.width,
     image.height,
@@ -66,8 +78,9 @@ export async function runSegmentationModel(
   // Logged up front (not just on completion) so a mid-run crash still leaves a
   // breadcrumb showing which model and how many tiles were in flight.
   const label = options.label ?? "model";
+  const skipped = allTiles.length - tiles.length;
   console.info(
-    `[omr] ${label}: ${tiles.length} tiles (window ${windowSize}, step ${stepSize}, batch ${batchSize})`,
+    `[omr] ${label}: ${tiles.length} tiles (window ${windowSize}, step ${stepSize}, batch ${batchSize}, ${skipped} blank skipped)`,
   );
   const modelStart = performance.now();
 
@@ -96,9 +109,10 @@ export async function runSegmentationModel(
   }
 
   const elapsedMs = performance.now() - modelStart;
+  const perTile =
+    tiles.length > 0 ? (elapsedMs / tiles.length).toFixed(1) : "0";
   console.info(
-    `[omr] ${label}: ${Math.round(elapsedMs)}ms ` +
-      `(${(elapsedMs / tiles.length).toFixed(1)}ms/tile)`,
+    `[omr] ${label}: ${Math.round(elapsedMs)}ms (${perTile}ms/tile)`,
   );
 
   return finalizeProbabilityMap(accumulator);
