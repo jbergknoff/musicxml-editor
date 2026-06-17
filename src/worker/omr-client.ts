@@ -3,7 +3,12 @@ import type {
   SegmentationMasks,
   StaffStructure,
 } from "../../lib/types";
-import type { ProgressUpdate, WorkerInbound, WorkerOutbound } from "./protocol";
+import type {
+  OmrConfig,
+  ProgressUpdate,
+  WorkerInbound,
+  WorkerOutbound,
+} from "./protocol";
 
 /**
  * Main-thread handle to the OMR worker. {@link createOmrClient} spins the
@@ -25,6 +30,8 @@ export interface OmrClient {
     image: RgbaImage,
     onProgress: (update: ProgressUpdate) => void,
   ): Promise<OmrResult>;
+  /** Terminate the worker (used when the config changes and we recreate it). */
+  dispose(): void;
 }
 
 interface PendingJob {
@@ -33,11 +40,23 @@ interface PendingJob {
   onProgress(update: ProgressUpdate): void;
 }
 
-export function createOmrClient(): Promise<OmrClient> {
+export function createOmrClient(config: OmrConfig): Promise<OmrClient> {
   // Built as its own entry point to dist/omr.worker.js (see scripts/build.ts).
   const worker = new Worker("/omr.worker.js", { type: "module" });
   const jobs = new Map<number, PendingJob>();
   let nextRequestId = 0;
+
+  // Configure the backend before anything else; the worker defers resolving its
+  // inference provider until this arrives, then reports "ready".
+  worker.postMessage({ type: "config", ...config } satisfies WorkerInbound);
+
+  function dispose() {
+    worker.terminate();
+    for (const job of jobs.values()) {
+      job.reject(new Error("Inference worker was disposed"));
+    }
+    jobs.clear();
+  }
 
   function process(
     image: RgbaImage,
@@ -56,7 +75,7 @@ export function createOmrClient(): Promise<OmrClient> {
       const message = event.data;
       switch (message.type) {
         case "ready": {
-          resolveClient({ provider: message.provider, process });
+          resolveClient({ provider: message.provider, process, dispose });
           break;
         }
         case "progress": {

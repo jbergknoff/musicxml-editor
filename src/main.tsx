@@ -1,12 +1,45 @@
 import { render } from "preact";
+import { useEffect, useState } from "preact/hooks";
 import { App } from "./App";
-import { createOmrClient } from "./worker/omr-client";
+import { createOmrClient, type OmrClient } from "./worker/omr-client";
+import type { OmrConfig } from "./worker/protocol";
 
-// Entry point: start the OMR worker (it owns inference + model loading so the
-// pipeline never blocks the UI) and mount the app once it reports its provider.
-// The page must be cross-origin isolated for ORT Web's threaded WASM backend
-// (see scripts/serve.ts).
-async function start() {
+// Entry point: own the inference worker's lifecycle so the UI can pick the
+// backend. The page must be cross-origin isolated for ORT Web's threaded WASM
+// backend (see scripts/serve.ts).
+
+const DEFAULT_CONFIG: OmrConfig = { backend: "auto" };
+
+/**
+ * Owns the OMR config and the worker it drives. Changing the config recreates
+ * the worker (the backend/profiling can only be chosen before its sessions are
+ * built), so the client is null while a fresh worker spins up.
+ */
+function Root() {
+  const [config, setConfig] = useState<OmrConfig>(DEFAULT_CONFIG);
+  const [client, setClient] = useState<OmrClient | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    setClient(null);
+    const pending = createOmrClient(config);
+    pending.then((next) => {
+      if (disposed) {
+        next.dispose();
+        return;
+      }
+      setClient(next);
+    });
+    return () => {
+      disposed = true;
+      pending.then((next) => next.dispose());
+    };
+  }, [config]);
+
+  return <App client={client} config={config} onConfigChange={setConfig} />;
+}
+
+function start() {
   const root = document.getElementById("app");
   if (root === null) {
     return;
@@ -21,8 +54,7 @@ async function start() {
     );
     return;
   }
-  const client = await createOmrClient();
-  render(<App client={client} />, root);
+  render(<Root />, root);
 }
 
 start();

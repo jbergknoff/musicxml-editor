@@ -9,6 +9,14 @@ import type {
 // scripts/build.ts, which copies them there, and scripts/serve.ts).
 ort.env.wasm.wasmPaths = "/ort/";
 
+// Use every available core for the threaded WASM backend. ORT's default can be
+// conservative (especially inside a worker), and segmentation is dominated by
+// many small inferences, so more threads is a near-linear win on the CPU path.
+// The page must be cross-origin isolated for WASM threads to spin up at all.
+if (typeof navigator !== "undefined" && navigator.hardwareConcurrency) {
+  ort.env.wasm.numThreads = navigator.hardwareConcurrency;
+}
+
 function toOrtTensor(tensor: Tensor): ort.Tensor {
   if (tensor.type === "uint8") {
     return new ort.Tensor("uint8", tensor.data as Uint8Array, tensor.dims);
@@ -52,9 +60,39 @@ async function hasWebGpuAdapter(): Promise<boolean> {
  * Browser inference backend. Uses WebGPU when a working adapter is available,
  * otherwise the threaded WASM backend. The page must be cross-origin isolated
  * for the WASM threads to work (see scripts/serve.ts / netlify.toml).
+ *
+ * `forcedProvider` overrides the auto-detection (wired to the UI backend
+ * picker) so the two paths can be timed against each other; forcing WebGPU is
+ * honored even if the adapter probe is unsure, on purpose.
  */
-export async function createWebBackend(): Promise<InferenceBackend> {
-  const provider = (await hasWebGpuAdapter()) ? "webgpu" : "wasm";
+export type ForcedProvider = "webgpu" | "wasm";
+
+export interface WebBackendOptions {
+  forcedProvider?: ForcedProvider;
+}
+
+export async function createWebBackend(
+  options: WebBackendOptions = {},
+): Promise<InferenceBackend> {
+  const { forcedProvider } = options;
+  let provider: ForcedProvider;
+  if (forcedProvider !== undefined) {
+    provider = forcedProvider;
+  } else {
+    provider = (await hasWebGpuAdapter()) ? "webgpu" : "wasm";
+  }
+
+  // Keep ORT at error level. Lower levels flood the console: verbose logs one
+  // line per kernel on every Run (100k+ entries over a full page, enough to
+  // crash the console/renderer), and even the warning level repeats the benign
+  // "some nodes were not assigned to the preferred EP" notice on every load and
+  // buries our [omr] logs. The per-session floor (logSeverityLevel: 3 below)
+  // matches it, since the native runtime emits that notice at warning level.
+  ort.env.logLevel = "error";
+
+  console.info(
+    `[omr] inference provider: ${provider}${forcedProvider !== undefined ? " (forced)" : ""}, wasm threads: ${ort.env.wasm.numThreads}`,
+  );
   // Only list WebGPU when we confirmed it works; otherwise ORT would try (and
   // noisily fail) the WebGPU EP before falling back.
   const executionProviders =
@@ -64,6 +102,7 @@ export async function createWebBackend(): Promise<InferenceBackend> {
     async createSession(modelBytes) {
       const session = await ort.InferenceSession.create(modelBytes, {
         executionProviders,
+        logSeverityLevel: 3,
       });
       return {
         async run(feeds) {

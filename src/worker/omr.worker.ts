@@ -6,7 +6,12 @@ import {
 import { detectStaves } from "../../lib/staves/detect-staves";
 import { loadSegmentationModels } from "../models/registry";
 import { createWebBackend } from "../runtime/web-backend";
-import type { WorkerInbound, WorkerOutbound } from "./protocol";
+import type {
+  OmrConfig,
+  ProcessRequest,
+  WorkerInbound,
+  WorkerOutbound,
+} from "./protocol";
 
 /**
  * OMR worker: owns the inference backend, the model weights, and the heavy
@@ -35,13 +40,38 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-// The backend and models are resolved once and reused across requests.
+// Small enough that the 288² model's per-run conv intermediates stay within
+// ORT-wasm's 32-bit byte-size limits (batch 16 overflowed); large enough to
+// still amortize a little per-call overhead.
+const WASM_BATCH_SIZE = 4;
+
+// WebGPU needs its own cap. At batch 16 the 288² model issues a single conv
+// dispatch large enough to either exceed the GPU's max buffer/binding size or
+// run long enough to trip the driver's watchdog (TDR) — both of which kill the
+// GPU process and take the whole browser down with it (observed: a ~30s grind,
+// then a full Chrome crash, once inference reaches the heavier 2nd model). This
+// is a device-level failure, not a JS exception, so it can't be caught and
+// recovered from — it can only be avoided by keeping each dispatch small.
+//
+// Batch size is *not* the perf lever here: 4 and 8 timed identically (~3.7
+// min/page, ~920ms/tile either way), proving the path is bound by per-op
+// compute, not CPU<->GPU dispatch count. So stay at the smaller, safer 4 —
+// larger batches only move us toward the 16 that crashed, for no speedup. The
+// real slowness lives in the ops (likely CPU fallback / NHWC convs); chase it
+// with profiling, not batching.
+const WEBGPU_BATCH_SIZE = 4;
+
+// The backend and models are resolved once (after the config message arrives)
+// and reused across requests. Changing the config recreates the whole worker,
+// so it's resolved here exactly once per worker lifetime.
 let backendPromise: Promise<InferenceBackend> | null = null;
 let modelsPromise: Promise<SegmentationModels> | null = null;
 
-function getBackend(): Promise<InferenceBackend> {
+function getBackend(config: OmrConfig): Promise<InferenceBackend> {
   if (backendPromise === null) {
-    backendPromise = createWebBackend();
+    backendPromise = createWebBackend({
+      forcedProvider: config.backend === "auto" ? undefined : config.backend,
+    });
   }
   return backendPromise;
 }
@@ -70,18 +100,41 @@ function getModels(
   return modelsPromise;
 }
 
-async function process(requestId: number, image: WorkerInbound["image"]) {
-  const backend = await getBackend();
+async function process(
+  config: OmrConfig,
+  requestId: number,
+  image: ProcessRequest["image"],
+) {
+  const backend = await getBackend(config);
   const models = await getModels(backend, requestId);
 
+  // Both backends need a bounded batch, for different reasons (see the two
+  // constants): ORT-wasm is 32-bit and overflows OrtRun's byte-size math at the
+  // default batch, while WebGPU crashes the GPU process on an oversized single
+  // dispatch. Neither benefits enough from large batches to justify the risk.
+  const batchSize =
+    backend.provider === "wasm" ? WASM_BATCH_SIZE : WEBGPU_BATCH_SIZE;
+
+  // Lightweight perf instrumentation: the segmentation pass is the dominant
+  // cost, so log the page size, provider, and wall-clock per phase to find the
+  // bottleneck without a profiler.
+  const segmentStart = performance.now();
   const masks = await segment(image, models, {
+    batchSize,
     onProgress: (fraction) => {
       post({ type: "progress", requestId, phase: "segmenting", fraction });
     },
   });
+  const segmentMs = performance.now() - segmentStart;
 
   post({ type: "progress", requestId, phase: "detecting-staves", fraction: 1 });
+  const stavesStart = performance.now();
   const staves = detectStaves(masks.staff);
+  console.info(
+    `[omr] ${image.width}x${image.height} via ${backend.provider}: ` +
+      `segment ${Math.round(segmentMs)}ms, ` +
+      `detect-staves ${Math.round(performance.now() - stavesStart)}ms`,
+  );
 
   // Transfer the mask buffers (~4 MB each) rather than copying them back.
   post({ type: "result", requestId, masks, staves }, [
@@ -93,21 +146,36 @@ async function process(requestId: number, image: WorkerInbound["image"]) {
   ]);
 }
 
+// The config message arrives once at startup, before any process request, and
+// fixes the backend for this worker's lifetime.
+let config: OmrConfig | null = null;
+
 workerScope.addEventListener("message", (event) => {
   const request = event.data;
+  if (request.type === "config") {
+    config = { backend: request.backend };
+    // Resolve the backend now so the UI can show the provider before any drop.
+    getBackend(config).then((backend) => {
+      post({ type: "ready", provider: backend.provider });
+    });
+    return;
+  }
   if (request.type !== "process") {
     return;
   }
-  process(request.requestId, request.image).catch((error) => {
+  if (config === null) {
+    post({
+      type: "error",
+      requestId: request.requestId,
+      message: "Received a process request before the worker was configured",
+    });
+    return;
+  }
+  process(config, request.requestId, request.image).catch((error) => {
     post({
       type: "error",
       requestId: request.requestId,
       message: messageOf(error),
     });
   });
-});
-
-// Resolve the backend up front so the UI can show the provider immediately.
-getBackend().then((backend) => {
-  post({ type: "ready", provider: backend.provider });
 });

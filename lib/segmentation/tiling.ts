@@ -62,6 +62,39 @@ function axisOrigins(
 }
 
 /**
+ * Whether a tile's source region is pure page background — every pixel is
+ * lighter than `inkLuminance` (Rec. 601 luma). Printed notation is dark on a
+ * light page, so such tiles contain no staff or symbols and segmentation can
+ * skip them entirely (uncovered pixels finalize to the background class). Reads
+ * past the page edge are clamped to the last valid pixel, exactly like
+ * {@link cropPatch}, and the scan early-exits on the first ink pixel so
+ * non-blank tiles cost almost nothing.
+ */
+export function isTileBlank(
+  image: RgbaImage,
+  tile: Tile,
+  windowSize: number,
+  inkLuminance: number,
+): boolean {
+  const { data, width, height } = image;
+  for (let row = 0; row < windowSize; row++) {
+    const sourceY = Math.min(tile.y + row, height - 1);
+    for (let column = 0; column < windowSize; column++) {
+      const sourceX = Math.min(tile.x + column, width - 1);
+      const source = (sourceY * width + sourceX) * 4;
+      const luma =
+        data[source] * 0.299 +
+        data[source + 1] * 0.587 +
+        data[source + 2] * 0.114;
+      if (luma < inkLuminance) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/**
  * Extract a `windowSize`×`windowSize` RGB patch from `image` at `tile`, dropping
  * the alpha channel. Returns channel-last `uint8` data (`[h][w][3]`) ready to
  * stack into a model input batch. Reads past the page edge are clamped to the

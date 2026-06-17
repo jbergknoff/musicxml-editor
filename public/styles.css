@@ -19,10 +19,28 @@ body {
   font-size: 1.5rem;
 }
 
-.app__provider {
-  margin: 0.25rem 0 1rem;
-  color: #6b7280;
+.settings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  margin: 0.5rem 0 1rem;
   font-size: 0.9rem;
+  color: #4b5563;
+}
+
+.settings__field {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.settings__field select {
+  font: inherit;
+}
+
+.settings__provider {
+  color: #6b7280;
 }
 
 .file-drop {

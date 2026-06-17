@@ -66,5 +66,22 @@ export interface ProcessRequest {
   image: RgbaImage;
 }
 
+/** Which inference provider to use; "auto" picks WebGPU when an adapter works. */
+export type BackendChoice = "auto" | "webgpu" | "wasm";
+
+/** UI-controlled inference options, sent to the worker before it starts up. */
+export interface OmrConfig {
+  backend: BackendChoice;
+}
+
+/**
+ * Sent once, right after the worker starts, to configure the backend. The
+ * worker defers resolving its inference provider until this arrives, so the UI
+ * can pick the backend; changing it later recreates the worker.
+ */
+export interface ConfigRequest extends OmrConfig {
+  type: "config";
+}
+
 /** Everything the main thread sends to the worker. */
-export type WorkerInbound = ProcessRequest;
+export type WorkerInbound = ProcessRequest | ConfigRequest;
