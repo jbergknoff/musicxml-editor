@@ -72,12 +72,6 @@ export type BackendChoice = "auto" | "webgpu" | "wasm";
 /** UI-controlled inference options, sent to the worker before it starts up. */
 export interface OmrConfig {
   backend: BackendChoice;
-  /**
-   * Turn on ORT's verbose logging (which exposes the node->execution-provider
-   * assignment dump) plus WebGPU per-kernel profiling to the console. Noisy, so
-   * it's opt-in — it's for chasing the segmentation bottleneck.
-   */
-  profiling: boolean;
 }
 
 /**

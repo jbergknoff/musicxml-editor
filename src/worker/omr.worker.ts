@@ -71,7 +71,6 @@ function getBackend(config: OmrConfig): Promise<InferenceBackend> {
   if (backendPromise === null) {
     backendPromise = createWebBackend({
       forcedProvider: config.backend === "auto" ? undefined : config.backend,
-      profiling: config.profiling,
     });
   }
   return backendPromise;
@@ -154,7 +153,7 @@ let config: OmrConfig | null = null;
 workerScope.addEventListener("message", (event) => {
   const request = event.data;
   if (request.type === "config") {
-    config = { backend: request.backend, profiling: request.profiling };
+    config = { backend: request.backend };
     // Resolve the backend now so the UI can show the provider before any drop.
     getBackend(config).then((backend) => {
       post({ type: "ready", provider: backend.provider });

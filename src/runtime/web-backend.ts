@@ -63,22 +63,18 @@ async function hasWebGpuAdapter(): Promise<boolean> {
  *
  * `forcedProvider` overrides the auto-detection (wired to the UI backend
  * picker) so the two paths can be timed against each other; forcing WebGPU is
- * honored even if the adapter probe is unsure, on purpose. `profiling` turns on
- * ORT's verbose logging, which dumps the node->EP assignments at load so we can
- * see which ops fell back to CPU (per-kernel GPU profiling is intentionally not
- * enabled — its timestamp-queries crash this device; see below).
+ * honored even if the adapter probe is unsure, on purpose.
  */
 export type ForcedProvider = "webgpu" | "wasm";
 
 export interface WebBackendOptions {
   forcedProvider?: ForcedProvider;
-  profiling?: boolean;
 }
 
 export async function createWebBackend(
   options: WebBackendOptions = {},
 ): Promise<InferenceBackend> {
-  const { forcedProvider, profiling = false } = options;
+  const { forcedProvider } = options;
   let provider: ForcedProvider;
   if (forcedProvider !== undefined) {
     provider = forcedProvider;
@@ -86,23 +82,16 @@ export async function createWebBackend(
     provider = (await hasWebGpuAdapter()) ? "webgpu" : "wasm";
   }
 
-  // ORT's verbose log level is the only way to surface the node->execution-
-  // provider placement dump (which ops the WebGPU EP refused and ran on CPU) —
-  // but it ALSO logs one line per kernel on every Run, which over ~170 tiles is
-  // 100k+ entries that crash the renderer. The placement dump happens at session
-  // *load*, before any Run, so we scope verbose to createSession (below) and
-  // otherwise stay quiet. When profiling is off we keep ORT at error level so
-  // the benign "some nodes were not assigned to the preferred EP" notice doesn't
-  // bury our [omr] logs.
-  //
-  // We deliberately do NOT enable ORT's `webgpu.profiling` (per-kernel GPU
-  // timings): it uses GPU timestamp-queries whose extra per-dispatch work tips
-  // this already-at-the-limit device over the edge and crashes the whole GPU
-  // process (uncatchable), the same failure mode as an oversized batch.
+  // Keep ORT at error level. Lower levels flood the console: verbose logs one
+  // line per kernel on every Run (100k+ entries over a full page, enough to
+  // crash the console/renderer), and even the warning level repeats the benign
+  // "some nodes were not assigned to the preferred EP" notice on every load and
+  // buries our [omr] logs. The per-session floor (logSeverityLevel: 3 below)
+  // matches it, since the native runtime emits that notice at warning level.
   ort.env.logLevel = "error";
 
   console.info(
-    `[omr] inference provider: ${provider}${forcedProvider !== undefined ? " (forced)" : ""}, wasm threads: ${ort.env.wasm.numThreads}${profiling ? ", profiling" : ""}`,
+    `[omr] inference provider: ${provider}${forcedProvider !== undefined ? " (forced)" : ""}, wasm threads: ${ort.env.wasm.numThreads}`,
   );
   // Only list WebGPU when we confirmed it works; otherwise ORT would try (and
   // noisily fail) the WebGPU EP before falling back.
@@ -111,20 +100,10 @@ export async function createWebBackend(
   return {
     provider,
     async createSession(modelBytes) {
-      // Go verbose only across the create() call: that's when the placement
-      // dump prints. Restore the quiet level immediately so the per-kernel Run
-      // logging never floods the console. (Both use ORT's mutable default
-      // logger, so toggling env.logLevel around load works.)
-      if (profiling) {
-        ort.env.logLevel = "verbose";
-      }
       const session = await ort.InferenceSession.create(modelBytes, {
         executionProviders,
-        logSeverityLevel: profiling ? 0 : 3,
+        logSeverityLevel: 3,
       });
-      if (profiling) {
-        ort.env.logLevel = "error";
-      }
       return {
         async run(feeds) {
           const ortFeeds: Record<string, ort.Tensor> = {};

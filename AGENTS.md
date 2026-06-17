@@ -92,16 +92,16 @@ the main thread so the long WASM pass never freezes the UI):
   the `OmrConfig`, waits for the provider, and exposes `process(image,
   onProgress)` plus `dispose()`.
 - `src/worker/protocol.ts` — the typed message protocol shared by both sides,
-  including `OmrConfig` (`backend`: auto/webgpu/wasm, `profiling`).
+  including `OmrConfig` (`backend`: auto/webgpu/wasm).
 - Inference options are UI-controlled, not URL flags: `src/components/
-  InferenceSettings.tsx` is the backend picker + profiling toggle in the header.
-  Because the backend/profiling can only be set before a session is built,
-  changing either recreates the worker — `src/main.tsx`'s `Root` owns the
-  `OmrConfig` and the client lifecycle, disposing and recreating the client when
-  the config changes. Profiling flips ORT to verbose logging, which dumps the
-  node->EP assignments at session load (the safe, CPU-side view of which ops
-  fell back to CPU). ORT's WebGPU per-kernel profiling is intentionally left off
-  — its GPU timestamp-queries crash this already-at-the-limit device.
+  InferenceSettings.tsx` is the backend picker in the header. Because the
+  backend can only be set before a session is built, changing it recreates the
+  worker — `src/main.tsx`'s `Root` owns the `OmrConfig` and the client
+  lifecycle, disposing and recreating the client when the config changes.
+  (There is no profiling toggle: ORT's only knobs here are unsafe on this
+  device — verbose logging floods the console with a per-kernel line on every
+  Run and crashes it, and WebGPU per-kernel profiling's GPU timestamp-queries
+  crash the GPU process.)
 - `src/main.tsx` mounts `Root` (gated on cross-origin isolation); `src/App.tsx`
   decodes the file on the main thread (pdf.js / canvas are DOM-bound), then
   hands the raster to the client (null while a fresh worker spins up).

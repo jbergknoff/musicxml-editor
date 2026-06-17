@@ -35,10 +35,6 @@ body {
   gap: 0.4rem;
 }
 
-.settings__field--checkbox {
-  cursor: pointer;
-}
-
 .settings__field select {
   font: inherit;
 }

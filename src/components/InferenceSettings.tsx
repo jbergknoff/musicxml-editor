@@ -1,11 +1,10 @@
 import type { BackendChoice, OmrConfig } from "../worker/protocol";
 
 /**
- * Inference controls in the header: pick the backend (or auto) and toggle
- * profiling. Changing either recreates the worker (see main.tsx), so the
- * controls are disabled while a run is in flight. `provider` is the backend the
- * worker actually resolved (null while it's still starting), shown so "auto"
- * reveals what it landed on.
+ * Inference controls in the header: pick the backend (or auto). Changing it
+ * recreates the worker (see main.tsx), so the control is disabled while a run
+ * is in flight. `provider` is the backend the worker actually resolved (null
+ * while it's still starting), shown so "auto" reveals what it landed on.
  */
 
 interface InferenceSettingsProps {
@@ -49,18 +48,6 @@ export function InferenceSettings({
             </option>
           ))}
         </select>
-      </label>
-
-      <label class="settings__field settings__field--checkbox">
-        <input
-          type="checkbox"
-          disabled={disabled}
-          checked={config.profiling}
-          onChange={(event) => {
-            onChange({ ...config, profiling: event.currentTarget.checked });
-          }}
-        />
-        <span>Profile inference (verbose console)</span>
       </label>
 
       <span class="settings__provider">
