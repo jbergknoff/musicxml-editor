@@ -43,3 +43,19 @@ export function compositeMasks(
   }
   return { data, width: base.width, height: base.height };
 }
+
+/**
+ * Wash `image` toward white by `amount` in [0, 1] (0 = unchanged, 1 = pure
+ * white), leaving alpha intact. Used to fade the page behind the overlay so the
+ * colored masks read clearly against the printed ink rather than competing with
+ * it. Returns a new image; `base` is untouched.
+ */
+export function fadeToWhite(image: RgbaImage, amount: number): RgbaImage {
+  const data = new Uint8ClampedArray(image.data);
+  for (let offset = 0; offset < data.length; offset += 4) {
+    data[offset] = data[offset] * (1 - amount) + 255 * amount;
+    data[offset + 1] = data[offset + 1] * (1 - amount) + 255 * amount;
+    data[offset + 2] = data[offset + 2] * (1 - amount) + 255 * amount;
+  }
+  return { data, width: image.width, height: image.height };
+}

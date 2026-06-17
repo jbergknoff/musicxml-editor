@@ -120,6 +120,10 @@ body {
   font-size: 0.9rem;
 }
 
+.segmentation-view__toggle input[type="range"] {
+  width: 7rem;
+}
+
 .segmentation-view__swatch {
   display: inline-block;
   width: 0.9rem;
