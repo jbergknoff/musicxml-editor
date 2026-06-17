@@ -87,7 +87,9 @@ the main thread so the long WASM pass never freezes the UI):
   progress and posting the masks (buffers transferred) + staff structure back.
   Reports its provider on startup so the UI can show it before any file drop.
 - `src/worker/omr-client.ts` — main-thread handle that starts the worker, waits
-  for the provider, and exposes `process(image, onProgress)`.
+  for the provider, and exposes `process(image, onProgress)`. A `?backend=wasm`
+  or `?backend=webgpu` page-URL param forces the worker's inference provider
+  (forwarded onto the worker URL) for A/B timing of the two paths.
 - `src/worker/protocol.ts` — the typed message protocol shared by both sides.
 - `src/main.tsx` starts the client (gated on cross-origin isolation) and mounts
   `App` once the provider is known; `src/App.tsx` decodes the file on the main

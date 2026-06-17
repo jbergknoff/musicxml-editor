@@ -33,9 +33,22 @@ interface PendingJob {
   onProgress(update: ProgressUpdate): void;
 }
 
+/**
+ * Forward a `?backend=wasm|webgpu` override from the page URL onto the worker
+ * URL, since the worker doesn't inherit the page's query string. The worker
+ * reads it back to force its inference provider for A/B timing.
+ */
+function workerUrl(): string {
+  const backend = new URLSearchParams(window.location.search).get("backend");
+  if (backend === "wasm" || backend === "webgpu") {
+    return `/omr.worker.js?backend=${backend}`;
+  }
+  return "/omr.worker.js";
+}
+
 export function createOmrClient(): Promise<OmrClient> {
   // Built as its own entry point to dist/omr.worker.js (see scripts/build.ts).
-  const worker = new Worker("/omr.worker.js", { type: "module" });
+  const worker = new Worker(workerUrl(), { type: "module" });
   const jobs = new Map<number, PendingJob>();
   let nextRequestId = 0;
 

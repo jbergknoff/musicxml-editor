@@ -5,7 +5,7 @@ import {
 } from "../../lib/segmentation/segment";
 import { detectStaves } from "../../lib/staves/detect-staves";
 import { loadSegmentationModels } from "../models/registry";
-import { createWebBackend } from "../runtime/web-backend";
+import { createWebBackend, type ForcedProvider } from "../runtime/web-backend";
 import type { WorkerInbound, WorkerOutbound } from "./protocol";
 
 /**
@@ -19,6 +19,7 @@ import type { WorkerInbound, WorkerOutbound } from "./protocol";
 // The dedicated-worker globals aren't in this project's TS lib set; describe
 // just the slice we use rather than pulling in (and clashing with) the DOM lib.
 interface WorkerScope {
+  location: { search: string };
   postMessage(message: WorkerOutbound, transfer?: Transferable[]): void;
   addEventListener(
     type: "message",
@@ -26,6 +27,14 @@ interface WorkerScope {
   ): void;
 }
 const workerScope = self as unknown as WorkerScope;
+
+// The page's `?backend=` override doesn't reach the worker on its own, so the
+// client forwards it on the worker URL (omr-client.ts); read it back here to
+// force the inference provider for A/B timing of wasm vs. webgpu.
+function forcedProvider(): ForcedProvider | undefined {
+  const value = new URLSearchParams(workerScope.location.search).get("backend");
+  return value === "wasm" || value === "webgpu" ? value : undefined;
+}
 
 function post(message: WorkerOutbound, transfer?: Transferable[]): void {
   workerScope.postMessage(message, transfer);
@@ -57,7 +66,7 @@ let modelsPromise: Promise<SegmentationModels> | null = null;
 
 function getBackend(): Promise<InferenceBackend> {
   if (backendPromise === null) {
-    backendPromise = createWebBackend();
+    backendPromise = createWebBackend({ forcedProvider: forcedProvider() });
   }
   return backendPromise;
 }
