@@ -1,3 +1,4 @@
+import { MODEL_MANIFEST } from "../../lib/models/manifest";
 import type { InferenceBackend } from "../../lib/runtime/inference-backend";
 import {
   type SegmentationModels,
@@ -40,26 +41,16 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-// Small enough that the 288² model's per-run conv intermediates stay within
-// ORT-wasm's 32-bit byte-size limits (batch 16 overflowed); large enough to
-// still amortize a little per-call overhead.
-const WASM_BATCH_SIZE = 4;
-
-// WebGPU needs its own cap. At batch 16 the 288² model issues a single conv
-// dispatch large enough to either exceed the GPU's max buffer/binding size or
-// run long enough to trip the driver's watchdog (TDR) — both of which kill the
-// GPU process and take the whole browser down with it (observed: a ~30s grind,
-// then a full Chrome crash, once inference reaches the heavier 2nd model). This
-// is a device-level failure, not a JS exception, so it can't be caught and
-// recovered from — it can only be avoided by keeping each dispatch small.
-//
-// Batch size is *not* the perf lever here: 4 and 8 timed identically (~3.7
-// min/page, ~920ms/tile either way), proving the path is bound by per-op
-// compute, not CPU<->GPU dispatch count. So stay at the smaller, safer 4 —
-// larger batches only move us toward the 16 that crashed, for no speedup. The
-// real slowness lives in the ops (likely CPU fallback / NHWC convs); chase it
-// with profiling, not batching.
-const WEBGPU_BATCH_SIZE = 4;
+// The served weights are optimized with a fixed batch dimension baked into the
+// graph (scripts/optimize-models.py — see docs/model-optimization-plan.md), so
+// every inference must feed exactly that many tiles. Both models are frozen at
+// batch 1 (manifest `inputShape[0]`), which is also the safest batch for both
+// backends: one tile per dispatch never approaches ORT-wasm's 32-bit byte-size
+// limit nor the oversized-dispatch that crashed the WebGPU GPU process, and it
+// keeps the WebGPU pipeline cache to one compiled kernel per op. Batch size was
+// never the perf lever anyway (4 vs 8 timed identically) — the fixed-shape fold
+// removing the per-tile GPU<->CPU syncs is what this optimization targets.
+const FIXED_BATCH_SIZE = MODEL_MANIFEST.staffSymbol.inputShape[0];
 
 // The backend and models are resolved once (after the config message arrives)
 // and reused across requests. Changing the config recreates the whole worker,
@@ -108,12 +99,10 @@ async function process(
   const backend = await getBackend(config);
   const models = await getModels(backend, requestId);
 
-  // Both backends need a bounded batch, for different reasons (see the two
-  // constants): ORT-wasm is 32-bit and overflows OrtRun's byte-size math at the
-  // default batch, while WebGPU crashes the GPU process on an oversized single
-  // dispatch. Neither benefits enough from large batches to justify the risk.
-  const batchSize =
-    backend.provider === "wasm" ? WASM_BATCH_SIZE : WEBGPU_BATCH_SIZE;
+  // The optimized weights bake a fixed batch into the graph, so the batch is
+  // dictated by the weights (not the provider): feed exactly FIXED_BATCH_SIZE
+  // tiles per inference.
+  const batchSize = FIXED_BATCH_SIZE;
 
   // Lightweight perf instrumentation: the segmentation pass is the dominant
   // cost, so log the page size, provider, and wall-clock per phase to find the

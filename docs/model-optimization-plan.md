@@ -1,7 +1,29 @@
 # Plan: speed up WebGPU segmentation by optimizing the ONNX weights
 
-Status: proposed (not yet implemented). Investigated against the real oemer
-weights on 2026-06-17. No app code changed by this document.
+Status: **Phase 1 implemented** (2026-06-17). The offline graph simplification,
+its `make optimize-models` tooling, the `manifest.inputShape` source of truth,
+and the fixed-batch pipeline wiring all landed; `MODEL_VERSION` is bumped to
+`v2`. Re-running the optimizer against the real oemer weights reproduced the
+spike exactly — `1577 → 713` and `1619 → 719` nodes at fixed input `[1,…]`, with
+`max|diff| = 0.0` on both models. The remaining work is out of band and on the
+deployer: `make optimize-models && make upload-models` to publish the optimized
+`v2` blobs, then deploy and read the WebGPU `segment` ms off the `[omr]` perf log
+(the payoff metric) to decide whether Phase 2 is needed. Originally investigated
+against the real oemer weights on 2026-06-17.
+
+## What landed (Phase 1)
+
+- `scripts/optimize-models.py` + `make optimize-models` (a `python:3.11-slim`
+  Docker service): onnxsim with the per-model fixed input shape, a hard
+  numerical-equivalence assertion, rewriting `public/models/*.onnx` in place.
+  The bridge between the downloaded oemer originals and the served weights.
+- `lib/models/manifest.ts`: per-model `inputShape` (`[1,256,256,3]` /
+  `[1,288,288,3]`) as the single source for the baked batch; `MODEL_VERSION` →
+  `v2`.
+- `src/worker/omr.worker.ts`: feeds the baked fixed batch (`inputShape[0] = 1`)
+  instead of the old provider-specific batch sizes.
+- `AGENTS.md`: documents the optimize step as part of the local and rollout
+  flows.
 
 ## Problem
 

@@ -37,6 +37,17 @@ build: node_modules
 models: node_modules
 	$(bun) run scripts/download-models.ts
 
+# Optimize the downloaded weights with onnxsim (fixed input shape), the bridge
+# between the oemer originals and the served weights. Folds away the dynamic-
+# shape ops that force per-tile GPU<->CPU syncs on the WebGPU path, asserting the
+# result stays numerically identical. Run once, out of band, after `make models`
+# and before `make build`/`make upload-models`; rewrites public/models/ in place.
+# See docs/model-optimization-plan.md.
+optimize-models: models
+	docker compose run --rm python sh -c '\
+		pip install --quiet onnx==1.16.2 onnxsim==0.4.36 onnxruntime==1.18.1 numpy==1.26.4 \
+		&& python scripts/optimize-models.py'
+
 # Upload the weights to Netlify Blobs once, out of band (deploy-time upload was
 # too slow). Downloads them in the bun container, then runs `netlify blobs:set`
 # per file in a Node container. Requires NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID

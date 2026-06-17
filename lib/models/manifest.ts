@@ -13,8 +13,14 @@
  * bumping the version is how new weights are rolled out.
  */
 
-/** Bump when the underlying weights change to invalidate caches. */
-export const MODEL_VERSION = "v1";
+/**
+ * Bump when the underlying weights change to invalidate caches. The served
+ * weights are the oemer originals run through `scripts/optimize-models.py`
+ * (onnxsim with a fixed input shape — see `docs/model-optimization-plan.md`), so
+ * a bump also rolls out a re-optimization. Re-run `make optimize-models` and
+ * `make upload-models` after bumping.
+ */
+export const MODEL_VERSION = "v2";
 
 /**
  * Name of the Netlify Blobs store the weights live in. They are uploaded once,
@@ -39,6 +45,15 @@ export interface ModelManifestEntry {
    * name, and the last segment of the served URL, so the three stay in lockstep.
    */
   fileName: string;
+  /**
+   * The fixed input shape the served (optimized) weights are baked to, channel-
+   * last `[N, H, W, C]`. `scripts/optimize-models.py` freezes this shape so
+   * onnxsim can fold the model's dynamic-shape machinery away (the prime suspect
+   * for the slow WebGPU path), and the pipeline must feed exactly `N` tiles per
+   * inference. `N = 1` keeps every dispatch small (immune to both backends' big-
+   * batch failures) and shapes fully static. See `docs/model-optimization-plan.md`.
+   */
+  inputShape: readonly [number, number, number, number];
 }
 
 const RELEASE_BASE =
@@ -50,11 +65,13 @@ export const MODEL_MANIFEST: Record<ModelId, ModelManifestEntry> = {
     sourceUrl: `${RELEASE_BASE}/1st_model.onnx`,
     // <source>-<arch>-<role>.<version>.onnx
     fileName: `oemer-unet_big-staffline-symbol-seg.${MODEL_VERSION}.onnx`,
+    inputShape: [1, 256, 256, 3],
   },
   symbolDetail: {
     id: "symbolDetail",
     sourceUrl: `${RELEASE_BASE}/2nd_model.onnx`,
     fileName: `oemer-seg_net-symbol-class-seg.${MODEL_VERSION}.onnx`,
+    inputShape: [1, 288, 288, 3],
   },
 };
 
