@@ -9,11 +9,6 @@ import type {
 // scripts/build.ts, which copies them there, and scripts/serve.ts).
 ort.env.wasm.wasmPaths = "/ort/";
 
-// Quiet ORT's per-session warnings (e.g. "Some nodes were not assigned to the
-// preferred execution providers" — benign; it just runs shape ops on CPU). They
-// fire on every model load and bury our own [omr] logs. Errors still surface.
-ort.env.logLevel = "error";
-
 // Use every available core for the threaded WASM backend. ORT's default can be
 // conservative (especially inside a worker), and segmentation is dominated by
 // many small inferences, so more threads is a near-linear win on the CPU path.
@@ -66,24 +61,46 @@ async function hasWebGpuAdapter(): Promise<boolean> {
  * otherwise the threaded WASM backend. The page must be cross-origin isolated
  * for the WASM threads to work (see scripts/serve.ts / netlify.toml).
  *
- * `forcedProvider` overrides the auto-detection (wired to the `?backend=` URL
- * param) so the two paths can be timed against each other on the same page;
- * forcing WebGPU is honored even if the adapter probe is unsure, on purpose.
+ * `forcedProvider` overrides the auto-detection (wired to the UI backend
+ * picker) so the two paths can be timed against each other; forcing WebGPU is
+ * honored even if the adapter probe is unsure, on purpose. `profiling` turns on
+ * ORT's verbose logging + WebGPU per-kernel timings to find the slow ops.
  */
 export type ForcedProvider = "webgpu" | "wasm";
 
+export interface WebBackendOptions {
+  forcedProvider?: ForcedProvider;
+  profiling?: boolean;
+}
+
 export async function createWebBackend(
-  options: { forcedProvider?: ForcedProvider } = {},
+  options: WebBackendOptions = {},
 ): Promise<InferenceBackend> {
-  const { forcedProvider } = options;
+  const { forcedProvider, profiling = false } = options;
   let provider: ForcedProvider;
   if (forcedProvider !== undefined) {
     provider = forcedProvider;
   } else {
     provider = (await hasWebGpuAdapter()) ? "webgpu" : "wasm";
   }
+
+  // Off: quiet the per-load "some nodes were not assigned to the preferred EP"
+  // notice (benign — shape ops run on CPU) so it doesn't bury our [omr] logs.
+  // On: go verbose, which prints the full node->EP assignment dump, and switch
+  // on WebGPU per-kernel profiling — together they show which ops fell back to
+  // CPU and where the GPU time actually goes.
+  if (profiling) {
+    ort.env.logLevel = "verbose";
+    ort.env.webgpu.profiling = { mode: "default" };
+  } else {
+    ort.env.logLevel = "error";
+  }
+  // The native runtime logs the EP-assignment notice at warning level; 3=error
+  // suppresses it, 0=verbose surfaces the assignments when profiling.
+  const sessionLogSeverityLevel = profiling ? 0 : 3;
+
   console.info(
-    `[omr] inference provider: ${provider}${forcedProvider !== undefined ? " (forced)" : ""}, wasm threads: ${ort.env.wasm.numThreads}`,
+    `[omr] inference provider: ${provider}${forcedProvider !== undefined ? " (forced)" : ""}, wasm threads: ${ort.env.wasm.numThreads}${profiling ? ", profiling" : ""}`,
   );
   // Only list WebGPU when we confirmed it works; otherwise ORT would try (and
   // noisily fail) the WebGPU EP before falling back.
@@ -94,10 +111,7 @@ export async function createWebBackend(
     async createSession(modelBytes) {
       const session = await ort.InferenceSession.create(modelBytes, {
         executionProviders,
-        // 3 = error. The native runtime logs the EP-assignment notice at warning
-        // level on every load; raise the per-session floor so only real errors
-        // reach the console (ort.env.logLevel covers the JS side).
-        logSeverityLevel: 3,
+        logSeverityLevel: sessionLogSeverityLevel,
       });
       return {
         async run(feeds) {

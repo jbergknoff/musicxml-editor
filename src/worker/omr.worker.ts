@@ -5,8 +5,13 @@ import {
 } from "../../lib/segmentation/segment";
 import { detectStaves } from "../../lib/staves/detect-staves";
 import { loadSegmentationModels } from "../models/registry";
-import { createWebBackend, type ForcedProvider } from "../runtime/web-backend";
-import type { WorkerInbound, WorkerOutbound } from "./protocol";
+import { createWebBackend } from "../runtime/web-backend";
+import type {
+  OmrConfig,
+  ProcessRequest,
+  WorkerInbound,
+  WorkerOutbound,
+} from "./protocol";
 
 /**
  * OMR worker: owns the inference backend, the model weights, and the heavy
@@ -19,7 +24,6 @@ import type { WorkerInbound, WorkerOutbound } from "./protocol";
 // The dedicated-worker globals aren't in this project's TS lib set; describe
 // just the slice we use rather than pulling in (and clashing with) the DOM lib.
 interface WorkerScope {
-  location: { search: string };
   postMessage(message: WorkerOutbound, transfer?: Transferable[]): void;
   addEventListener(
     type: "message",
@@ -27,14 +31,6 @@ interface WorkerScope {
   ): void;
 }
 const workerScope = self as unknown as WorkerScope;
-
-// The page's `?backend=` override doesn't reach the worker on its own, so the
-// client forwards it on the worker URL (omr-client.ts); read it back here to
-// force the inference provider for A/B timing of wasm vs. webgpu.
-function forcedProvider(): ForcedProvider | undefined {
-  const value = new URLSearchParams(workerScope.location.search).get("backend");
-  return value === "wasm" || value === "webgpu" ? value : undefined;
-}
 
 function post(message: WorkerOutbound, transfer?: Transferable[]): void {
   workerScope.postMessage(message, transfer);
@@ -65,13 +61,18 @@ const WASM_BATCH_SIZE = 4;
 // with profiling, not batching.
 const WEBGPU_BATCH_SIZE = 4;
 
-// The backend and models are resolved once and reused across requests.
+// The backend and models are resolved once (after the config message arrives)
+// and reused across requests. Changing the config recreates the whole worker,
+// so it's resolved here exactly once per worker lifetime.
 let backendPromise: Promise<InferenceBackend> | null = null;
 let modelsPromise: Promise<SegmentationModels> | null = null;
 
-function getBackend(): Promise<InferenceBackend> {
+function getBackend(config: OmrConfig): Promise<InferenceBackend> {
   if (backendPromise === null) {
-    backendPromise = createWebBackend({ forcedProvider: forcedProvider() });
+    backendPromise = createWebBackend({
+      forcedProvider: config.backend === "auto" ? undefined : config.backend,
+      profiling: config.profiling,
+    });
   }
   return backendPromise;
 }
@@ -100,8 +101,12 @@ function getModels(
   return modelsPromise;
 }
 
-async function process(requestId: number, image: WorkerInbound["image"]) {
-  const backend = await getBackend();
+async function process(
+  config: OmrConfig,
+  requestId: number,
+  image: ProcessRequest["image"],
+) {
+  const backend = await getBackend(config);
   const models = await getModels(backend, requestId);
 
   // Both backends need a bounded batch, for different reasons (see the two
@@ -142,21 +147,36 @@ async function process(requestId: number, image: WorkerInbound["image"]) {
   ]);
 }
 
+// The config message arrives once at startup, before any process request, and
+// fixes the backend for this worker's lifetime.
+let config: OmrConfig | null = null;
+
 workerScope.addEventListener("message", (event) => {
   const request = event.data;
+  if (request.type === "config") {
+    config = { backend: request.backend, profiling: request.profiling };
+    // Resolve the backend now so the UI can show the provider before any drop.
+    getBackend(config).then((backend) => {
+      post({ type: "ready", provider: backend.provider });
+    });
+    return;
+  }
   if (request.type !== "process") {
     return;
   }
-  process(request.requestId, request.image).catch((error) => {
+  if (config === null) {
+    post({
+      type: "error",
+      requestId: request.requestId,
+      message: "Received a process request before the worker was configured",
+    });
+    return;
+  }
+  process(config, request.requestId, request.image).catch((error) => {
     post({
       type: "error",
       requestId: request.requestId,
       message: messageOf(error),
     });
   });
-});
-
-// Resolve the backend up front so the UI can show the provider immediately.
-getBackend().then((backend) => {
-  post({ type: "ready", provider: backend.provider });
 });

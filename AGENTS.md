@@ -82,18 +82,28 @@ Phase 2 staff structure (pure algorithm in `lib/staves/`, fully unit-tested):
 Worker (responsiveness — model loading + inference + staff detection run off
 the main thread so the long WASM pass never freezes the UI):
 
-- `src/worker/omr.worker.ts` — owns the inference backend and model weights;
-  per request it runs `segment` then `detectStaves`, streaming phase/fraction
-  progress and posting the masks (buffers transferred) + staff structure back.
-  Reports its provider on startup so the UI can show it before any file drop.
-- `src/worker/omr-client.ts` — main-thread handle that starts the worker, waits
-  for the provider, and exposes `process(image, onProgress)`. A `?backend=wasm`
-  or `?backend=webgpu` page-URL param forces the worker's inference provider
-  (forwarded onto the worker URL) for A/B timing of the two paths.
-- `src/worker/protocol.ts` — the typed message protocol shared by both sides.
-- `src/main.tsx` starts the client (gated on cross-origin isolation) and mounts
-  `App` once the provider is known; `src/App.tsx` decodes the file on the main
-  thread (pdf.js / canvas are DOM-bound), then hands the raster to the client.
+- `src/worker/omr.worker.ts` — owns the inference backend and model weights. It
+  waits for a `config` message (backend choice + profiling) before resolving its
+  inference provider, then per request runs `segment` then `detectStaves`,
+  streaming phase/fraction progress and posting the masks (buffers transferred)
+  + staff structure back. Reports its provider after config so the UI can show
+  it before any file drop.
+- `src/worker/omr-client.ts` — main-thread handle that starts the worker, sends
+  the `OmrConfig`, waits for the provider, and exposes `process(image,
+  onProgress)` plus `dispose()`.
+- `src/worker/protocol.ts` — the typed message protocol shared by both sides,
+  including `OmrConfig` (`backend`: auto/webgpu/wasm, `profiling`).
+- Inference options are UI-controlled, not URL flags: `src/components/
+  InferenceSettings.tsx` is the backend picker + profiling toggle in the header.
+  Because the backend/profiling can only be set before a session is built,
+  changing either recreates the worker — `src/main.tsx`'s `Root` owns the
+  `OmrConfig` and the client lifecycle, disposing and recreating the client when
+  the config changes. Profiling flips ORT to verbose logging (which dumps the
+  node->EP assignments) and turns on WebGPU per-kernel timings, for chasing the
+  segmentation bottleneck.
+- `src/main.tsx` mounts `Root` (gated on cross-origin isolation); `src/App.tsx`
+  decodes the file on the main thread (pdf.js / canvas are DOM-bound), then
+  hands the raster to the client (null while a fresh worker spins up).
 - `scripts/build.ts` bundles the worker as a second entry point to
   `dist/omr.worker.js` (flattened naming), loaded via `new Worker(...)`.
 

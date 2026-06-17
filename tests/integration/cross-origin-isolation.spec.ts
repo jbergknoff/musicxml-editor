@@ -10,6 +10,8 @@ test("cross-origin isolated page mounts the app with an inference provider", asy
 }) => {
   await page.goto("/");
   const app = page.locator("#app");
-  await expect(app).toContainText(/Inference provider:\s+(webgpu|wasm)/);
+  // The header's inference settings report the resolved provider once the
+  // worker is configured and ready ("running on webgpu" / "running on wasm").
+  await expect(app).toContainText(/running on (webgpu|wasm)/);
   await expect(app).toContainText("Drop a PDF or image");
 });

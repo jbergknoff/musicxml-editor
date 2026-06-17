@@ -6,10 +6,11 @@ import type {
   StaffStructure,
 } from "../lib/types";
 import { FileDrop } from "./components/FileDrop";
+import { InferenceSettings } from "./components/InferenceSettings";
 import { SegmentationView } from "./components/SegmentationView";
 import { decodeFile } from "./input/decode";
 import type { OmrClient } from "./worker/omr-client";
-import type { ProgressUpdate } from "./worker/protocol";
+import type { OmrConfig, ProgressUpdate } from "./worker/protocol";
 
 /**
  * Phases 1–2 app: drop a score, run the two oemer segmentation UNets and the
@@ -19,7 +20,10 @@ import type { ProgressUpdate } from "./worker/protocol";
  */
 
 interface AppProps {
-  client: OmrClient;
+  /** Null while a fresh worker spins up (e.g. after a backend change). */
+  client: OmrClient | null;
+  config: OmrConfig;
+  onConfigChange: (next: OmrConfig) => void;
 }
 
 interface Result {
@@ -48,13 +52,16 @@ function describeProgress(update: ProgressUpdate, slow: boolean): string {
   }
 }
 
-export function App({ client }: AppProps) {
+export function App({ client, config, onConfigChange }: AppProps) {
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<Result | null>(null);
 
   async function handleFile(file: File) {
+    if (client === null) {
+      return;
+    }
     setBusy(true);
     setError(null);
     setResult(null);
@@ -82,10 +89,15 @@ export function App({ client }: AppProps) {
     <main class="app">
       <header class="app__header">
         <h1>pdf-to-musicxml</h1>
-        <p class="app__provider">Inference provider: {client.provider}</p>
+        <InferenceSettings
+          config={config}
+          provider={client?.provider ?? null}
+          disabled={busy}
+          onChange={onConfigChange}
+        />
       </header>
 
-      <FileDrop onFile={handleFile} disabled={busy} />
+      <FileDrop onFile={handleFile} disabled={busy || client === null} />
 
       {status !== null ? (
         <p class="app__status">
