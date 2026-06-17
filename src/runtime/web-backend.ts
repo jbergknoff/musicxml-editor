@@ -86,24 +86,20 @@ export async function createWebBackend(
     provider = (await hasWebGpuAdapter()) ? "webgpu" : "wasm";
   }
 
-  // Off: quiet the per-load "some nodes were not assigned to the preferred EP"
-  // notice (benign — shape ops run on CPU) so it doesn't bury our [omr] logs.
-  // On: go verbose. That prints the full node->execution-provider assignment
-  // dump at session load — the safe, CPU-side diagnostic that shows which ops
-  // the WebGPU EP refused and ran on CPU.
+  // ORT's verbose log level is the only way to surface the node->execution-
+  // provider placement dump (which ops the WebGPU EP refused and ran on CPU) —
+  // but it ALSO logs one line per kernel on every Run, which over ~170 tiles is
+  // 100k+ entries that crash the renderer. The placement dump happens at session
+  // *load*, before any Run, so we scope verbose to createSession (below) and
+  // otherwise stay quiet. When profiling is off we keep ORT at error level so
+  // the benign "some nodes were not assigned to the preferred EP" notice doesn't
+  // bury our [omr] logs.
   //
   // We deliberately do NOT enable ORT's `webgpu.profiling` (per-kernel GPU
   // timings): it uses GPU timestamp-queries whose extra per-dispatch work tips
   // this already-at-the-limit device over the edge and crashes the whole GPU
   // process (uncatchable), the same failure mode as an oversized batch.
-  if (profiling) {
-    ort.env.logLevel = "verbose";
-  } else {
-    ort.env.logLevel = "error";
-  }
-  // The native runtime logs the EP-assignment notice at warning level; 3=error
-  // suppresses it, 0=verbose surfaces the assignments when profiling.
-  const sessionLogSeverityLevel = profiling ? 0 : 3;
+  ort.env.logLevel = "error";
 
   console.info(
     `[omr] inference provider: ${provider}${forcedProvider !== undefined ? " (forced)" : ""}, wasm threads: ${ort.env.wasm.numThreads}${profiling ? ", profiling" : ""}`,
@@ -115,10 +111,20 @@ export async function createWebBackend(
   return {
     provider,
     async createSession(modelBytes) {
+      // Go verbose only across the create() call: that's when the placement
+      // dump prints. Restore the quiet level immediately so the per-kernel Run
+      // logging never floods the console. (Both use ORT's mutable default
+      // logger, so toggling env.logLevel around load works.)
+      if (profiling) {
+        ort.env.logLevel = "verbose";
+      }
       const session = await ort.InferenceSession.create(modelBytes, {
         executionProviders,
-        logSeverityLevel: sessionLogSeverityLevel,
+        logSeverityLevel: profiling ? 0 : 3,
       });
+      if (profiling) {
+        ort.env.logLevel = "error";
+      }
       return {
         async run(feeds) {
           const ortFeeds: Record<string, ort.Tensor> = {};
