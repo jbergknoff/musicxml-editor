@@ -1,17 +1,13 @@
 # Plan: speed up WebGPU segmentation by optimizing the ONNX weights
 
-Status: **Phase 1 implemented** (2026-06-17). The offline graph simplification,
-its `make optimize-models` tooling, the `manifest.inputShape` source of truth,
-and the fixed-batch pipeline wiring all landed; `MODEL_VERSION` is bumped to
-`v2`. Re-running the optimizer against the real oemer weights reproduced the
-spike exactly — `1577 → 713` and `1619 → 719` nodes at fixed input `[1,…]`, with
-`max|diff| = 0.0` on both models. The remaining work is out of band and on the
-deployer: `make optimize-models && make upload-models` to publish the optimized
-`v2` blobs, then deploy and read the WebGPU `segment` ms off the `[omr]` perf log
-(the payoff metric) to decide whether Phase 2 is needed. Originally investigated
-against the real oemer weights on 2026-06-17.
+Status: **Phase 1 + work reduction implemented** (2026-06-17). The offline
+graph simplification, stride widening, and pixel-budget reduction all landed.
+Measured on a real score page via WebGPU: **~3.7 min → 35.8 s** total, across
+two rounds of improvement. `MODEL_VERSION` is `v2`; the optimized weights are
+uploaded. Further speedup will require smaller/quantized models or a quality
+evaluation gate before further work reduction.
 
-## What landed (Phase 1)
+## What landed (Phase 1 + work reduction)
 
 - `scripts/optimize-models.py` + `make optimize-models` (a `python:3.11-slim`
   Docker service): onnxsim with the per-model fixed input shape, a hard
@@ -24,6 +20,40 @@ against the real oemer weights on 2026-06-17.
   instead of the old provider-specific batch sizes.
 - `AGENTS.md`: documents the optimize step as part of the local and rollout
   flows.
+
+**Phase 1 measured result (WebGPU, real score page):** ~3.7 min → **58.6 s**
+(~3.8× speedup). Per-tile: 236.9 ms (staff/symbol, 256²) and 492.3 ms
+(symbol detail, 288²) — down from ~920 ms and ~1830 ms. Confirms the
+GPU↔CPU round-trip hypothesis: ops are now on the GPU EP.
+
+**Work reduction (stride + pixel budget) — also landed:**
+
+- `lib/input/preprocess.ts`: All three pixel-count constants set to exactly
+  3,000,000 px (oemer's training lower bound). Pages above 3 M px are
+  downscaled; pages below are upscaled. Previously the ceiling was 4.35 M px,
+  driving larger pages to ~100 tiles/model.
+- `lib/segmentation/segment.ts`: Step sizes widened from 75% to **87.5%**
+  of the window: `staffSymbol.stepSize` 192 → **224** (32 px overlap),
+  `symbolDetail.stepSize` 216 → **252** (36 px overlap). ~30% fewer tiles
+  than the 75%-stride baseline.
+- Tile counts at 3 M px (measured page, 1523×1970): **58** staff/symbol +
+  **44** symbol detail.
+
+**Work reduction measured result (WebGPU):** 58.6 s → **35.8 s** (~1.6×
+further speedup from Phase 1 alone).
+
+**Parallel-workers experiment (tried and reverted):** Running the two models
+in separate workers to overlap GPU dispatch showed that the GPU is the wall.
+Both workers slowed ~2× (236 ms/tile → 592 ms, 492 ms/tile → 701 ms) because
+they compete for the same physical GPU; total wall-clock improved only ~1.4 s
+(35.8 s → 34.4 s), within run-to-run variance. Reverted — the added complexity
+bought nothing.
+
+**Why further stride widening is a no-op at 3 MP:** Edge-clamping snaps the
+last tile in each axis flush to the image edge regardless of stride. At 3 M px
+resolution, widening from 87.5% to 93.75% yields identical tile counts for
+both models on the measured page (the edge tile absorbs the difference). Going
+further would risk misaligned edges rather than reducing tile count.
 
 ## Problem
 
@@ -141,9 +171,12 @@ This is a one-time, out-of-band transform per weights change — mirroring how
 - Rollback is a one-line `MODEL_VERSION` revert + redeploy; old URLs still
   resolve from Blobs.
 
-## Phase 2 (only if Phase 1 isn't enough)
+## Phase 2 (further optimization avenues)
 
-More invasive; defer until Phase 1 is measured.
+Phase 1 + work reduction achieved ~6× total speedup (3.7 min → 35.8 s). The
+GPU is compute-saturated at 35.8 s; the remaining levers are model-level, not
+structural. Defer until there is a quality evaluation gate (reference-config IoU
+comparison) to ensure further work reduction doesn't degrade recognition.
 
 - **NHWC → NCHW end-to-end** to delete the ~95 `Transpose` nodes: requires
   `packBatch` to emit `[N,3,H,W]` and the output reader to consume `[N,C,H,W]`
