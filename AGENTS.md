@@ -188,8 +188,10 @@ so they can't reuse `optimize-models`' bitwise check. `scripts/evaluate-models.p
 (`make evaluate-models`) is the quality gate for them: it runs a candidate
 (default: each model's fp16 conversion, or `--candidate-dir <dir>`) against the
 served weights over real pages in `samples/` (gitignored, user-provided) and
-reports per-class argmax IoU + pixel agreement, failing below threshold. Run it
-before serving any reduced-precision weights.
+reports per-class argmax IoU + pixel agreement, failing below threshold. It also
+writes a committable Markdown report to `docs/model-evaluation.md` recording the
+candidate, thresholds, and which sample pages were used; commit it as the record
+behind a rollout. Run it before serving any reduced-precision weights.
 
 To roll out new or re-optimized weights: bump `MODEL_VERSION`, then (out of band)
 `make models && make optimize-models && make upload-models`. The version bump

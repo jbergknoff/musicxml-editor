@@ -194,6 +194,10 @@ rounding only bites where two class scores are close (symbol edges). Because bot
 models see identical pixels it is a purely relative comparison, so it need not
 reproduce the production preprocess/tiling exactly. Out of band, like
 `optimize-models`; reads `public/models/` plus user-provided pages in `samples/`.
+`make evaluate-models` writes a committable Markdown report to
+`docs/model-evaluation.md` (the script's `--report` flag) so the numbers behind a
+rollout decision — candidate, thresholds, sample pages, per-class IoU — live in
+the repo even though `samples/` is gitignored. Commit that file after a run.
 
 Caveat: the gate evaluates on the CPU EP (no browser from Python), so it
 approximates the served WebGPU fp16 numerics. If ORT's CPU EP can't run a true

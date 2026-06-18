@@ -60,7 +60,7 @@ evaluate-models: models
 	docker compose run --rm python sh -c '\
 		pip install --quiet onnx==1.16.2 onnxruntime==1.18.1 numpy==1.26.4 \
 			onnxconverter-common==1.14.0 pillow==10.4.0 \
-		&& python scripts/evaluate-models.py $(ARGS)'
+		&& python scripts/evaluate-models.py --report docs/model-evaluation.md $(ARGS)'
 
 # Upload the weights to Netlify Blobs once, out of band (deploy-time upload was
 # too slow). Downloads them in the bun container, then runs `netlify blobs:set`
