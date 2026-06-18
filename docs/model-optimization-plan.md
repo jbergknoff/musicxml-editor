@@ -4,13 +4,23 @@ Status: **Phase 1 + work reduction implemented** (2026-06-17). The offline
 graph simplification, stride widening, and pixel-budget reduction all landed.
 Measured on a real score page via WebGPU: **~3.7 min → 35.8 s** total, across
 two rounds of improvement. `MODEL_VERSION` is `v2`; the optimized weights are
-uploaded. Further speedup will require model-level levers (fp16 first; int8 is
-not viable on the WebGPU EP). The quality gate those levers depend on now exists
-(`make evaluate-models`, see Phase 2), and fp16 both passed it convincingly
-(**0.99998 overall pixel agreement, every class IoU ≥ 0.998** vs the fp32 served
-weights) and is implemented as `make optimize-models ARGS="--fp16"`. What remains
-to ship it is the rollout: bump `MODEL_VERSION`, re-optimize with `--fp16`,
-re-upload, and confirm the WebGPU speedup on a `shader-f16` device.
+uploaded.
+
+**fp16 was tried and rolled back (2026-06-18).** It passed the quality gate
+convincingly (**0.99998 overall pixel agreement, every class IoU ≥ 0.998** vs the
+fp32 served weights) and is implemented as `make optimize-models ARGS="--fp16"`,
+but serving it as `v3` *regressed* WebGPU speed badly on the test device:
+**35.8 s → 126 s**, with per-tile times (904 ms on the 256² model, 1666 ms on the
+288²) back at the pre-Phase-1 figures (~920 / ~1830 ms). That signature means the
+fp16 ops fall back to CPU mid-graph, reintroducing the per-tile GPU↔CPU
+round-trips Phase 1 removed — the WebGPU EP only runs fp16 on devices advertising
+`shader-f16`, and the cast nodes the conversion inserts make a non-f16 device
+strictly worse, not merely "no faster." Rolled back to `v2` (one-line
+`MODEL_VERSION` revert; the v2 blobs were retained). The gate measures *quality*
+on the CPU EP and structurally cannot see this, so a `shader-f16`-gated WebGPU
+speed measurement must precede any future fp16 rollout. Net: fp16 is only worth
+revisiting behind runtime `shader-f16` detection (serve fp32 to everyone else),
+not as a single served artifact.
 
 ## What landed (Phase 1 + work reduction)
 
@@ -210,14 +220,17 @@ candidate weights through the browser pipeline before rollout.
 
 ### Reduced-precision and structural levers
 
-- **fp16 conversion** (recommended first lever, **implemented**):
-  `make optimize-models ARGS="--fp16"` runs `onnxconverter-common`'s
+- **fp16 conversion** (**implemented but regressed on the test device** — see the
+  status note): `make optimize-models ARGS="--fp16"` runs `onnxconverter-common`'s
   `convert_float_to_float16` (with `keep_io_types=True`) after the onnxsim step.
   Layout is unchanged (NHWC) and the I/O dtypes are preserved (uint8 in, float32
-  out), so no `lib/` change is needed. On a WebGPU device advertising
-  `shader-f16` this halves bandwidth and can approach ~2× on the compute-bound
-  convs. Vetted by `make evaluate-models` on the fp32 weights *before* the
-  `--fp16` pass rewrites them (run order matters — see the gate section).
+  out), so no `lib/` change is needed. It is numerically safe (gated by
+  `make evaluate-models`), but only a *speed* win on a device advertising
+  `shader-f16`; on a device without it the fp16 ops fall back to CPU mid-graph and
+  it is a large regression. Do not serve it as a single artifact — revisit only
+  behind runtime `shader-f16` detection that picks fp16 vs fp32 weights per
+  device. Always confirm the WebGPU speedup on a `shader-f16` device before
+  rollout.
 - **int8 quantization** is *not* recommended for the WebGPU target: ORT-web's
   WebGPU EP has no efficient int8 conv path, so `ConvInteger`/`QDQ` ops fall back
   to CPU and reintroduce the per-tile GPU↔CPU round-trips Phase 1 deleted —
