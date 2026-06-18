@@ -4,8 +4,10 @@ Status: **Phase 1 + work reduction implemented** (2026-06-17). The offline
 graph simplification, stride widening, and pixel-budget reduction all landed.
 Measured on a real score page via WebGPU: **~3.7 min → 35.8 s** total, across
 two rounds of improvement. `MODEL_VERSION` is `v2`; the optimized weights are
-uploaded. Further speedup will require smaller/quantized models or a quality
-evaluation gate before further work reduction.
+uploaded. Further speedup will require model-level levers (fp16 first; int8 is
+not viable on the WebGPU EP). The quality evaluation gate those levers depend on
+now exists (`make evaluate-models`, see Phase 2 below); the fp16 conversion that
+would use it is not yet implemented.
 
 ## What landed (Phase 1 + work reduction)
 
@@ -175,9 +177,41 @@ This is a one-time, out-of-band transform per weights change — mirroring how
 
 Phase 1 + work reduction achieved ~6× total speedup (3.7 min → 35.8 s). The
 GPU is compute-saturated at 35.8 s; the remaining levers are model-level, not
-structural. Defer until there is a quality evaluation gate (reference-config IoU
-comparison) to ensure further work reduction doesn't degrade recognition.
+structural.
 
+### Quality evaluation gate (landed)
+
+The model-level levers below are not numerically exact, so they need a gate
+before they can be served — the `optimize-models` bitwise check (`max|diff| = 0`)
+no longer applies. `scripts/evaluate-models.py` (`make evaluate-models`) is that
+gate: for each served model it runs the reference and a candidate (by default the
+model's fp16 conversion; or an arbitrary `--candidate-dir`) over the same real
+sample tiles and compares their per-pixel **argmax** — the class map the pipeline
+actually consumes — reporting per-class IoU and overall pixel agreement, and
+exiting non-zero below a threshold. It argmaxes real notation rather than diffing
+raw outputs on random input because a class flip is what changes a mask and fp16
+rounding only bites where two class scores are close (symbol edges). Because both
+models see identical pixels it is a purely relative comparison, so it need not
+reproduce the production preprocess/tiling exactly. Out of band, like
+`optimize-models`; reads `public/models/` plus user-provided pages in `samples/`.
+
+Caveat: the gate evaluates on the CPU EP (no browser from Python), so it
+approximates the served WebGPU fp16 numerics. If ORT's CPU EP can't run a true
+fp16 `Conv`, it falls back to fp16 *weight-rounding* emulation (a lower bound on
+divergence) and says so. The faithful end-to-end check remains running the
+candidate weights through the browser pipeline before rollout.
+
+### Reduced-precision and structural levers
+
+- **fp16 conversion** (recommended first lever): `onnxconverter-common`'s
+  `convert_float_to_float16` after the onnxsim step. Layout is unchanged (NHWC),
+  so no `lib/` change beyond a tolerance-based check replacing the exact one. On a
+  WebGPU device advertising `shader-f16` this halves bandwidth and can approach
+  ~2× on the compute-bound convs; gate it with `make evaluate-models`.
+- **int8 quantization** is *not* recommended for the WebGPU target: ORT-web's
+  WebGPU EP has no efficient int8 conv path, so `ConvInteger`/`QDQ` ops fall back
+  to CPU and reintroduce the per-tile GPU↔CPU round-trips Phase 1 deleted —
+  likely a regression, not a speedup.
 - **NHWC → NCHW end-to-end** to delete the ~95 `Transpose` nodes: requires
   `packBatch` to emit `[N,3,H,W]` and the output reader to consume `[N,C,H,W]`
   (lib change + test updates).

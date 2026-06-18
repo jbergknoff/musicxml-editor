@@ -48,6 +48,20 @@ optimize-models: models
 		pip install --quiet onnx==1.16.2 onnxsim==0.4.36 onnxruntime==1.18.1 numpy==1.26.4 \
 		&& python scripts/optimize-models.py'
 
+# Quality gate for reduced-precision weights (run via `make evaluate-models`).
+# Compares each served model against a candidate — by default its fp16
+# conversion — over real sample pages from samples/ (gitignored, user-provided),
+# reporting per-class argmax IoU and overall pixel agreement and failing if they
+# fall below threshold. The Phase 2 gate that must pass before fp16/int8 weights
+# can be served. One-off, out of band, like optimize-models. Pass extra flags
+# through ARGS, e.g. `make evaluate-models ARGS="--max-tiles 8"`.
+# See docs/model-optimization-plan.md.
+evaluate-models: models
+	docker compose run --rm python sh -c '\
+		pip install --quiet onnx==1.16.2 onnxruntime==1.18.1 numpy==1.26.4 \
+			onnxconverter-common==1.14.0 pillow==10.4.0 \
+		&& python scripts/evaluate-models.py $(ARGS)'
+
 # Upload the weights to Netlify Blobs once, out of band (deploy-time upload was
 # too slow). Downloads them in the bun container, then runs `netlify blobs:set`
 # per file in a Node container. Requires NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID

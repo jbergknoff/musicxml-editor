@@ -122,6 +122,7 @@ the host. (On Netlify, `NETLIFY=true` makes the Makefile run the tools directly.
 ```sh
 make models           # download oemer ONNX weights -> public/models/ (local, once)
 make optimize-models  # onnxsim the weights to fixed-shape form (after models, out of band)
+make evaluate-models  # quality gate: argmax IoU of a candidate (default fp16) vs served weights (out of band)
 make upload-models    # upload weights to Netlify Blobs via the CLI (once, out of band)
 make build            # bun build src/ -> dist/ (+ ORT wasm, pdf worker, public/)
 make dev              # build, then rebuild on change (run `make up` to serve)
@@ -182,7 +183,17 @@ to the original before rewriting `public/models/` in place. The pipeline feeds
 exactly `inputShape[0]` tiles per inference (`src/worker/omr.worker.ts`). See
 `docs/model-optimization-plan.md`.
 
+The next planned optimizations are *lossy* (fp16 first; see the plan's Phase 2),
+so they can't reuse `optimize-models`' bitwise check. `scripts/evaluate-models.py`
+(`make evaluate-models`) is the quality gate for them: it runs a candidate
+(default: each model's fp16 conversion, or `--candidate-dir <dir>`) against the
+served weights over real pages in `samples/` (gitignored, user-provided) and
+reports per-class argmax IoU + pixel agreement, failing below threshold. Run it
+before serving any reduced-precision weights.
+
 To roll out new or re-optimized weights: bump `MODEL_VERSION`, then (out of band)
 `make models && make optimize-models && make upload-models`. The version bump
 gives the optimized bytes a fresh immutable URL; keep the previous version's
 blobs in the store so rollback is a one-line `MODEL_VERSION` revert + redeploy.
+For a lossy re-optimization (fp16/int8), run `make evaluate-models` first and
+keep its report.
