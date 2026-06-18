@@ -5,9 +5,12 @@ graph simplification, stride widening, and pixel-budget reduction all landed.
 Measured on a real score page via WebGPU: **~3.7 min → 35.8 s** total, across
 two rounds of improvement. `MODEL_VERSION` is `v2`; the optimized weights are
 uploaded. Further speedup will require model-level levers (fp16 first; int8 is
-not viable on the WebGPU EP). The quality evaluation gate those levers depend on
-now exists (`make evaluate-models`, see Phase 2 below); the fp16 conversion that
-would use it is not yet implemented.
+not viable on the WebGPU EP). The quality gate those levers depend on now exists
+(`make evaluate-models`, see Phase 2), and fp16 both passed it convincingly
+(**0.99998 overall pixel agreement, every class IoU ≥ 0.998** vs the fp32 served
+weights) and is implemented as `make optimize-models ARGS="--fp16"`. What remains
+to ship it is the rollout: bump `MODEL_VERSION`, re-optimize with `--fp16`,
+re-upload, and confirm the WebGPU speedup on a `shader-f16` device.
 
 ## What landed (Phase 1 + work reduction)
 
@@ -207,11 +210,14 @@ candidate weights through the browser pipeline before rollout.
 
 ### Reduced-precision and structural levers
 
-- **fp16 conversion** (recommended first lever): `onnxconverter-common`'s
-  `convert_float_to_float16` after the onnxsim step. Layout is unchanged (NHWC),
-  so no `lib/` change beyond a tolerance-based check replacing the exact one. On a
-  WebGPU device advertising `shader-f16` this halves bandwidth and can approach
-  ~2× on the compute-bound convs; gate it with `make evaluate-models`.
+- **fp16 conversion** (recommended first lever, **implemented**):
+  `make optimize-models ARGS="--fp16"` runs `onnxconverter-common`'s
+  `convert_float_to_float16` (with `keep_io_types=True`) after the onnxsim step.
+  Layout is unchanged (NHWC) and the I/O dtypes are preserved (uint8 in, float32
+  out), so no `lib/` change is needed. On a WebGPU device advertising
+  `shader-f16` this halves bandwidth and can approach ~2× on the compute-bound
+  convs. Vetted by `make evaluate-models` on the fp32 weights *before* the
+  `--fp16` pass rewrites them (run order matters — see the gate section).
 - **int8 quantization** is *not* recommended for the WebGPU target: ORT-web's
   WebGPU EP has no efficient int8 conv path, so `ConvInteger`/`QDQ` ops fall back
   to CPU and reintroduce the per-tile GPU↔CPU round-trips Phase 1 deleted —

@@ -197,5 +197,14 @@ To roll out new or re-optimized weights: bump `MODEL_VERSION`, then (out of band
 `make models && make optimize-models && make upload-models`. The version bump
 gives the optimized bytes a fresh immutable URL; keep the previous version's
 blobs in the store so rollback is a one-line `MODEL_VERSION` revert + redeploy.
-For a lossy re-optimization (fp16/int8), run `make evaluate-models` first and
-keep its report.
+
+For a lossy re-optimization the order matters, because `optimize-models` rewrites
+`public/models/` in place and the gate compares those files against their own
+fp16 conversion — so gate the fp32 weights *before* converting them:
+
+1. `make models && make optimize-models` (fp32, simplified — what's served today).
+2. `make evaluate-models` → confirm PASS, then commit `docs/model-evaluation.md`.
+3. `make optimize-models ARGS="--fp16"` to rewrite `public/models/` to half
+   precision (the served artifact).
+4. Bump `MODEL_VERSION`, `make upload-models`, deploy. Confirm the WebGPU
+   speedup on a `shader-f16` device before discarding the fp32 blobs.

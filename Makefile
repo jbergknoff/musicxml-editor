@@ -42,11 +42,13 @@ models: node_modules
 # shape ops that force per-tile GPU<->CPU syncs on the WebGPU path, asserting the
 # result stays numerically identical. Run once, out of band, after `make models`
 # and before `make build`/`make upload-models`; rewrites public/models/ in place.
-# See docs/model-optimization-plan.md.
+# Add `ARGS="--fp16"` to also convert to half precision (lossy — vet with
+# `make evaluate-models` on the fp32 weights first). See docs/model-optimization-plan.md.
 optimize-models: models
 	docker compose run --rm python sh -c '\
 		pip install --quiet onnx==1.16.2 onnxsim==0.4.36 onnxruntime==1.18.1 numpy==1.26.4 \
-		&& python scripts/optimize-models.py'
+			onnxconverter-common==1.14.0 \
+		&& python scripts/optimize-models.py $(ARGS)'
 
 # Quality gate for reduced-precision weights (run via `make evaluate-models`).
 # Compares each served model against a candidate — by default its fp16

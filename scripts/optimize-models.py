@@ -24,15 +24,25 @@ full window, so a static shape is always valid, every dispatch stays small
 (immune to both backends' big-batch failures), and the WebGPU pipeline cache
 needs only one compiled kernel per op.
 
+With `--fp16` the simplified graph is additionally converted to half precision
+(`onnxconverter-common`, `keep_io_types=True` so the uint8 input and float32
+output are untouched and only the interior runs at fp16). That is *lossy*, so the
+bitwise check covers only the exact simplify step — the fp16 conversion's quality
+is vetted separately by `make evaluate-models` (run it on the fp32 weights first,
+before this `--fp16` pass rewrites them). On a WebGPU device advertising
+`shader-f16` this roughly halves bandwidth on the compute-bound convs.
+
 See docs/model-optimization-plan.md.
 
-Requires: onnx, onnxsim, onnxruntime, numpy (installed in the `python` Docker
-service by `make optimize-models`).
+Requires: onnx, onnxsim, onnxruntime, numpy (and onnxconverter-common for
+`--fp16`), installed in the `python` Docker service by `make optimize-models`.
 """
 
+import argparse
 import glob
 import os
 import sys
+import warnings
 
 import numpy as np
 import onnx
@@ -52,7 +62,21 @@ FIXED_BATCH_SIZE = 1
 MAX_ABS_DIFF_TOLERANCE = 1e-4
 
 
-def optimize(path: str) -> None:
+def to_fp16(model: onnx.ModelProto) -> onnx.ModelProto:
+    """Convert the simplified graph to half precision, leaving the I/O dtypes
+    (uint8 in, float32 out) intact so only the interior runs at fp16 — the form
+    the WebGPU EP benefits from. The conversion warns once per weight that
+    underflows fp16's smallest normal; that truncation is the expected, vetted
+    loss, so silence it. Import lazily so the default (lossless) path needs no
+    extra dependency."""
+    from onnxconverter_common import float16
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        return float16.convert_float_to_float16(model, keep_io_types=True)
+
+
+def optimize(path: str, fp16: bool) -> None:
     model = onnx.load(path)
     graph_input = model.graph.input[0]
     input_name = graph_input.name
@@ -99,24 +123,47 @@ def optimize(path: str) -> None:
             f"tolerance {MAX_ABS_DIFF_TOLERANCE})"
         )
 
-    onnx.save(simplified, path)
+    # The bitwise gate above proves the simplify step is exact. fp16 is lossy,
+    # so it comes after the gate and is vetted instead by `make evaluate-models`.
+    output = simplified
+    precision = "fp32"
+    if fp16:
+        output = to_fp16(simplified)
+        precision = "fp16"
+
+    onnx.save(output, path)
     file_name = os.path.basename(path)
     print(
         f"  {file_name}: {nodes_before} -> {nodes_after} nodes, "
-        f"input {fixed_shape}, max|diff| = {max_abs_diff}"
+        f"input {fixed_shape}, {precision}, simplify max|diff| = {max_abs_diff}"
     )
 
 
-def main() -> None:
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--fp16",
+        action="store_true",
+        help="Also convert the simplified graph to half precision (lossy; vet "
+        "with `make evaluate-models` on the fp32 weights first).",
+    )
+    arguments = parser.parse_args()
+
     paths = sorted(glob.glob(os.path.join(MODELS_DIRECTORY, "*.onnx")))
     if not paths:
         raise SystemExit(
             f"No .onnx files in {MODELS_DIRECTORY}/ — run `make models` first."
         )
-    print(f"Optimizing {len(paths)} model(s) in {MODELS_DIRECTORY}/")
+    precision = "fp16" if arguments.fp16 else "fp32"
+    print(f"Optimizing {len(paths)} model(s) in {MODELS_DIRECTORY}/ ({precision})")
     for path in paths:
-        optimize(path)
-    print("Done. Optimized weights written in place; numerically verified.")
+        optimize(path, arguments.fp16)
+    if arguments.fp16:
+        print("Done. Simplified + fp16 weights written in place; simplify step "
+              "numerically verified, fp16 quality gated by `make evaluate-models`.")
+    else:
+        print("Done. Optimized weights written in place; numerically verified.")
+    return 0
 
 
 if __name__ == "__main__":
