@@ -9,9 +9,12 @@ import type { RgbaImage } from "../types";
  * ones upscaled into the band; pages already inside it are returned untouched.
  */
 
+// oemer's training band is 3–4.35 M px; we target the lower bound to keep tile
+// counts small. Pages already below 3 M px are still upscaled so the model's
+// receptive field assumptions hold.
 const MINIMUM_PIXELS = 3_000_000;
-const MAXIMUM_PIXELS = 4_350_000;
-const TARGET_PIXELS = (MINIMUM_PIXELS + MAXIMUM_PIXELS) / 2;
+const MAXIMUM_PIXELS = 3_000_000;
+const TARGET_PIXELS = 3_000_000;
 
 /**
  * Rescale `image` so its pixel count lands in oemer's training band. Returns the

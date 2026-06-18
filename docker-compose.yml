@@ -39,6 +39,22 @@ services:
       server:
         condition: service_healthy
 
+  # One-off: optimize the downloaded ONNX weights with onnxsim (run via
+  # `make optimize-models`). Uses a Python image because onnx/onnxsim/onnxruntime
+  # are Python tools; the deps are pip-installed at run time so nothing is
+  # installed on the host. PIP_CACHE_DIR points at a repo-local folder so repeat
+  # runs skip the re-download.
+  python:
+    # 3.11, not 3.12: onnxsim ships manylinux wheels for cp311 but not cp312, so
+    # 3.12 would fall back to a from-source build (needs cmake) and fail.
+    image: python:3.11-slim
+    command: echo
+    volumes:
+      - ${PWD}:${PWD}
+    working_dir: ${PWD}
+    environment:
+      - PIP_CACHE_DIR=${PWD}/.pip-cache
+
   # One-off: upload the model weights to Netlify Blobs with the Netlify CLI (run
   # via `make upload-models`). Uses a Node image so `npx netlify-cli` works
   # without installing anything on the host. The env vars are passed through from

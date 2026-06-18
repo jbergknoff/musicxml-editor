@@ -109,8 +109,9 @@ the main thread so the long WASM pass never freezes the UI):
   `dist/omr.worker.js` (flattened naming), loaded via `new Worker(...)`.
 
 The model weights (~109 MB, oemer's MIT release) are **not** committed. Run
-`make models` to download them into `public/models/` (gitignored) before
-`make build`/`make dev`.
+`make models` to download them into `public/models/` (gitignored), then
+`make optimize-models` to fold the served weights into their fast, fixed-shape
+form (see below), before `make build`/`make dev`.
 
 ## Local development
 
@@ -120,6 +121,7 @@ the host. (On Netlify, `NETLIFY=true` makes the Makefile run the tools directly.
 
 ```sh
 make models           # download oemer ONNX weights -> public/models/ (local, once)
+make optimize-models  # onnxsim the weights to fixed-shape form (after models, out of band)
 make upload-models    # upload weights to Netlify Blobs via the CLI (once, out of band)
 make build            # bun build src/ -> dist/ (+ ORT wasm, pdf worker, public/)
 make dev              # build, then rebuild on change (run `make up` to serve)
@@ -165,8 +167,22 @@ too slow. `netlify/functions/models.mts` reads that same store and streams the
 weights back same-origin at `/models/<file>` (required under COEP). File names
 are versioned (`lib/models/manifest.ts`, `MODEL_VERSION`) so each URL is
 immutable — the function serves a long-lived cache header and the browser also
-keeps the bytes in Cache Storage. Bump `MODEL_VERSION` (and re-run
-`make upload-models`) to roll out new weights. `lib/models/manifest.ts` is the
-shared source of truth for the browser registry, the upload script, and the
-function. Locally there is no function, so `scripts/serve.ts` serves the same
-`/models/<file>` URLs from `public/models/` (populated by `make models`).
+keeps the bytes in Cache Storage. `lib/models/manifest.ts` is the shared source
+of truth for the browser registry, the upload script, and the function. Locally
+there is no function, so `scripts/serve.ts` serves the same `/models/<file>`
+URLs from `public/models/` (populated by `make models` + `make optimize-models`).
+
+The served weights are **not** the raw oemer originals: they are run through
+`scripts/optimize-models.py` (`make optimize-models`), the one-time, out-of-band
+bridge between "downloaded" and "served" — onnxsim with a fixed input shape baked
+in (`manifest.inputShape`, batch 1). That folds away the ~1500 dynamic-shape ops
+per model whose mid-graph CPU execution forced a GPU↔CPU round-trip per tile on
+the WebGPU path; the script asserts the optimized graph is numerically identical
+to the original before rewriting `public/models/` in place. The pipeline feeds
+exactly `inputShape[0]` tiles per inference (`src/worker/omr.worker.ts`). See
+`docs/model-optimization-plan.md`.
+
+To roll out new or re-optimized weights: bump `MODEL_VERSION`, then (out of band)
+`make models && make optimize-models && make upload-models`. The version bump
+gives the optimized bytes a fresh immutable URL; keep the previous version's
+blobs in the store so rollback is a one-line `MODEL_VERSION` revert + redeploy.

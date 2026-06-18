@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import {
   type Color,
   compositeMasks,
+  fadeToWhite,
   type OverlayLayer,
 } from "../../lib/segmentation/overlay";
 import type {
@@ -58,6 +59,8 @@ export function SegmentationView({
     symbols: false,
   });
   const [showStaves, setShowStaves] = useState(true);
+  const [fadePage, setFadePage] = useState(true);
+  const [opacity, setOpacity] = useState(0.85);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -74,7 +77,10 @@ export function SegmentationView({
       mask: masks[layer.key] as Mask,
       color: layer.color,
     }));
-    const composited = compositeMasks(image, layers);
+    // Wash the page out behind the overlay so the colored detections dominate
+    // rather than competing with the printed ink.
+    const backdrop = fadePage ? fadeToWhite(image, 0.7) : image;
+    const composited = compositeMasks(backdrop, layers, opacity);
     canvas.width = composited.width;
     canvas.height = composited.height;
     const imageData = context.createImageData(
@@ -87,7 +93,7 @@ export function SegmentationView({
     if (showStaves) {
       drawStaves(context, staves);
     }
-  }, [image, masks, staves, enabled, showStaves]);
+  }, [image, masks, staves, enabled, showStaves, fadePage, opacity]);
 
   return (
     <div class="segmentation-view">
@@ -127,6 +133,31 @@ export function SegmentationView({
             style={`background:${STAFF_BOX_COLOR}`}
           />
           Staves
+        </label>
+        <label class="segmentation-view__toggle">
+          <input
+            type="checkbox"
+            checked={fadePage}
+            onChange={(event) => {
+              setFadePage((event.currentTarget as HTMLInputElement).checked);
+            }}
+          />
+          Fade page
+        </label>
+        <label class="segmentation-view__toggle">
+          Opacity
+          <input
+            type="range"
+            min="0.3"
+            max="1"
+            step="0.05"
+            value={opacity}
+            onInput={(event) => {
+              setOpacity(
+                Number((event.currentTarget as HTMLInputElement).value),
+              );
+            }}
+          />
         </label>
       </div>
       <canvas ref={canvasRef} class="segmentation-view__canvas" />

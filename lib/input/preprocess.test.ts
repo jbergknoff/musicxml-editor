@@ -14,27 +14,27 @@ function gradientImage(width: number, height: number): RgbaImage {
 }
 
 describe("resizeToPixelBudget", () => {
-  it("leaves an image already inside the budget untouched", () => {
-    const image = gradientImage(2000, 1600); // 3.2 M px, within the band
+  it("leaves a 3 M px image untouched", () => {
+    const image = gradientImage(2000, 1500); // exactly 3 M px
     expect(resizeToPixelBudget(image)).toBe(image);
   });
 
-  it("downscales an oversized image into the budget", () => {
+  it("downscales an oversized image to ~3 M px", () => {
     const image = gradientImage(4000, 3000); // 12 M px
     const resized = resizeToPixelBudget(image);
     const pixels = resized.width * resized.height;
-    expect(pixels).toBeGreaterThanOrEqual(3_000_000);
-    expect(pixels).toBeLessThanOrEqual(4_350_000);
+    expect(pixels).toBeGreaterThan(2_950_000);
+    expect(pixels).toBeLessThan(3_050_000);
     // Aspect ratio is preserved within rounding.
     expect(resized.width / resized.height).toBeCloseTo(4000 / 3000, 2);
   });
 
-  it("upscales a tiny image into the budget", () => {
+  it("upscales a tiny image to ~3 M px", () => {
     const image = gradientImage(400, 300); // 0.12 M px
     const resized = resizeToPixelBudget(image);
     const pixels = resized.width * resized.height;
-    expect(pixels).toBeGreaterThanOrEqual(3_000_000);
-    expect(pixels).toBeLessThanOrEqual(4_350_000);
+    expect(pixels).toBeGreaterThan(2_950_000);
+    expect(pixels).toBeLessThan(3_050_000);
   });
 });
 
