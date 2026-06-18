@@ -60,10 +60,10 @@ SAMPLES_DIRECTORY = "samples"
 # planTiles in lib/segmentation/tiling.ts.
 STRIDE_RATIO = 0.875
 
-# oemer's training band lower bound, from lib/input/preprocess.ts. Pages are
-# scaled toward this so tile content sits at the scale the models expect; exact
+# The served pixel budget, from lib/input/preprocess.ts. Pages are scaled toward
+# this so tile content sits at the scale the models actually run at; exact
 # agreement with the production resize is not required (see module docstring).
-TARGET_PIXEL_COUNT = 3_000_000
+TARGET_PIXEL_COUNT = 1_000_000
 
 # Defaults are conservative starting points, to be tuned once measured against
 # real pages. fp16 on a well-behaved UNet typically agrees with fp32 on

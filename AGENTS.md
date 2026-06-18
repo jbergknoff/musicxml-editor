@@ -42,8 +42,11 @@ Phase 1 segmentation (all of `lib/` is runtime-agnostic and unit-tested):
 
 - `lib/types.ts` — `RgbaImage`, `ProbabilityMap`, `Mask`, `SegmentationMasks`,
   `SegmentationModelSpec`.
-- `lib/input/preprocess.ts` — `resizeToPixelBudget` rescales pages into oemer's
-  ~3–4.35 M px training band (bilinear).
+- `lib/input/preprocess.ts` — `resizeToPixelBudget` rescales pages (bilinear) to
+  a fixed pixel budget. Deliberately set *below* oemer's ~3–4.35 M px training
+  band (currently 1 M px) to trade accuracy for speed: time scales ~linearly with
+  pixels, so fewer/smaller tiles run much faster on WebGPU. It's the main
+  speed/accuracy knob — raise it back toward 3 M px to recover accuracy.
 - `lib/segmentation/tiling.ts` — sliding-window tile geometry + overlap-averaging
   accumulator (mirrors oemer's `inference()`).
 - `lib/segmentation/unet-session.ts` — drives one model over a page in batches

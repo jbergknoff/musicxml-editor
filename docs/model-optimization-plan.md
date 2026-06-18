@@ -57,6 +57,16 @@ GPU↔CPU round-trip hypothesis: ops are now on the GPU EP.
 **Work reduction measured result (WebGPU):** 58.6 s → **35.8 s** (~1.6×
 further speedup from Phase 1 alone).
 
+**Resolution reduction below the training band (landed 2026-06-18):** since
+segmentation time is ~linear in pixel count and the project is willing to trade
+some OMR accuracy for speed, the pixel budget was dropped from 3 M px to
+**1 M px** (`lib/input/preprocess.ts`) — roughly a third of the tiles, so a
+~3× cut in tile count on top of the above. This runs *below* oemer's trained
+scale, so small symbols start to be missed; the budget is the main
+speed/accuracy knob (raise back toward 3 M px to recover accuracy). This is the
+surest WebGPU lever — pure compute reduction, no dependence on ORT-web fp16
+kernel coverage. Measure the new wall-clock via `make dev`.
+
 **Parallel-workers experiment (tried and reverted):** Running the two models
 in separate workers to overlap GPU dispatch showed that the GPU is the wall.
 Both workers slowed ~2× (236 ms/tile → 592 ms, 492 ms/tile → 701 ms) because
