@@ -57,6 +57,11 @@ const DEFAULT_CANDIDATE_PIXELS = [2_000_000, 1_500_000, 1_000_000, 750_000];
 // normalizing for the resolution difference).
 const DEFAULT_MAX_LINE_DEVIATION_UNITS = 0.5;
 
+// Pixel tolerance for the mask IoU: both masks are dilated by this before the
+// IoU so the score measures agreement within a pixel or two, not exact overlap
+// of thin structures across resampled grids (which mostly measures jitter).
+const DEFAULT_MASK_TOLERANCE_PIXELS = 2;
+
 // The five masks segment() produces, named so the IoU report can label them.
 const MASK_NAMES = [
   "staff",
@@ -236,6 +241,48 @@ function resampleMaskNearest(
   return { data, width: targetWidth, height: targetHeight };
 }
 
+// Binary dilation by `radius` pixels (separable: a horizontal then a vertical
+// pass, O(n·radius)). Used to give the mask IoU a pixel tolerance: thin
+// structures (1-px stafflines, stems) shifted by a pixel when resampled across
+// resolutions would otherwise score ~0 IoU despite being in the same place, so
+// raw IoU on them measures grid jitter, not real disagreement.
+function dilateMask(mask: Mask, radius: number): Mask {
+  if (radius <= 0) {
+    return mask;
+  }
+  const { width, height, data } = mask;
+  const horizontal = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width; x++) {
+      let on = 0;
+      for (let offset = -radius; offset <= radius; offset++) {
+        const nx = x + offset;
+        if (nx >= 0 && nx < width && data[row + nx] !== 0) {
+          on = 1;
+          break;
+        }
+      }
+      horizontal[row + x] = on;
+    }
+  }
+  const output = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let on = 0;
+      for (let offset = -radius; offset <= radius; offset++) {
+        const ny = y + offset;
+        if (ny >= 0 && ny < height && horizontal[ny * width + x] !== 0) {
+          on = 1;
+          break;
+        }
+      }
+      output[y * width + x] = on;
+    }
+  }
+  return { data: output, width, height };
+}
+
 function maskIoU(a: Mask, b: Mask): number {
   let intersection = 0;
   let union = 0;
@@ -252,17 +299,24 @@ function maskIoU(a: Mask, b: Mask): number {
   return union === 0 ? 1 : intersection / union;
 }
 
+// IoU of two masks after resampling the candidate onto the reference grid and
+// dilating both by `tolerance` pixels, so the score reflects agreement within a
+// pixel or two rather than exact overlap of thin structures.
 function maskIoUs(
   reference: PipelineResult,
   candidate: PipelineResult,
+  tolerance: number,
 ): Record<string, number> {
   const result: Record<string, number> = {};
   for (const name of MASK_NAMES) {
-    const referenceMask = reference.masks[name];
-    const candidateMask = resampleMaskNearest(
-      candidate.masks[name],
-      referenceMask.width,
-      referenceMask.height,
+    const referenceMask = dilateMask(reference.masks[name], tolerance);
+    const candidateMask = dilateMask(
+      resampleMaskNearest(
+        candidate.masks[name],
+        reference.masks[name].width,
+        reference.masks[name].height,
+      ),
+      tolerance,
     );
     result[name] = maskIoU(referenceMask, candidateMask);
   }
@@ -289,6 +343,7 @@ async function main(): Promise<number> {
       reference: { type: "string" },
       candidates: { type: "string" },
       "max-line-deviation": { type: "string" },
+      "mask-tolerance": { type: "string" },
     },
   });
   const referenceBudget = values.reference
@@ -301,6 +356,9 @@ async function main(): Promise<number> {
   const maxLineDeviationUnits = values["max-line-deviation"]
     ? Number.parseFloat(values["max-line-deviation"])
     : DEFAULT_MAX_LINE_DEVIATION_UNITS;
+  const maskTolerance = values["mask-tolerance"]
+    ? Number.parseInt(values["mask-tolerance"], 10)
+    : DEFAULT_MASK_TOLERANCE_PIXELS;
 
   const models = await loadModels();
   const paths = samplePaths();
@@ -309,7 +367,10 @@ async function main(): Promise<number> {
       `${megapixels(referenceBudget)} reference over ${paths.length} page(s).`,
   );
   console.info(
-    `Pass: same staff count and stafflines within ${maxLineDeviationUnits} interline units of the reference.\n`,
+    `Pass (gate): same staff count and stafflines within ${maxLineDeviationUnits} interline units of the reference.`,
+  );
+  console.info(
+    `Mask IoU is informational, measured within ±${maskTolerance}px.\n`,
   );
 
   let allPassed = true;
@@ -327,7 +388,7 @@ async function main(): Promise<number> {
     for (const budget of candidateBudgets) {
       const candidate = await runPipeline(image, models, budget);
       const staves = compareStaves(reference, candidate);
-      const ious = maskIoUs(reference, candidate);
+      const ious = maskIoUs(reference, candidate, maskTolerance);
       const passed =
         staves.countMatch &&
         staves.maxLineDeviationUnits <= maxLineDeviationUnits;
