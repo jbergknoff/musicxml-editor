@@ -3,24 +3,24 @@
 Status: **Phase 1 + work reduction implemented** (2026-06-17). The offline
 graph simplification, stride widening, and pixel-budget reduction all landed.
 Measured on a real score page via WebGPU: **~3.7 min → 35.8 s** total, across
-two rounds of improvement. `MODEL_VERSION` is `v2`; the optimized weights are
-uploaded.
+two rounds of improvement. A later **resolution drop to 1 M px** took a real page
+to **~15 s** (see below). `MODEL_VERSION` is `v2` and is intended to stay
+static — further speed work happens in the app code (resolution/tiling), not by
+re-optimizing the weights. `docs/model-weights.md` records exactly how `v2` is
+produced.
 
-**fp16 was tried and rolled back (2026-06-18).** It passed the quality gate
-convincingly (**0.99998 overall pixel agreement, every class IoU ≥ 0.998** vs the
-fp32 served weights) and is implemented as `make optimize-models ARGS="--fp16"`,
-but serving it as `v3` *regressed* WebGPU speed badly on the test device:
-**35.8 s → 126 s**, with per-tile times (904 ms on the 256² model, 1666 ms on the
-288²) back at the pre-Phase-1 figures (~920 / ~1830 ms). That signature means the
-fp16 ops fall back to CPU mid-graph, reintroducing the per-tile GPU↔CPU
-round-trips Phase 1 removed — the WebGPU EP only runs fp16 on devices advertising
-`shader-f16`, and the cast nodes the conversion inserts make a non-f16 device
-strictly worse, not merely "no faster." Rolled back to `v2` (one-line
-`MODEL_VERSION` revert; the v2 blobs were retained). The gate measures *quality*
-on the CPU EP and structurally cannot see this, so a `shader-f16`-gated WebGPU
-speed measurement must precede any future fp16 rollout. Net: fp16 is only worth
-revisiting behind runtime `shader-f16` detection (serve fp32 to everyone else),
-not as a single served artifact.
+**fp16 was tried and abandoned (2026-06-18).** An fp16 conversion of the served
+weights was numerically near-perfect (≈0.99998 pixel agreement vs fp32), but
+serving it *regressed* WebGPU speed badly on the test device: **35.8 s → 126 s**,
+with per-tile times (904 ms on the 256² model, 1666 ms on the 288²) back at the
+pre-Phase-1 figures (~920 / ~1830 ms). That signature means the fp16 ops fall
+back to CPU mid-graph, reintroducing the per-tile GPU↔CPU round-trips Phase 1
+removed. It reproduced even on a `shader-f16` device and on current ORT-web
+(1.26), and even with a full-interior conversion (no fp32 islands) — so it is an
+ORT-web WebGPU fp16-kernel-coverage limitation, not something our conversion can
+fix. Rolled back to `v2` and the fp16 tooling was removed; fp16 is only worth
+revisiting behind runtime `shader-f16` detection (serving fp32 to everyone else),
+never as a single served artifact.
 
 ## What landed (Phase 1 + work reduction)
 
@@ -198,56 +198,41 @@ This is a one-time, out-of-band transform per weights change — mirroring how
 
 ## Phase 2 (further optimization avenues)
 
-Phase 1 + work reduction achieved ~6× total speedup (3.7 min → 35.8 s). The
-GPU is compute-saturated at 35.8 s; the remaining levers are model-level, not
-structural.
+Phase 1 + work reduction achieved ~6× total speedup (3.7 min → 35.8 s); the
+resolution drop to 1 M px took it further to ~15 s on a real page (20 + 20 tiles,
+per-tile cost unchanged at ~243 / ~494 ms — i.e. the models are now the wall).
 
-### Quality evaluation gate (landed)
+### Resolution: the chosen speed/accuracy knob
 
-The model-level levers below are not numerically exact, so they need a gate
-before they can be served — the `optimize-models` bitwise check (`max|diff| = 0`)
-no longer applies. `scripts/evaluate-models.py` (`make evaluate-models`) is that
-gate: for each served model it runs the reference and a candidate (by default the
-model's fp16 conversion; or an arbitrary `--candidate-dir`) over the same real
-sample tiles and compares their per-pixel **argmax** — the class map the pipeline
-actually consumes — reporting per-class IoU and overall pixel agreement, and
-exiting non-zero below a threshold. It argmaxes real notation rather than diffing
-raw outputs on random input because a class flip is what changes a mask and fp16
-rounding only bites where two class scores are close (symbol edges). Because both
-models see identical pixels it is a purely relative comparison, so it need not
-reproduce the production preprocess/tiling exactly. Out of band, like
-`optimize-models`; reads `public/models/` plus user-provided pages in `samples/`.
-`make evaluate-models` writes a committable Markdown report to
-`docs/model-evaluation.md` (the script's `--report` flag) so the numbers behind a
-rollout decision — candidate, thresholds, sample pages, per-class IoU — live in
-the repo even though `samples/` is gitignored. Commit that file after a run.
+Segmentation time is ~linear in pixel count, and the project accepts some OMR
+accuracy loss for speed, so the pixel budget (`lib/input/preprocess.ts`,
+currently 1 M px, below oemer's 3 M px training floor) is the primary lever. It
+is a pure app-code change — the served `v2` weights are untouched — so it needs
+no re-optimization or re-upload. `make compare-resolutions` validates how far it
+can be pushed: a headless Bun harness (onnxruntime-node) runs the real pipeline
+over `samples/` at a high-res reference and lower candidate budgets and reports
+whether the detected staff structure (and masks) still agree. See
+`docs/model-weights.md`.
 
-Caveat: the gate evaluates on the CPU EP (no browser from Python), so it
-approximates the served WebGPU fp16 numerics. If ORT's CPU EP can't run a true
-fp16 `Conv`, it falls back to fp16 *weight-rounding* emulation (a lower bound on
-divergence) and says so. The faithful end-to-end check remains running the
-candidate weights through the browser pipeline before rollout.
+### Model-level levers (lower priority — would change the served weights)
 
-### Reduced-precision and structural levers
+These attack the per-tile cost rather than the tile count, but each would mutate
+the served weights (re-optimize + re-upload), which the project is avoiding; they
+are recorded for completeness.
 
-- **fp16 conversion** (**implemented but regressed on the test device** — see the
-  status note): `make optimize-models ARGS="--fp16"` runs `onnxconverter-common`'s
-  `convert_float_to_float16` (with `keep_io_types=True`) after the onnxsim step.
-  Layout is unchanged (NHWC) and the I/O dtypes are preserved (uint8 in, float32
-  out), so no `lib/` change is needed. It is numerically safe (gated by
-  `make evaluate-models`), but only a *speed* win on a device advertising
-  `shader-f16`; on a device without it the fp16 ops fall back to CPU mid-graph and
-  it is a large regression. Do not serve it as a single artifact — revisit only
-  behind runtime `shader-f16` detection that picks fp16 vs fp32 weights per
-  device. Always confirm the WebGPU speedup on a `shader-f16` device before
-  rollout.
+- **fp16 conversion** — tried and abandoned (see the status note). Numerically
+  safe but regressed WebGPU even on a `shader-f16` device on current ORT-web
+  (1.26): the fp16 ops fall back to CPU mid-graph. An ORT-web kernel-coverage
+  limitation, not fixable in our conversion. Only viable behind runtime
+  `shader-f16` detection serving fp32 to everyone else.
 - **int8 quantization** is *not* recommended for the WebGPU target: ORT-web's
   WebGPU EP has no efficient int8 conv path, so `ConvInteger`/`QDQ` ops fall back
   to CPU and reintroduce the per-tile GPU↔CPU round-trips Phase 1 deleted —
   likely a regression, not a speedup.
 - **NHWC → NCHW end-to-end** to delete the ~95 `Transpose` nodes: requires
   `packBatch` to emit `[N,3,H,W]` and the output reader to consume `[N,C,H,W]`
-  (lib change + test updates).
+  (lib change + test updates). fp32, no accuracy cost — the most promising
+  per-tile lever if model-weight changes are ever revisited.
 - **Opset upgrade (9 → 17+)** plus fusing the manual instance-norm blocks into
   `InstanceNormalization` and folding `Conv`+`BatchNormalization`, for fewer and
   faster kernels.

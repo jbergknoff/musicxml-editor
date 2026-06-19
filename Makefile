@@ -37,32 +37,17 @@ build: node_modules
 models: node_modules
 	$(bun) run scripts/download-models.ts
 
-# Optimize the downloaded weights with onnxsim (fixed input shape), the bridge
-# between the oemer originals and the served weights. Folds away the dynamic-
-# shape ops that force per-tile GPU<->CPU syncs on the WebGPU path, asserting the
-# result stays numerically identical. Run once, out of band, after `make models`
-# and before `make build`/`make upload-models`; rewrites public/models/ in place.
-# Add `ARGS="--fp16"` to also convert to half precision (lossy — vet with
-# `make evaluate-models` on the fp32 weights first). See docs/model-optimization-plan.md.
+# Optimize the downloaded weights with onnxsim (fixed input shape) — the only
+# transform turning the oemer originals into the served v2 weights. Folds away
+# the dynamic-shape ops that force per-tile GPU<->CPU syncs on the WebGPU path,
+# asserting the result stays numerically identical (the served weights predict
+# bit-for-bit the same as the public release). Run once, out of band, after
+# `make models` and before `make build`/`make upload-models`; rewrites
+# public/models/ in place. See docs/model-weights.md.
 optimize-models: models
 	docker compose run --rm python sh -c '\
 		pip install --quiet onnx==1.16.2 onnxsim==0.4.36 onnxruntime==1.18.1 numpy==1.26.4 \
-			onnxconverter-common==1.14.0 \
-		&& python scripts/optimize-models.py $(ARGS)'
-
-# Quality gate for reduced-precision weights (run via `make evaluate-models`).
-# Compares each served model against a candidate — by default its fp16
-# conversion — over real sample pages from samples/ (gitignored, user-provided),
-# reporting per-class argmax IoU and overall pixel agreement and failing if they
-# fall below threshold. The Phase 2 gate that must pass before fp16/int8 weights
-# can be served. One-off, out of band, like optimize-models. Pass extra flags
-# through ARGS, e.g. `make evaluate-models ARGS="--max-tiles 8"`.
-# See docs/model-optimization-plan.md.
-evaluate-models: models
-	docker compose run --rm python sh -c '\
-		pip install --quiet onnx==1.16.2 onnxruntime==1.18.1 numpy==1.26.4 \
-			onnxconverter-common==1.14.0 pillow==10.4.0 \
-		&& python scripts/evaluate-models.py --report docs/model-evaluation.md $(ARGS)'
+		&& python scripts/optimize-models.py'
 
 # Upload the weights to Netlify Blobs once, out of band (deploy-time upload was
 # too slow). Downloads them in the bun container, then runs `netlify blobs:set`

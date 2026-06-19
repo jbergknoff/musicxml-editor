@@ -124,9 +124,9 @@ the host. (On Netlify, `NETLIFY=true` makes the Makefile run the tools directly.
 
 ```sh
 make models           # download oemer ONNX weights -> public/models/ (local, once)
-make optimize-models  # onnxsim the weights to fixed-shape form (after models, out of band)
-make evaluate-models  # quality gate: argmax IoU of a candidate (default fp16) vs served weights (out of band)
+make optimize-models  # onnxsim the weights to served v2 form (after models, out of band)
 make upload-models    # upload weights to Netlify Blobs via the CLI (once, out of band)
+make compare-resolutions # headless: low-vs-high-res pipeline agreement on samples/ (out of band)
 make build            # bun build src/ -> dist/ (+ ORT wasm, pdf worker, public/)
 make dev              # build, then rebuild on change (run `make up` to serve)
 make up / make down   # start/stop the static server on :3456
@@ -181,33 +181,26 @@ The served weights are **not** the raw oemer originals: they are run through
 bridge between "downloaded" and "served" — onnxsim with a fixed input shape baked
 in (`manifest.inputShape`, batch 1). That folds away the ~1500 dynamic-shape ops
 per model whose mid-graph CPU execution forced a GPU↔CPU round-trip per tile on
-the WebGPU path; the script asserts the optimized graph is numerically identical
-to the original before rewriting `public/models/` in place. The pipeline feeds
-exactly `inputShape[0]` tiles per inference (`src/worker/omr.worker.ts`). See
-`docs/model-optimization-plan.md`.
+the WebGPU path; the script asserts the optimized graph is numerically *identical*
+to the original before rewriting `public/models/` in place, so the served weights
+predict bit-for-bit the same as the public oemer release. That graph
+simplification is the **only** change applied to the public weights — the served
+`v2` is full fp32 (an fp16 conversion was tried and reverted for regressing
+WebGPU; see below). `docs/model-weights.md` is the authoritative, detailed record
+of exactly how `v2` is produced. The pipeline feeds exactly `inputShape[0]` tiles
+per inference (`src/worker/omr.worker.ts`).
 
-The next planned optimizations are *lossy* (fp16 first; see the plan's Phase 2),
-so they can't reuse `optimize-models`' bitwise check. `scripts/evaluate-models.py`
-(`make evaluate-models`) is the quality gate for them: it runs a candidate
-(default: each model's fp16 conversion, or `--candidate-dir <dir>`) against the
-served weights over real pages in `samples/` (gitignored, user-provided) and
-reports per-class argmax IoU + pixel agreement, failing below threshold. It also
-writes a committable Markdown report to `docs/model-evaluation.md` recording the
-candidate, thresholds, and which sample pages were used; commit it as the record
-behind a rollout. Run it before serving any reduced-precision weights.
-
-To roll out new or re-optimized weights: bump `MODEL_VERSION`, then (out of band)
-`make models && make optimize-models && make upload-models`. The version bump
-gives the optimized bytes a fresh immutable URL; keep the previous version's
+The weights are intended to stay **static at `v2`**; speed work happens in the
+app code (resolution, tiling) rather than by re-optimizing/re-uploading models.
+If the weights ever genuinely change, roll out by bumping `MODEL_VERSION`, then
+(out of band) `make models && make optimize-models && make upload-models`. The
+version bump gives the bytes a fresh immutable URL; keep the previous version's
 blobs in the store so rollback is a one-line `MODEL_VERSION` revert + redeploy.
 
-For a lossy re-optimization the order matters, because `optimize-models` rewrites
-`public/models/` in place and the gate compares those files against their own
-fp16 conversion — so gate the fp32 weights *before* converting them:
-
-1. `make models && make optimize-models` (fp32, simplified — what's served today).
-2. `make evaluate-models` → confirm PASS, then commit `docs/model-evaluation.md`.
-3. `make optimize-models ARGS="--fp16"` to rewrite `public/models/` to half
-   precision (the served artifact).
-4. Bump `MODEL_VERSION`, `make upload-models`, deploy. Confirm the WebGPU
-   speedup on a `shader-f16` device before discarding the fp32 blobs.
+`make compare-resolutions` is the headless validation for the resolution
+speed/accuracy knob (`lib/input/preprocess.ts`): a Bun harness runs the real
+`v2` pipeline (`segment` + `detectStaves`) over `samples/` (gitignored,
+user-provided) at a high-resolution reference and lower candidate budgets, then
+reports whether the detected staff structure (and segmentation masks) still
+agree. Run it before lowering the pixel budget further. See
+`docs/model-weights.md`.
