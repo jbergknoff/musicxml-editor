@@ -2,6 +2,7 @@ import type {
   RgbaImage,
   SegmentationMasks,
   StaffStructure,
+  Transcription,
 } from "../../lib/types";
 
 /**
@@ -18,7 +19,8 @@ import type {
 export type ProgressPhase =
   | "loading-models"
   | "segmenting"
-  | "detecting-staves";
+  | "detecting-staves"
+  | "transcribing";
 
 export interface ProgressUpdate {
   phase: ProgressPhase;
@@ -44,6 +46,14 @@ export interface ResultMessage {
   requestId: number;
   masks: SegmentationMasks;
   staves: StaffStructure;
+  /**
+   * MusicXML string for all detected staves (one part per staff in order).
+   * Empty string when the TrOMR model is not yet available or no staves were
+   * detected.
+   */
+  musicXml: string;
+  /** Per-staff transcription results in the same order as `staves.staves`. */
+  transcriptions: Transcription[];
 }
 
 export interface ErrorMessage {

@@ -90,3 +90,39 @@ export interface SegmentationModelSpec {
   /** Number of output classes (channel-last softmax depth). */
   channels: number;
 }
+
+/**
+ * A single musical event decoded from TrOMR's token sequence. Each note (or
+ * rest) produced by one staff carries its pitch (or "rest"), duration, whether
+ * the duration is dotted, and any accidental. `measureIndex` is the 0-based
+ * measure the note falls in, derived from barline tokens.
+ */
+export interface NoteEvent {
+  pitch: string | "rest";
+  /** "natural" means no written accidental; null means the field was missing. */
+  accidental:
+    | "sharp"
+    | "flat"
+    | "natural"
+    | "double_sharp"
+    | "double_flat"
+    | null;
+  duration:
+    | "whole"
+    | "half"
+    | "quarter"
+    | "eighth"
+    | "sixteenth"
+    | "thirty_second";
+  dotted: boolean;
+  measureIndex: number;
+}
+
+/**
+ * The fully decoded transcription of one staff: all note events in order,
+ * segmented by the barline tokens TrOMR emitted.
+ */
+export interface Transcription {
+  notes: NoteEvent[];
+  measureCount: number;
+}

@@ -138,3 +138,37 @@ body {
   border-radius: 0.5rem;
   background: #fff;
 }
+
+.score-view {
+  margin-top: 2rem;
+}
+
+.score-view__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.score-view__download {
+  padding: 0.45rem 1rem;
+  font: inherit;
+  font-size: 0.9rem;
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 0.4rem;
+  cursor: pointer;
+}
+
+.score-view__download:hover {
+  background: #1d4ed8;
+}
+
+.score-view__canvas {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  background: #fff;
+  padding: 1rem;
+  overflow-x: auto;
+}

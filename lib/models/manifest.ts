@@ -33,12 +33,12 @@ export const MODEL_STORE_NAME = "models";
 /** Same-origin path prefix the weights are requested under. */
 export const MODEL_URL_PREFIX = "/models/";
 
-export type ModelId = "staffSymbol" | "symbolDetail";
+export type ModelId = "staffSymbol" | "symbolDetail" | "tromr";
 
 export interface ModelManifestEntry {
   /** Stable identifier used in code. */
   id: ModelId;
-  /** Where the build downloads the original weights from (oemer, MIT). */
+  /** Where the build downloads the original weights from. */
   sourceUrl: string;
   /**
    * Versioned file name. Doubles as the Netlify Blobs key, the local cache file
@@ -46,37 +46,67 @@ export interface ModelManifestEntry {
    */
   fileName: string;
   /**
-   * The fixed input shape the served (optimized) weights are baked to, channel-
-   * last `[N, H, W, C]`. `scripts/optimize-models.py` freezes this shape so
-   * onnxsim can fold the model's dynamic-shape machinery away (the prime suspect
-   * for the slow WebGPU path), and the pipeline must feed exactly `N` tiles per
-   * inference. `N = 1` keeps every dispatch small (immune to both backends' big-
-   * batch failures) and shapes fully static. See `docs/model-optimization-plan.md`.
+   * The fixed input shape the served (optimized) weights are baked to.
+   *
+   * For the oemer segmentation models this is channel-last `[N, H, W, C]`
+   * (uint8 NHWC). For TrOMR it is channel-first `[N, C, H, W]` (float32 NCHW)
+   * with `C = 1` (grayscale) and `H` fixed while `W` is the actual serving-time
+   * width — stored here as 0 to indicate "variable".
    */
   inputShape: readonly [number, number, number, number];
 }
 
-const RELEASE_BASE =
+const OEMER_RELEASE_BASE =
   "https://github.com/BreezeWhite/oemer/releases/download/checkpoints";
+
+/**
+ * The TrOMR ONNX model is the Polyphonic-TrOMR encoder-decoder (NetEase,
+ * Apache-2.0) pre-exported to ONNX by the homr project. The ONNX binary is
+ * data (not AGPL code) and carries the original Apache-2.0 provenance.
+ */
+const TROMR_SOURCE_URL =
+  "https://github.com/liebharc/homr/releases/download/models/tromr_model.onnx";
 
 export const MODEL_MANIFEST: Record<ModelId, ModelManifestEntry> = {
   staffSymbol: {
     id: "staffSymbol",
-    sourceUrl: `${RELEASE_BASE}/1st_model.onnx`,
+    sourceUrl: `${OEMER_RELEASE_BASE}/1st_model.onnx`,
     // <source>-<arch>-<role>.<version>.onnx
     fileName: `oemer-unet_big-staffline-symbol-seg.${MODEL_VERSION}.onnx`,
     inputShape: [1, 256, 256, 3],
   },
   symbolDetail: {
     id: "symbolDetail",
-    sourceUrl: `${RELEASE_BASE}/2nd_model.onnx`,
+    sourceUrl: `${OEMER_RELEASE_BASE}/2nd_model.onnx`,
     fileName: `oemer-seg_net-symbol-class-seg.${MODEL_VERSION}.onnx`,
     inputShape: [1, 288, 288, 3],
+  },
+  tromr: {
+    id: "tromr",
+    sourceUrl: TROMR_SOURCE_URL,
+    fileName: `tromr-polyphonic.${MODEL_VERSION}.onnx`,
+    // [N, C, H, W] — batch 1, 1 grayscale channel, height 128, width variable (0 = variable).
+    inputShape: [1, 1, 128, 0],
   },
 };
 
 export const MODEL_ENTRIES: ModelManifestEntry[] =
   Object.values(MODEL_MANIFEST);
+
+/**
+ * TrOMR-specific inference spec: the tensor names and input height the
+ * transcription code uses. These are the names baked into the ONNX graph
+ * produced by the NetEase → homr export pipeline.
+ */
+export const TROMR_SPEC = {
+  inputName: "input",
+  outputNames: {
+    rhythm: "rhythm",
+    pitch: "pitch",
+    lift: "lift",
+  },
+  inputHeight: MODEL_MANIFEST.tromr.inputShape[2],
+} as const;
 
 /** The same-origin URL a model is fetched from in the browser. */
 export function modelUrl(entry: ModelManifestEntry): string {

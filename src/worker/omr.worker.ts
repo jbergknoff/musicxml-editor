@@ -1,11 +1,16 @@
-import { MODEL_MANIFEST } from "../../lib/models/manifest";
-import type { InferenceBackend } from "../../lib/runtime/inference-backend";
+import { MODEL_MANIFEST, TROMR_SPEC } from "../../lib/models/manifest";
+import type {
+  InferenceBackend,
+  InferenceSession,
+} from "../../lib/runtime/inference-backend";
 import {
   type SegmentationModels,
   segment,
 } from "../../lib/segmentation/segment";
 import { detectStaves } from "../../lib/staves/detect-staves";
-import { loadSegmentationModels } from "../models/registry";
+import { buildMusicXML } from "../../lib/assembly/musicxml-builder";
+import { transcribeStaves } from "../../lib/transcription/transcribe";
+import { loadSegmentationModels, loadTrOMRModel } from "../models/registry";
 import { createWebBackend } from "../runtime/web-backend";
 import type {
   OmrConfig,
@@ -57,6 +62,7 @@ const FIXED_BATCH_SIZE = MODEL_MANIFEST.staffSymbol.inputShape[0];
 // so it's resolved here exactly once per worker lifetime.
 let backendPromise: Promise<InferenceBackend> | null = null;
 let modelsPromise: Promise<SegmentationModels> | null = null;
+let tromrPromise: Promise<InferenceSession> | null = null;
 
 function getBackend(config: OmrConfig): Promise<InferenceBackend> {
   if (backendPromise === null) {
@@ -91,6 +97,29 @@ function getModels(
   return modelsPromise;
 }
 
+function getTrOMR(
+  backend: InferenceBackend,
+  requestId: number,
+): Promise<InferenceSession> {
+  if (tromrPromise === null) {
+    tromrPromise = loadTrOMRModel(backend, {
+      onAssetLoading: (entry) => {
+        post({
+          type: "progress",
+          requestId,
+          phase: "loading-models",
+          fraction: 0,
+          detail: entry.fileName,
+        });
+      },
+    }).catch((error) => {
+      tromrPromise = null;
+      throw error;
+    });
+  }
+  return tromrPromise;
+}
+
 async function process(
   config: OmrConfig,
   requestId: number,
@@ -119,14 +148,49 @@ async function process(
   post({ type: "progress", requestId, phase: "detecting-staves", fraction: 1 });
   const stavesStart = performance.now();
   const staves = detectStaves(masks.staff);
-  console.info(
-    `[omr] ${image.width}x${image.height} via ${backend.provider}: ` +
-      `segment ${Math.round(segmentMs)}ms, ` +
-      `detect-staves ${Math.round(performance.now() - stavesStart)}ms`,
-  );
+  const stavesMs = performance.now() - stavesStart;
+
+  // Transcribe each detected staff with TrOMR.
+  let musicXml = "";
+  let transcriptions: import("../../lib/types").Transcription[] = [];
+  if (staves.staves.length > 0) {
+    const tromrSession = await getTrOMR(backend, requestId);
+    post({ type: "progress", requestId, phase: "transcribing", fraction: 0 });
+    const transcribeStart = performance.now();
+    transcriptions = await transcribeStaves(
+      tromrSession,
+      TROMR_SPEC,
+      image,
+      staves.staves,
+      {
+        onProgress: (done, total) => {
+          post({
+            type: "progress",
+            requestId,
+            phase: "transcribing",
+            fraction: done / total,
+          });
+        },
+      },
+    );
+    const allNotes = transcriptions.flatMap((t) => t.notes);
+    musicXml = buildMusicXML(allNotes);
+    console.info(
+      `[omr] ${image.width}x${image.height} via ${backend.provider}: ` +
+        `segment ${Math.round(segmentMs)}ms, ` +
+        `detect-staves ${Math.round(stavesMs)}ms, ` +
+        `transcribe ${Math.round(performance.now() - transcribeStart)}ms`,
+    );
+  } else {
+    console.info(
+      `[omr] ${image.width}x${image.height} via ${backend.provider}: ` +
+        `segment ${Math.round(segmentMs)}ms, ` +
+        `detect-staves ${Math.round(stavesMs)}ms (no staves detected)`,
+    );
+  }
 
   // Transfer the mask buffers (~4 MB each) rather than copying them back.
-  post({ type: "result", requestId, masks, staves }, [
+  post({ type: "result", requestId, masks, staves, musicXml, transcriptions }, [
     masks.staff.data.buffer,
     masks.symbols.data.buffer,
     masks.stemsRests.data.buffer,

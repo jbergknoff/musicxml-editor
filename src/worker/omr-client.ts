@@ -2,6 +2,7 @@ import type {
   RgbaImage,
   SegmentationMasks,
   StaffStructure,
+  Transcription,
 } from "../../lib/types";
 import type {
   OmrConfig,
@@ -20,6 +21,8 @@ import type {
 export interface OmrResult {
   masks: SegmentationMasks;
   staves: StaffStructure;
+  musicXml: string;
+  transcriptions: Transcription[];
 }
 
 export interface OmrClient {
@@ -89,7 +92,12 @@ export function createOmrClient(config: OmrConfig): Promise<OmrClient> {
         case "result": {
           const job = jobs.get(message.requestId);
           jobs.delete(message.requestId);
-          job?.resolve({ masks: message.masks, staves: message.staves });
+          job?.resolve({
+            masks: message.masks,
+            staves: message.staves,
+            musicXml: message.musicXml,
+            transcriptions: message.transcriptions,
+          });
           break;
         }
         case "error": {

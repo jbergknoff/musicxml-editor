@@ -4,19 +4,21 @@ import type {
   RgbaImage,
   SegmentationMasks,
   StaffStructure,
+  Transcription,
 } from "../lib/types";
 import { FileDrop } from "./components/FileDrop";
 import { InferenceSettings } from "./components/InferenceSettings";
+import { ScoreView } from "./components/ScoreView";
 import { SegmentationView } from "./components/SegmentationView";
 import { decodeFile } from "./input/decode";
 import type { OmrClient } from "./worker/omr-client";
 import type { OmrConfig, ProgressUpdate } from "./worker/protocol";
 
 /**
- * Phases 1–2 app: drop a score, run the two oemer segmentation UNets and the
- * staff-structure detection in a worker, then overlay the detected stafflines,
- * symbols, and five-line staves on the page. Decoding stays on the main thread
- * (pdf.js / canvas are DOM-bound); the heavy inference runs off it.
+ * Phases 1–3 app: drop a score, run the two oemer segmentation UNets, detect
+ * staves, transcribe each staff with TrOMR, and render the recovered MusicXML
+ * via OSMD. Decoding stays on the main thread (pdf.js / canvas are DOM-bound);
+ * all inference runs off it in the OMR worker.
  */
 
 interface AppProps {
@@ -30,6 +32,9 @@ interface Result {
   image: RgbaImage;
   masks: SegmentationMasks;
   staves: StaffStructure;
+  musicXml: string;
+  transcriptions: Transcription[];
+  fileName: string;
 }
 
 /** Compose the status line from a worker progress update. */
@@ -38,7 +43,7 @@ function describeProgress(update: ProgressUpdate, slow: boolean): string {
     case "loading-models": {
       return update.detail !== undefined
         ? `Loading ${update.detail}…`
-        : "Loading segmentation models…";
+        : "Loading models…";
     }
     case "segmenting": {
       // On the WASM backend segmentation runs hundreds of tiles on the CPU and
@@ -48,6 +53,10 @@ function describeProgress(update: ProgressUpdate, slow: boolean): string {
     }
     case "detecting-staves": {
       return "Detecting staves…";
+    }
+    case "transcribing": {
+      const pct = Math.round(update.fraction * 100);
+      return `Transcribing… ${pct}%`;
     }
   }
 }
@@ -71,12 +80,24 @@ export function App({ client, config, onConfigChange }: AppProps) {
       const image = resizeToPixelBudget(decoded);
 
       const slow = client.provider !== "webgpu";
-      const { masks, staves } = await client.process(image, (update) => {
-        setStatus(describeProgress(update, slow));
-      });
+      const { masks, staves, musicXml, transcriptions } = await client.process(
+        image,
+        (update) => {
+          setStatus(describeProgress(update, slow));
+        },
+      );
 
       setStatus(null);
-      setResult({ image, masks, staves });
+      // Strip the extension from the original filename for the download suggestion.
+      const baseName = file.name.replace(/\.[^.]+$/, "");
+      setResult({
+        image,
+        masks,
+        staves,
+        musicXml,
+        transcriptions,
+        fileName: `${baseName}.musicxml`,
+      });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
       setStatus(null);
@@ -108,11 +129,16 @@ export function App({ client, config, onConfigChange }: AppProps) {
       {error !== null ? <p class="app__error">Error: {error}</p> : null}
 
       {result !== null ? (
-        <SegmentationView
-          image={result.image}
-          masks={result.masks}
-          staves={result.staves}
-        />
+        <>
+          <SegmentationView
+            image={result.image}
+            masks={result.masks}
+            staves={result.staves}
+          />
+          {result.musicXml !== "" ? (
+            <ScoreView musicXml={result.musicXml} fileName={result.fileName} />
+          ) : null}
+        </>
       ) : null}
     </main>
   );

@@ -1,4 +1,7 @@
-import type { InferenceBackend } from "../../lib/runtime/inference-backend";
+import type {
+  InferenceBackend,
+  InferenceSession,
+} from "../../lib/runtime/inference-backend";
 import {
   MODEL_MANIFEST,
   type ModelManifestEntry,
@@ -63,4 +66,17 @@ export async function loadSegmentationModels(
   const symbolDetailSession = await backend.createSession(symbolDetailBytes);
 
   return createSegmentationModels(staffSymbolSession, symbolDetailSession);
+}
+
+/**
+ * Download (or read from cache) the TrOMR model and create an inference
+ * session on the given backend.
+ */
+export async function loadTrOMRModel(
+  backend: InferenceBackend,
+  options: LoadModelsOptions = {},
+): Promise<InferenceSession> {
+  options.onAssetLoading?.(MODEL_MANIFEST.tromr);
+  const bytes = await fetchModelBytes(MODEL_MANIFEST.tromr);
+  return backend.createSession(bytes);
 }
