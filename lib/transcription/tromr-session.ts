@@ -103,16 +103,8 @@ async function runDecoder(
     () => new Float32Array(0),
   );
 
-  // On the first step, pass the full encoder context. On subsequent steps,
-  // pass only the first encoder token — the cross-attention K/V values are
-  // cached inside cache_in after step 0.
-  const fullContext = context;
-  const reducedContext = context.slice(0, 512); // first encoder token
-
   for (let step = 0; step < maxDecodingSteps; step++) {
-    const isFirstStep = step === 0;
-    const contextData = isFirstStep ? fullContext : reducedContext;
-    const contextSeqLen = isFirstStep ? seqLen : 1;
+    const contextSeqLen = seqLen;
 
     const feeds: Record<string, Tensor> = {
       rhythms: {
@@ -142,7 +134,7 @@ async function runDecoder(
       },
       context: {
         type: "float32",
-        data: contextData,
+        data: context,
         dims: [1, contextSeqLen, 512],
       },
       cache_len: {
