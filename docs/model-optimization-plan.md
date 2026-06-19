@@ -73,16 +73,20 @@ harness ran the real `v2` pipeline at a 3 M px reference and lower budgets over
 two real pages (a 9-staff and a 10-staff piano score) and compared the detected
 staff structure. Staff detection held to **1 M px** on both pages — same staff
 count, stafflines within **≤0.1 interline units** of the 3 M px reference. The
-first failure was at **0.75 M px**, where the denser 9-staff page lost a staff
-(8 vs 9); the 10-staff page still passed. So **1 M px is both safe and the floor**
-for a global default — 0.75 M px starts dropping staves on busy pages. (Mask IoU
+first failure was at **0.75 M px**, where the 9-staff page lost a staff (8 vs 9);
+the 10-staff page still passed. Notably it is *not* the busier music that fails
+first: the page that dropped a staff is the sparser arrangement, but it has the
+finer staff spacing (reference unit 11.7 px vs 12.8 px), so when downscaled its
+stafflines thin out below the detector's threshold sooner — the limiting factor
+is staff spacing, not note density. So **1 M px is both safe and the floor** for a
+global default — below it, finely-engraved pages start dropping staves. (Mask IoU
 is reported too but is informational and dominated by thin-line resampling jitter
 unless dilated; staff structure is the trustworthy signal.) Net: the resolution
 lever is tapped out at 1 M px; further speedup would need the model-level levers
 below, which the project is avoiding.
 
 Full run (mask IoU dilation-tolerant at ±2 px; the harness exits non-zero because
-0.75 M px failed on the denser page). Note the per-tile `[omr]` timings are
+0.75 M px lost a staff on the finer-spaced page). Note the per-tile `[omr]` timings are
 CPU-EP — the harness runs on onnxruntime-node, not WebGPU, so its wall-clock is
 not the browser figure; it exists to compare *outputs* across resolutions, not to
 measure speed:
