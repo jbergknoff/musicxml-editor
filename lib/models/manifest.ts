@@ -98,8 +98,8 @@ export const MODEL_MANIFEST: Record<ModelId, ModelManifestEntry> = {
     sourceUrl: `${TROMR_RELEASE_BASE}/encoder_pytorch_model_${TROMR_CHECKPOINT}.zip`,
     sourceIsZip: true,
     fileName: `tromr-encoder.${MODEL_VERSION}.onnx`,
-    // [N, C, H, W] — batch 1, 1 grayscale channel, height 128, width variable (0 = variable).
-    inputShape: [1, 1, 128, 0],
+    // [N, C, H, W] — batch 1, 1 grayscale channel, fixed 256 × 1280.
+    inputShape: [1, 1, 256, 1280],
   },
   tromrDecoder: {
     id: "tromrDecoder",
@@ -122,8 +122,10 @@ export const MODEL_ENTRIES: ModelManifestEntry[] =
  *   - heads=8, head_dim=512/8=64, so each cache tensor is [1, 8, seq, 64]
  */
 export const TROMR_CONSTANTS = {
-  /** Input height (pixels) for the staff crop fed to the encoder. */
-  inputHeight: 128,
+  /** Fixed input height (pixels) the TrOMR encoder ONNX was exported at. */
+  inputHeight: 256,
+  /** Fixed input width (pixels) the TrOMR encoder ONNX was exported at. */
+  inputWidth: 1280,
   /** Number of KV-cache tensors (decoder_depth × 4). */
   numCacheTensors: 32,
   /** Number of attention heads in the decoder. */

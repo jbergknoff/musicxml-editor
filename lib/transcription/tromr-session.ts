@@ -48,6 +48,7 @@ async function runEncoder(
   const { data, width } = prepareStaffTensor(
     cropped,
     TROMR_CONSTANTS.inputHeight,
+    TROMR_CONSTANTS.inputWidth,
   );
 
   const inputName = encoderSession.inputNames[0];

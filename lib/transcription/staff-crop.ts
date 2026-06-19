@@ -4,11 +4,9 @@
  */
 import type { RgbaImage, Staff } from "../types";
 
-/**
- * The target height TrOMR was trained at. The staff strip is scaled to this
- * height (preserving aspect ratio) before being fed to the model.
- */
-export const TROMR_INPUT_HEIGHT = 128;
+/** Fixed input dimensions the TrOMR encoder ONNX was exported at. */
+export const TROMR_INPUT_HEIGHT = 256;
+export const TROMR_INPUT_WIDTH = 1280;
 
 /**
  * Crop the bounding band for one staff from `image`, adding vertical padding
@@ -43,22 +41,27 @@ export function cropStaff(image: RgbaImage, staff: Staff): RgbaImage {
 }
 
 /**
- * Resize an RGBA image to the given target height using bilinear interpolation,
- * scaling width proportionally. Returns a new RgbaImage.
+ * Resize an RGBA image to the given exact dimensions using bilinear
+ * interpolation. Does not preserve aspect ratio — the caller is responsible
+ * for computing the target size.
  */
-function resizeToHeight(image: RgbaImage, targetHeight: number): RgbaImage {
-  const scale = targetHeight / image.height;
-  const targetWidth = Math.max(1, Math.round(image.width * scale));
+function resizeToSize(
+  image: RgbaImage,
+  targetWidth: number,
+  targetHeight: number,
+): RgbaImage {
+  const scaleX = targetWidth / image.width;
+  const scaleY = targetHeight / image.height;
   const data = new Uint8ClampedArray(targetWidth * targetHeight * 4);
 
   for (let y = 0; y < targetHeight; y++) {
-    const sourceY = y / scale;
+    const sourceY = y / scaleY;
     const y0 = Math.floor(sourceY);
     const y1 = Math.min(y0 + 1, image.height - 1);
     const yFraction = sourceY - y0;
 
     for (let x = 0; x < targetWidth; x++) {
-      const sourceX = x / scale;
+      const sourceX = x / scaleX;
       const x0 = Math.floor(sourceX);
       const x1 = Math.min(x0 + 1, image.width - 1);
       const xFraction = sourceX - x0;
@@ -81,27 +84,41 @@ function resizeToHeight(image: RgbaImage, targetHeight: number): RgbaImage {
 }
 
 /**
- * Prepare a cropped staff strip for TrOMR inference: resize to `targetHeight`
- * preserving aspect ratio, convert to grayscale, and normalize to [0, 1].
+ * Prepare a cropped staff strip for TrOMR inference: scale to fit within
+ * [targetHeight × targetWidth] preserving aspect ratio, convert to grayscale,
+ * normalize to [0, 1], and pad the remainder with white (1.0) so the output
+ * tensor is always exactly [targetHeight × targetWidth].
  *
- * Returns a `Float32Array` of length `targetHeight × width` in row-major
- * order (the NCHW channel dimension is 1, so the layout is `[H, W]`), plus
- * the width so the caller can build the [1, 1, H, W] tensor.
+ * Returns a Float32Array in row-major order for a [1, 1, H, W] NCHW tensor.
  */
 export function prepareStaffTensor(
   image: RgbaImage,
   targetHeight = TROMR_INPUT_HEIGHT,
+  targetWidth = TROMR_INPUT_WIDTH,
 ): { data: Float32Array; width: number } {
-  const resized = resizeToHeight(image, targetHeight);
-  const { width, height } = resized;
-  const data = new Float32Array(height * width);
+  // Scale to fit within the bounding box maintaining aspect ratio.
+  const scale = Math.min(
+    targetHeight / image.height,
+    targetWidth / image.width,
+  );
+  const scaledHeight = Math.max(1, Math.round(image.height * scale));
+  const scaledWidth = Math.max(1, Math.round(image.width * scale));
 
-  for (let index = 0; index < height * width; index++) {
-    const r = resized.data[index * 4];
-    const g = resized.data[index * 4 + 1];
-    const b = resized.data[index * 4 + 2];
-    // ITU-R BT.601 luma; divide by 255 to normalize to [0, 1].
-    data[index] = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  const resized = resizeToSize(image, scaledWidth, scaledHeight);
+
+  // Initialize to white (1.0 = background), then copy the scaled content
+  // into the top-left corner, leaving right/bottom as white padding.
+  const data = new Float32Array(targetHeight * targetWidth).fill(1.0);
+
+  for (let y = 0; y < scaledHeight; y++) {
+    for (let x = 0; x < scaledWidth; x++) {
+      const r = resized.data[(y * scaledWidth + x) * 4];
+      const g = resized.data[(y * scaledWidth + x) * 4 + 1];
+      const b = resized.data[(y * scaledWidth + x) * 4 + 2];
+      // ITU-R BT.601 luma; divide by 255 to normalize to [0, 1].
+      data[y * targetWidth + x] = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    }
   }
-  return { data, width };
+
+  return { data, width: targetWidth };
 }

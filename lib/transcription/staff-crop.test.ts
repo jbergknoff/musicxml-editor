@@ -4,6 +4,7 @@ import {
   cropStaff,
   prepareStaffTensor,
   TROMR_INPUT_HEIGHT,
+  TROMR_INPUT_WIDTH,
 } from "./staff-crop";
 
 function solidImage(
@@ -67,11 +68,15 @@ describe("cropStaff", () => {
 });
 
 describe("prepareStaffTensor", () => {
-  it("outputs the target height and scales width", () => {
+  it("outputs a fixed [targetHeight × targetWidth] tensor", () => {
     const image = solidImage(256, 64);
-    const { data, width } = prepareStaffTensor(image, TROMR_INPUT_HEIGHT);
-    expect(width).toBe(512); // 256 * (128 / 64)
-    expect(data.length).toBe(TROMR_INPUT_HEIGHT * width);
+    const { data, width } = prepareStaffTensor(
+      image,
+      TROMR_INPUT_HEIGHT,
+      TROMR_INPUT_WIDTH,
+    );
+    expect(width).toBe(TROMR_INPUT_WIDTH);
+    expect(data.length).toBe(TROMR_INPUT_HEIGHT * TROMR_INPUT_WIDTH);
   });
 
   it("normalizes values to [0, 1]", () => {
@@ -93,7 +98,8 @@ describe("prepareStaffTensor", () => {
 
   it("produces 0.0 for a fully black image", () => {
     const image = solidImage(16, 16, 0, 0, 0);
-    const { data } = prepareStaffTensor(image, 16);
+    // Pass matching targetWidth so there is no white padding.
+    const { data } = prepareStaffTensor(image, 16, 16);
     for (const value of data) {
       expect(value).toBeCloseTo(0.0, 5);
     }
