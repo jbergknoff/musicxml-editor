@@ -82,8 +82,8 @@ export async function runTrOMR(
   // for the segmentation models, but TrOMR emits int64 (BigInt64Array in ORT-web)
   // or int32. Cast through unknown to handle the actual runtime type.
   return {
-    rhythm: toNumbers((rhythmData as unknown) as Int32Array | BigInt64Array),
-    pitch: toNumbers((pitchData as unknown) as Int32Array | BigInt64Array),
-    lift: toNumbers((liftData as unknown) as Int32Array | BigInt64Array),
+    rhythm: toNumbers(rhythmData as unknown as Int32Array | BigInt64Array),
+    pitch: toNumbers(pitchData as unknown as Int32Array | BigInt64Array),
+    lift: toNumbers(liftData as unknown as Int32Array | BigInt64Array),
   };
 }
