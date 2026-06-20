@@ -136,4 +136,99 @@ describe("buildMusicXML", () => {
     expect(xml.indexOf("<clef>")).toBeLessThan(firstMeasureEnd);
     expect(secondMeasureContent).not.toContain("<clef>");
   });
+
+  it("defaults to treble clef, C major, and 4/4 when no attributes are given", () => {
+    const xml = buildMusicXML([note("C4", "quarter")]);
+    expect(xml).toContain("<sign>G</sign><line>2</line>");
+    expect(xml).toContain("<fifths>0</fifths>");
+    expect(xml).toContain("<beats>4</beats><beat-type>4</beat-type>");
+  });
+
+  it("emits a supplied clef, key, and time signature", () => {
+    const xml = buildMusicXML([note("C3", "quarter")], {
+      attributes: {
+        clef: { sign: "F", line: 4 },
+        keyFifths: -2,
+        time: { beats: 6, beatType: 8 },
+      },
+    });
+    expect(xml).toContain("<sign>F</sign><line>4</line>");
+    expect(xml).toContain("<fifths>-2</fifths>");
+    expect(xml).toContain("<beats>6</beats><beat-type>8</beat-type>");
+  });
+
+  it("fills in defaults for attribute fields that are absent", () => {
+    // Only the key was recovered; clef and time fall back to defaults.
+    const xml = buildMusicXML([note("C4", "quarter")], {
+      attributes: { keyFifths: 1 },
+    });
+    expect(xml).toContain("<fifths>1</fifths>");
+    expect(xml).toContain("<sign>G</sign><line>2</line>");
+    expect(xml).toContain("<beats>4</beats><beat-type>4</beat-type>");
+  });
+
+  it("accepts a custom part name via options", () => {
+    const xml = buildMusicXML([note("C4", "quarter")], { partName: "Piano" });
+    expect(xml).toContain("<part-name>Piano</part-name>");
+  });
+
+  it("emits a partial <attributes> before a note carrying a mid-staff change", () => {
+    const xml = buildMusicXML([
+      note("C4", "quarter", 0),
+      note("C3", "quarter", 0, {
+        attributeChange: { clef: { sign: "F", line: 4 } },
+      }),
+    ]);
+    // The change is a partial attributes block: clef only, no divisions/key/time.
+    const changeIndex = xml.indexOf("<sign>F</sign><line>4</line>");
+    expect(changeIndex).toBeGreaterThan(-1);
+    const changeBlock = xml.slice(
+      xml.lastIndexOf("<attributes>"),
+      xml.indexOf("</attributes>", changeIndex) + "</attributes>".length,
+    );
+    expect(changeBlock).not.toContain("<divisions>");
+    expect(changeBlock).not.toContain("<key>");
+    expect(changeBlock).not.toContain("<time>");
+  });
+
+  it("places a mid-measure change before its note, after the prior note", () => {
+    const xml = buildMusicXML([
+      note("C4", "quarter", 0),
+      note("D4", "quarter", 0, { attributeChange: { keyFifths: 3 } }),
+    ]);
+    const firstNoteEnd = xml.indexOf("</note>");
+    const changeIndex = xml.indexOf("<fifths>3</fifths>");
+    const secondNoteIndex = xml.indexOf("<step>D</step>");
+    expect(changeIndex).toBeGreaterThan(firstNoteEnd);
+    expect(changeIndex).toBeLessThan(secondNoteIndex);
+  });
+
+  it("emits <beam> elements for a run of eighth notes", () => {
+    const xml = buildMusicXML([
+      note("C4", "eighth", 0),
+      note("D4", "eighth", 0),
+    ]);
+    expect(xml).toContain('<beam number="1">begin</beam>');
+    expect(xml).toContain('<beam number="1">end</beam>');
+  });
+
+  it("does not emit <beam> for a lone eighth", () => {
+    const xml = buildMusicXML([
+      note("C4", "eighth", 0),
+      note("D4", "quarter", 0),
+    ]);
+    expect(xml).not.toContain("<beam");
+  });
+
+  it("uses the time signature to group beams", () => {
+    // Six eighths under 6/8 beam in two groups of three, not three of two.
+    const notes = Array.from({ length: 6 }, () => note("C4", "eighth", 0));
+    const xml = buildMusicXML(notes, {
+      attributes: { time: { beats: 6, beatType: 8 } },
+    });
+    expect((xml.match(/<beam number="1">begin<\/beam>/g) ?? []).length).toBe(2);
+    expect(
+      (xml.match(/<beam number="1">continue<\/beam>/g) ?? []).length,
+    ).toBe(2);
+  });
 });

@@ -118,6 +118,30 @@ export interface NoteEvent {
   measureIndex: number;
   /** True when this note is simultaneous with the preceding note (MusicXML `<chord/>`). */
   chord: boolean;
+  /**
+   * A clef/key/time change that takes effect immediately *before* this note (a
+   * mid-staff change, e.g. a modulation at a measure start or a clef change
+   * partway through). Only the changed fields are set. Absent on most notes; the
+   * staff's opening attributes are carried separately (see {@link ScoreAttributes}).
+   */
+  attributeChange?: ScoreAttributes;
+}
+
+/**
+ * The leading score attributes recovered from one staff's token stream: the
+ * opening clef, key signature, and time signature that precede its first note.
+ * Every field is optional — TrOMR may not emit a given symbol, in which case the
+ * builder falls back to its defaults (treble clef, C major, 4/4). Mid-staff
+ * changes (a later clef or key change) are out of scope; only the opening
+ * attributes are captured.
+ */
+export interface ScoreAttributes {
+  /** Clef sign ("G"/"F"/"C") and staff line it sits on (1 = bottom line). */
+  clef?: { sign: string; line: number };
+  /** Key signature as a fifths count: negative = flats, positive = sharps. */
+  keyFifths?: number;
+  /** Time signature numerator (`beats`) over denominator (`beatType`). */
+  time?: { beats: number; beatType: number };
 }
 
 /**
@@ -129,4 +153,16 @@ export interface Transcription {
   notes: NoteEvent[];
   measureCount: number;
   rawRhythm: string[];
+  /** Leading clef/key/time recovered from this staff's tokens. */
+  attributes: ScoreAttributes;
+}
+
+/**
+ * One system: the staves that sound together at the same point in the music
+ * (top to bottom), grouped from the page's staves (e.g. the treble + bass of a
+ * piano grand staff). A single-staff system has one entry. Systems are ordered
+ * in time, so concatenating them yields the part's full measure sequence.
+ */
+export interface ScoreSystem {
+  staves: Transcription[];
 }

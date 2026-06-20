@@ -28,6 +28,14 @@ export interface ProgressUpdate {
   fraction: number;
   /** Extra context for the phase (e.g. the model file being loaded). */
   detail?: string;
+  /**
+   * 0-based index of the page being recognized, for multi-page PDFs. Set by the
+   * importer (the worker processes one page at a time and does not know the page
+   * count); absent for single-page inputs.
+   */
+  page?: number;
+  /** Total page count when recognizing a multi-page input; absent otherwise. */
+  pageCount?: number;
 }
 
 /** Posted once, after the worker resolves its inference backend. */
@@ -46,11 +54,13 @@ export interface ResultMessage {
   requestId: number;
   masks: SegmentationMasks;
   staves: StaffStructure;
-  /**
-   * MusicXML string for all detected staves (one part per staff in order).
-   * Empty string when the TrOMR model is not yet available or no staves were
-   * detected.
-   */
+   /**
+    * MusicXML for this page: staves grouped into systems (a treble over a bass
+    * becomes one grand-staff system) and assembled into a single part. Empty
+    * string when the TrOMR model is not yet available or no staves were detected.
+    * The multi-page importer rebuilds across pages from `transcriptions`; this
+    * field is the standalone (single-page) rendering.
+    */
   musicXml: string;
   /** Per-staff transcription results in the same order as `staves.staves`. */
   transcriptions: Transcription[];

@@ -64,7 +64,10 @@ Phase 1 segmentation (all of `lib/` is runtime-agnostic and unit-tested):
 - `src/models/registry.ts` — fetches the weights from `/models/` (same-origin,
   required under COEP) and caches them in Cache Storage.
 - `src/input/decode.ts` — File → `RgbaImage` (raster via `createImageBitmap`,
-  PDF first page via pdf.js).
+  PDF first page via pdf.js). `decodeFilePages` returns one raster *per* page —
+  every page of a multi-page PDF, or a single-element array for a raster image —
+  which the public `importFile` recognizes page by page (`decodeFile`, the
+  single-page form, still backs the standalone `App.tsx` preview).
 - `src/App.tsx` + `src/components/` — drop a score, run segmentation, overlay the
   masks with per-layer toggles.
 
@@ -81,6 +84,13 @@ Phase 2 staff structure (pure algorithm in `lib/staves/`, fully unit-tested):
   size, cut the lines into five-line staves (new staff at a large gap or every
   fifth line), drop non-five-line groups, and measure each staff's horizontal
   extent from a vertical projection over its own row band.
+- `lib/staves/system-grouping.ts` — `groupSystems` turns the page's per-staff
+  transcriptions (top to bottom) into `ScoreSystem`s. It pairs a treble staff
+  directly over a bass staff into one two-staff (grand-staff) system using the
+  recovered opening clefs — a robust, image-free signal that targets the piano
+  case and degrades to consecutive single-staff systems if a clef was missed
+  (rather than risk a fragile brace detection). Systems come out in reading
+  order, so concatenating them (within and across pages) gives the part timeline.
 - `src/components/SegmentationView.tsx` strokes each detected staff's bounding
   box and five lines over the canvas (toggleable) and reports the staff count +
   unit size.
@@ -108,14 +118,62 @@ Phase 3 transcription + MusicXML assembly:
   with `chord: true` (and the same measure index). Durations cover whole through
   32nd (dotted variants included); barline tokens increment `measureIndex`;
   grace notes, tuplets, and unsupported tokens are skipped.
+- `lib/transcription/decode-attributes.ts` — `decodeAttributes` reads the
+  *leading* clef / key / time tokens that precede a staff's first note into a
+  `ScoreAttributes`. Clefs parse as sign+line (`clef_F4` → `{sign:"F", line:4}`);
+  key signatures as a fifths count (`keySignature_-2` → −2); time signatures as a
+  **numerator/denominator pair** of consecutive `timeSignature/N` tokens
+  (`timeSignature/6`,`timeSignature/8` → 6/8) — an unpaired/ambiguous run is left
+  unset. It also exports the per-token parsers (`parseClefToken`, `parseKeyToken`,
+  `parseTimeToken`, `resolveTime`) reused by `decode-tokens.ts`.
+  **Mid-staff changes:** a clef/key/time token that appears *after* the first
+  note is a mid-staff change. `decodeTokens` accumulates such tokens (across
+  barlines, so a key change at a measure start counts) and attaches them to the
+  *following* note as `NoteEvent.attributeChange` (only the changed fields). The
+  builder emits these as a partial `<attributes>` before that note. The opening
+  run (before the first note) is consumed but not attached — it is the document's
+  opening attributes. A change with no following note is dropped.
 - `lib/transcription/transcribe.ts` — iterates over detected staves, calls
-  `runTrOMR` then `decodeTokens` for each, collects `Transcription` results
-  (including `rawRhythm` for the debug panel).
+  `runTrOMR`, then `decodeTokens` and `decodeAttributes` for each, collecting
+  `Transcription` results (`rawRhythm` for the debug panel, `attributes` for the
+  opening clef/key/time).
 - `lib/assembly/musicxml-builder.ts` — assembles MusicXML 3.1 from a flat
   `NoteEvent[]`. Notes with `chord: true` get `<chord/>` before `<pitch>` so
   OSMD stacks them at the same time position. Empty measures get a whole-measure
   rest. Measure count is derived from the maximum `measureIndex` (not the last
   note's), since notes concatenated across staves each renumber measures from 0.
+  The first measure's `<attributes>` come from the optional `BuildOptions.attributes`
+  (the first staff's recovered clef/key/time), each field defaulting to treble /
+  C major / 4/4 when TrOMR did not emit it.
+  **`buildScore(systems)`** is the multi-staff entry point: it concatenates
+  `ScoreSystem`s in time order into one part. Single-staff systems flow through
+  `buildMusicXML` (byte-identical output). A grand-staff system places its staves
+  into `<staff>1</staff>`/`<staff>2</staff>` of the same part with `<staves>`, a
+  `<clef number="n">` per staff, per-staff `<voice>`, and a `<backup>` between
+  staves (sized to the prior staff's written duration); an empty staff in a
+  non-empty measure gets a whole-measure rest. The worker and the public
+  `importFile` both build via `groupSystems` → `buildScore` (the importer
+  concatenating systems across pages first).
+- `lib/assembly/durations.ts` — shared duration arithmetic (divisions per
+  quarter, each type's divisions, dotted length, and `BEAM_COUNT` per type) used
+  by both the builder and the beam grouper (one source of truth, no import cycle).
+- `lib/assembly/beams.ts` — `computeBeams` reconstructs beaming, which is **not**
+  in TrOMR's tokens. It groups consecutive beamable notes (eighth and shorter)
+  that fall in the same beat into one beam, returning per-note `<beam>` elements
+  (begin/continue/end, plus hooks for lone secondary beams like the 16th of a
+  dotted-eighth/sixteenth). Grouping is by beat from the time signature — simple
+  meters per denominator beat, compound (x/8 with beats divisible by 3) per
+  dotted quarter — so a beam never crosses a beat. Rests and chord-tail notes
+  break/skip beams. The builder threads the running time signature (opening, then
+  any mid-staff `attributeChange.time`) into it per measure.
+- `lib/assembly/combine-pages.ts` — `combinePages` concatenates note streams
+  sequentially, offsetting each one's `measureIndex` past the measures already
+  consumed so the result has one continuous timeline. `buildScore` uses it for
+  the single-staff path (one staff per system, systems run in sequence). The
+  public `importFile` (`index.ts`) runs the worker once per decoded page,
+  `groupSystems` each page's transcriptions, concatenates the systems across
+  pages, and calls `buildScore` once — returning `""` when nothing was
+  recognized, matching the worker's empty-result contract.
 - `src/components/ScoreView.tsx` — renders MusicXML via OSMD and provides a
   download button for the `.musicxml` file.
 - `src/components/TranscriptionDebug.tsx` — collapsible per-staff panel showing
@@ -141,10 +199,10 @@ transcription run off the main thread so the heavy WASM pass never freezes the U
 - `src/worker/omr.worker.ts` — owns the inference backend and model weights. It
   waits for a `config` message before resolving its provider, then per request
   runs `segment` (on the downscaled image) → `detectStaves` → `transcribeStaves`
-  (on the full-resolution image, with staff coordinates scaled up), streaming
-  phase/fraction progress and posting masks + staff structure + MusicXML +
-  transcription debug data back. Reports its provider after config so the UI
-  can show it before any file drop.
+  (on the full-resolution image, with staff coordinates scaled up) → `groupSystems`
+  → `buildScore`, streaming phase/fraction progress and posting masks + staff
+  structure + MusicXML + transcription debug data back. Reports its provider
+  after config so the UI can show it before any file drop.
 - `src/worker/omr-client.ts` — main-thread handle that starts the worker, sends
   the `OmrConfig`, waits for the provider, and exposes `process(image,
   onProgress)` plus `dispose()`.

@@ -12,7 +12,10 @@
  * the page must be cross-origin isolated (COOP/COEP) for ORT's threaded WASM
  * backend; see the root build script and netlify.toml.
  */
-import { decodeFile, isPdf } from "./src/input/decode";
+import { buildScore } from "./lib/assembly/musicxml-builder";
+import { groupSystems } from "./lib/staves/system-grouping";
+import type { ScoreSystem } from "./lib/types";
+import { decodeFilePages, isPdf } from "./src/input/decode";
 import { createOmrClient } from "./src/worker/omr-client";
 import type { BackendChoice, ProgressUpdate } from "./src/worker/protocol";
 
@@ -53,12 +56,30 @@ export async function createImageImporter(
     provider: client.provider,
     async importFile(file, onProgress) {
       // Decode on the main thread (pdf.js / createImageBitmap are DOM-bound),
-      // then hand the full-resolution raster to the worker for recognition.
-      const image = await decodeFile(file);
-      const result = await client.process(image, (update) => {
-        onProgress?.(update);
-      });
-      return result.musicXml;
+      // then hand each full-resolution page raster to the worker in turn. A
+      // multi-page PDF yields one raster per page; a raster image yields one.
+      const pages = await decodeFilePages(file);
+      // Each page contributes its systems (a treble-over-bass pair becomes one
+      // grand-staff system) in reading order; concatenating across pages gives
+      // the part's full timeline.
+      const systems: ScoreSystem[] = [];
+      let recognizedNotes = 0;
+      for (let page = 0; page < pages.length; page++) {
+        const result = await client.process(pages[page], (update) => {
+          onProgress?.(
+            pages.length > 1
+              ? { ...update, page, pageCount: pages.length }
+              : update,
+          );
+        });
+        systems.push(...groupSystems(result.transcriptions));
+        for (const transcription of result.transcriptions) {
+          recognizedNotes += transcription.notes.length;
+        }
+      }
+      // Preserve the worker's empty-string contract (nothing recognized) so
+      // callers can tell a failed import from a one-rest document.
+      return recognizedNotes === 0 ? "" : buildScore(systems);
     },
     dispose() {
       client.dispose();
