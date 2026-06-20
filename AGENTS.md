@@ -14,14 +14,17 @@ staff (reached in phases, monophonic single staff first).
 Design and full build plan live in `PLAN.md`. This file covers how to work in
 the repo (tooling, conventions). Keep it current when the workflow changes.
 
-## What exists now (Phases 0–2)
+## What exists now (Phases 0–3)
 
 Phase 0 is the toolchain scaffold (see `PLAN.md` §6): `bun build` bundles ORT
 Web's threaded WASM and the page is cross-origin isolated. Phase 1 adds
 segmentation — the two oemer UNets running in the browser with their masks
 overlaid on the page (`PLAN.md` §7). Phase 2 adds staff-structure detection —
 recovering five-line staves and the unit size from the staff mask and drawing
-them on the page.
+them on the page. Phase 3 adds TrOMR transcription and MusicXML assembly —
+each detected staff is cropped, encoded by the TrOMR ConvNeXt encoder, decoded
+autoregressively into rhythm/pitch/lift token triples, assembled into MusicXML
+3.1 with chord support, and rendered in-browser via OSMD with a download button.
 
 Phase 0 foundation:
 
@@ -82,15 +85,66 @@ Phase 2 staff structure (pure algorithm in `lib/staves/`, fully unit-tested):
   box and five lines over the canvas (toggleable) and reports the staff count +
   unit size.
 
-Worker (responsiveness — model loading + inference + staff detection run off
-the main thread so the long WASM pass never freezes the UI):
+Phase 3 transcription + MusicXML assembly:
+
+- `lib/types.ts` — adds `NoteEvent` (pitch, duration, dotted, accidental,
+  measureIndex, chord) and `Transcription` (notes, measureCount, rawRhythm).
+- `lib/transcription/staff-crop.ts` — crops each staff from the full-resolution
+  image with unit-size padding, then scale-to-fits into the TrOMR encoder's
+  fixed `256 × 1280` canvas, padding with white. Normalizes float32 grayscale
+  to match homr's preprocessing: `(luma − 0.7931) / 0.1738`; staff is
+  vertically centered, margins filled with the normalized white value.
+- `lib/transcription/vocabulary.ts` — rhythm, pitch, and lift vocabularies
+  loaded from the homr token files (BOS/EOS/PAD constants exported separately).
+- `lib/transcription/tromr-session.ts` — drives the TrOMR encoder (ConvNeXt,
+  `[1,1,256,1280]` → `[1,seq,512]`) and autoregressive decoder (8-layer
+  transformer with a 32-tensor KV cache). Full encoder context is fed only on
+  step 0; subsequent steps use the first 512 values (cross-attention KV is
+  cached from step 0 — passing the full context again would re-derive it and
+  exhaust WASM heap). Stops at EOS or a step cap.
+- `lib/transcription/decode-tokens.ts` — turns three parallel token-ID arrays
+  (rhythm / pitch / lift) into ordered `NoteEvent`s. The `chord` rhythm token
+  is a **marker**: it sets a flag so the *following* `note_X` token is emitted
+  with `chord: true` (and the same measure index). Durations cover whole through
+  32nd (dotted variants included); barline tokens increment `measureIndex`;
+  grace notes, tuplets, and unsupported tokens are skipped.
+- `lib/transcription/transcribe.ts` — iterates over detected staves, calls
+  `runTrOMR` then `decodeTokens` for each, collects `Transcription` results
+  (including `rawRhythm` for the debug panel).
+- `lib/assembly/musicxml-builder.ts` — assembles MusicXML 3.1 from a flat
+  `NoteEvent[]`. Notes with `chord: true` get `<chord/>` before `<pitch>` so
+  OSMD stacks them at the same time position. Empty measures get a whole-measure
+  rest. Measure count is derived from the maximum `measureIndex` (not the last
+  note's), since notes concatenated across staves each renumber measures from 0.
+- `src/components/ScoreView.tsx` — renders MusicXML via OSMD and provides a
+  download button for the `.musicxml` file.
+- `src/components/TranscriptionDebug.tsx` — collapsible per-staff panel showing
+  the staff crop canvas, raw rhythm token string, and decoded note list. Helps
+  verify the transcription before OSMD renders it.
+
+**Execution provider split:** segmentation and the TrOMR encoder run on WebGPU
+when available. The **decoder is pinned to WASM** via `forceWasm: true` on its
+session — ORT's WebGPU EP does not support the fused `SkipLayerNormalization`
+op the decoder uses, and its many tiny autoregressive steps are dominated by
+per-dispatch latency on WebGPU anyway. `InferenceBackend.createSession` accepts
+an optional `CreateSessionOptions { forceWasm?: boolean }` for this.
+
+**Resolution split:** segmentation runs on `resizeToPixelBudget(image)` (~1 Mpx)
+for speed. TrOMR crops from the **full-resolution image** — the transformer was
+trained on full-res staves, and blurring at 1 Mpx degrades notehead detection.
+Staff coordinates detected in the segmentation-resolution space are scaled to
+full-res in the worker before cropping.
+
+Worker (responsiveness — model loading + inference + staff detection + TrOMR
+transcription run off the main thread so the heavy WASM pass never freezes the UI):
 
 - `src/worker/omr.worker.ts` — owns the inference backend and model weights. It
-  waits for a `config` message (backend choice + profiling) before resolving its
-  inference provider, then per request runs `segment` then `detectStaves`,
-  streaming phase/fraction progress and posting the masks (buffers transferred)
-  + staff structure back. Reports its provider after config so the UI can show
-  it before any file drop.
+  waits for a `config` message before resolving its provider, then per request
+  runs `segment` (on the downscaled image) → `detectStaves` → `transcribeStaves`
+  (on the full-resolution image, with staff coordinates scaled up), streaming
+  phase/fraction progress and posting masks + staff structure + MusicXML +
+  transcription debug data back. Reports its provider after config so the UI
+  can show it before any file drop.
 - `src/worker/omr-client.ts` — main-thread handle that starts the worker, sends
   the `OmrConfig`, waits for the provider, and exposes `process(image,
   onProgress)` plus `dispose()`.
