@@ -28,25 +28,24 @@ function toOrtTensor(tensor: Tensor): ort.Tensor {
 }
 
 function fromOrtTensor(value: ort.Tensor): Tensor {
-  if (value.type === "uint8") {
-    return {
-      type: "uint8",
-      data: value.data as Uint8Array,
-      dims: value.dims as number[],
-    };
+  // ORT Web backs output tensors with WASM heap memory that is NOT freed
+  // automatically — it is held until tensor.dispose() is called. Copy the data
+  // into the JS heap first (TypedArray constructors from another TypedArray
+  // always copy, never alias), then dispose so ORT's allocator can reclaim the
+  // WASM region. Without this, every decoder step leaks its 32 cache output
+  // tensors into the WASM heap, causing std::bad_alloc after a few staves.
+  const type = value.type as TensorDataType;
+  const dims = Array.from(value.dims);
+  let data: Float32Array | Uint8Array | BigInt64Array;
+  if (type === "uint8") {
+    data = new Uint8Array(value.data as Uint8Array);
+  } else if (type === "int64") {
+    data = new BigInt64Array(value.data as BigInt64Array);
+  } else {
+    data = new Float32Array(value.data as Float32Array);
   }
-  if (value.type === "int64") {
-    return {
-      type: "int64",
-      data: value.data as BigInt64Array,
-      dims: value.dims as number[],
-    };
-  }
-  return {
-    type: "float32",
-    data: value.data as Float32Array,
-    dims: value.dims as number[],
-  };
+  value.dispose();
+  return { type, data, dims };
 }
 
 /**
