@@ -149,6 +149,10 @@ async function process(
   // coordinates live in the segmentation image's space and are scaled up to the
   // full image before cropping.
   const segImage: RgbaImage = resizeToPixelBudget(image);
+  console.info(
+    `[omr] input: ${image.width}×${image.height} (${(image.width * image.height / 1e6).toFixed(1)} Mpx), ` +
+      `seg: ${segImage.width}×${segImage.height}`,
+  );
 
   // The optimized weights bake a fixed batch into the graph, so the batch is
   // dictated by the weights (not the provider): feed exactly FIXED_BATCH_SIZE
