@@ -307,9 +307,17 @@ function measureLength(beats: number, beatType: number): number {
   return (beats * DIVISIONS * 4) / beatType;
 }
 
-/** Default clef for a staff that did not recover one: bass for the 2nd, else treble. */
-function defaultClefForStaff(staffIndex: number): { sign: string; line: number } {
-  return staffIndex === 1 ? { sign: "F", line: 4 } : DEFAULT_CLEF;
+/**
+ * Default clef for a staff whose own clef TrOMR did not recover. Only the lowest
+ * staff defaults to bass; every staff above it defaults to treble. This fits both
+ * the two-staff grand staff (treble over bass) and three-stave piano writing (two
+ * trebles over a bass), rather than assuming the second staff is always bass.
+ */
+function defaultClefForStaff(
+  staffIndex: number,
+  staffCount: number,
+): { sign: string; line: number } {
+  return staffIndex === staffCount - 1 ? { sign: "F", line: 4 } : DEFAULT_CLEF;
 }
 
 /** Opening `<attributes>` for a multi-staff part: shared key/time, a clef per staff. */
@@ -328,7 +336,9 @@ function grandStaffAttributesXml(
     `  <staves>${staffAttributes.length}</staves>`,
   ];
   for (let staffIndex = 0; staffIndex < staffAttributes.length; staffIndex++) {
-    const clef = staffAttributes[staffIndex]?.clef ?? defaultClefForStaff(staffIndex);
+    const clef =
+      staffAttributes[staffIndex]?.clef ??
+      defaultClefForStaff(staffIndex, staffAttributes.length);
     lines.push(
       `  <clef number="${staffIndex + 1}"><sign>${escapeXml(clef.sign)}</sign>` +
         `<line>${clef.line}</line></clef>`,
