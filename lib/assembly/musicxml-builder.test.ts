@@ -96,6 +96,19 @@ describe("buildMusicXML", () => {
     expect(xml).toContain('measure="yes"');
   });
 
+  it("counts measures by the maximum index, not the last note", () => {
+    // Notes from a later staff renumber measures from 0, so the final note can
+    // hold a lower measureIndex than an earlier one. The builder must size the
+    // measure list by the maximum index to avoid indexing past its end.
+    const xml = buildMusicXML([
+      note("C4", "quarter", 0),
+      note("D4", "quarter", 1),
+      note("E4", "quarter", 2),
+      note("F4", "quarter", 0),
+    ]);
+    expect(xml).toContain('measure number="3"');
+  });
+
   it("does not include attributes on subsequent measures", () => {
     const xml = buildMusicXML([
       note("C4", "quarter", 0),

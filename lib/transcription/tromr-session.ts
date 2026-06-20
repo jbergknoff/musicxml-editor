@@ -18,13 +18,12 @@ import { BOS, EOS, NONOTE } from "./vocabulary";
 
 export interface TrOMRSessions {
   encoder: InferenceSession;
-  decoder: InferenceSession;
   /**
-   * Execution provider the sessions run on. Needed by the decoder to work
-   * around a WebGPU constraint: GPUBuffer.size must be > 0, so zero-element
-   * tensors (the initial KV caches at step 0) are invalid on WebGPU.
+   * The decoder session. Always created on the WASM execution provider (see
+   * src/models/registry.ts): its fused SkipLayerNormalization op does not run
+   * on ORT's WebGPU EP, and its tiny autoregressive steps are faster on WASM.
    */
-  provider: "webgpu" | "wasm";
+  decoder: InferenceSession;
 }
 
 /** Find the argmax over data[offset .. offset+size). */
@@ -71,7 +70,9 @@ async function runEncoder(
   const context = contextTensor.data as Float32Array;
   // Context shape: [1, seq_len, 512]. Recover seq_len from the total size.
   const seqLen = context.length / 512;
-  console.info(`[omr] encoder context: seqLen=${seqLen} (${context.length} floats)`);
+  console.info(
+    `[omr] encoder context: seqLen=${seqLen} (${context.length} floats)`,
+  );
   return { context, seqLen };
 }
 
@@ -84,7 +85,6 @@ async function runDecoder(
   decoderSession: InferenceSession,
   context: Float32Array,
   seqLen: number,
-  provider: "webgpu" | "wasm",
 ): Promise<{ rhythm: number[]; pitch: number[]; lift: number[] }> {
   const { numCacheTensors, numHeads, headDim, maxDecodingSteps } =
     TROMR_CONSTANTS;
@@ -104,18 +104,12 @@ async function runDecoder(
   let articulationToken = NONOTE;
   let slurToken = NONOTE;
 
-  // WebGPU requires GPUBuffer.size > 0 — a zero-element tensor dims [1,8,0,64]
-  // creates a zero-byte buffer which is invalid. Start with one all-zero
-  // placeholder row instead; cache_len=0 on step 0 tells the model's causal
-  // mask that there are no valid past entries, so the placeholder is ignored.
-  // WASM has no such constraint and uses a true empty tensor (seqLen=0).
-  const initialCacheSeqLen = provider === "webgpu" ? 1 : 0;
-  const cacheSeqLens: number[] = new Array(numCacheTensors).fill(
-    initialCacheSeqLen,
-  );
+  // The KV caches start empty (seqLen=0): step 0 has no past entries. The
+  // decoder runs on WASM, which accepts a true zero-element tensor.
+  const cacheSeqLens: number[] = new Array(numCacheTensors).fill(0);
   const caches: Float32Array[] = Array.from(
     { length: numCacheTensors },
-    () => new Float32Array(initialCacheSeqLen * numHeads * headDim),
+    () => new Float32Array(0),
   );
 
   // After step 0 the cross-attention K/V values for all encoder tokens are
@@ -252,5 +246,5 @@ export async function runTrOMR(
   staff: Staff,
 ): Promise<{ rhythm: number[]; pitch: number[]; lift: number[] }> {
   const { context, seqLen } = await runEncoder(sessions.encoder, image, staff);
-  return runDecoder(sessions.decoder, context, seqLen, sessions.provider);
+  return runDecoder(sessions.decoder, context, seqLen);
 }

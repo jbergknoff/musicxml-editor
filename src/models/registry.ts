@@ -83,11 +83,15 @@ export async function loadTrOMRModels(
   const encoderBytes = await fetchModelBytes(MODEL_MANIFEST.tromrEncoder);
   const encoder: InferenceSession = await backend.createSession(encoderBytes);
 
+  // Pin the decoder to WASM (see CreateSessionOptions.forceWasm): its fused
+  // SkipLayerNormalization op fails on ORT's WebGPU EP, and its many tiny
+  // autoregressive steps run faster on WASM regardless. The encoder above stays
+  // on whatever the backend selected (WebGPU when available).
   options.onAssetLoading?.(MODEL_MANIFEST.tromrDecoder);
   const decoderBytes = await fetchModelBytes(MODEL_MANIFEST.tromrDecoder);
-  const decoder: InferenceSession = await backend.createSession(decoderBytes);
+  const decoder: InferenceSession = await backend.createSession(decoderBytes, {
+    forceWasm: true,
+  });
 
-  const provider =
-    backend.provider === "webgpu" ? ("webgpu" as const) : ("wasm" as const);
-  return { encoder, decoder, provider };
+  return { encoder, decoder };
 }

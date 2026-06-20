@@ -115,9 +115,11 @@ export async function createWebBackend(
     provider === "webgpu" ? ["webgpu", "wasm"] : ["wasm"];
   return {
     provider,
-    async createSession(modelBytes) {
+    async createSession(modelBytes, sessionOptions = {}) {
       const session = await ort.InferenceSession.create(modelBytes, {
-        executionProviders,
+        executionProviders: sessionOptions.forceWasm
+          ? ["wasm"]
+          : executionProviders,
         logSeverityLevel: 3,
       });
       return {

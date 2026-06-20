@@ -153,9 +153,17 @@ function measureXml(
  * Returns a UTF-8 XML string suitable for feeding to OSMD or writing to disk.
  */
 export function buildMusicXML(notes: NoteEvent[], partName = "Music"): string {
-  // Group notes by measure.
-  const measureCount =
-    notes.length === 0 ? 1 : notes[notes.length - 1].measureIndex + 1;
+  // Group notes by measure. Use the maximum measureIndex rather than the last
+  // note's: when notes are concatenated across staves (each staff numbering its
+  // own measures from 0), an earlier staff can hold a higher measureIndex than
+  // the final note, so the last note alone would undercount the measures.
+  let maxMeasureIndex = 0;
+  for (const note of notes) {
+    if (note.measureIndex > maxMeasureIndex) {
+      maxMeasureIndex = note.measureIndex;
+    }
+  }
+  const measureCount = notes.length === 0 ? 1 : maxMeasureIndex + 1;
   const byMeasure: NoteEvent[][] = Array.from(
     { length: measureCount },
     () => [],

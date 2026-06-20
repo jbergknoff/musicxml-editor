@@ -26,8 +26,23 @@ export interface InferenceSession {
   run(feeds: Record<string, Tensor>): Promise<Record<string, Tensor>>;
 }
 
+export interface CreateSessionOptions {
+  /**
+   * Force this session onto the WASM execution provider even when the backend
+   * otherwise uses WebGPU. The TrOMR decoder needs this: its fused
+   * `SkipLayerNormalization` op does not run on ORT's WebGPU EP, and its 256
+   * tiny autoregressive steps are dominated by per-dispatch latency there, so
+   * WASM is both the only working and the faster path for it. Segmentation and
+   * the encoder (large single forward passes) still run on WebGPU.
+   */
+  forceWasm?: boolean;
+}
+
 export interface InferenceBackend {
   /** Execution provider actually selected, e.g. "webgpu" | "wasm" | "cpu". */
   readonly provider: string;
-  createSession(modelBytes: Uint8Array): Promise<InferenceSession>;
+  createSession(
+    modelBytes: Uint8Array,
+    options?: CreateSessionOptions,
+  ): Promise<InferenceSession>;
 }
