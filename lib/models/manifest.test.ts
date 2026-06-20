@@ -17,10 +17,12 @@ describe("model manifest", () => {
     expect(blobKeyFromPath(modelUrl(entry))).toBe(entry.fileName);
   });
 
-  it("exposes both models", () => {
+  it("exposes all models", () => {
     expect(MODEL_ENTRIES.map((entry) => entry.id).sort()).toEqual([
       "staffSymbol",
       "symbolDetail",
+      "tromrDecoder",
+      "tromrEncoder",
     ]);
   });
 });

@@ -1,11 +1,16 @@
 import { MODEL_MANIFEST } from "../../lib/models/manifest";
+import { resizeToPixelBudget } from "../../lib/input/preprocess";
 import type { InferenceBackend } from "../../lib/runtime/inference-backend";
 import {
   type SegmentationModels,
   segment,
 } from "../../lib/segmentation/segment";
 import { detectStaves } from "../../lib/staves/detect-staves";
-import { loadSegmentationModels } from "../models/registry";
+import type { RgbaImage, Staff } from "../../lib/types";
+import { buildMusicXML } from "../../lib/assembly/musicxml-builder";
+import { transcribeStaves } from "../../lib/transcription/transcribe";
+import type { TrOMRSessions } from "../../lib/transcription/tromr-session";
+import { loadSegmentationModels, loadTrOMRModels } from "../models/registry";
 import { createWebBackend } from "../runtime/web-backend";
 import type {
   OmrConfig,
@@ -57,6 +62,7 @@ const FIXED_BATCH_SIZE = MODEL_MANIFEST.staffSymbol.inputShape[0];
 // so it's resolved here exactly once per worker lifetime.
 let backendPromise: Promise<InferenceBackend> | null = null;
 let modelsPromise: Promise<SegmentationModels> | null = null;
+let tromrPromise: Promise<TrOMRSessions> | null = null;
 
 function getBackend(config: OmrConfig): Promise<InferenceBackend> {
   if (backendPromise === null) {
@@ -91,6 +97,43 @@ function getModels(
   return modelsPromise;
 }
 
+function getTrOMR(
+  backend: InferenceBackend,
+  requestId: number,
+): Promise<TrOMRSessions> {
+  if (tromrPromise === null) {
+    tromrPromise = loadTrOMRModels(backend, {
+      onAssetLoading: (entry) => {
+        post({
+          type: "progress",
+          requestId,
+          phase: "loading-models",
+          fraction: 0,
+          detail: entry.fileName,
+        });
+      },
+    }).catch((error) => {
+      tromrPromise = null;
+      throw error;
+    });
+  }
+  return tromrPromise;
+}
+
+/**
+ * Scale a detected staff from segmentation-image coordinates into the
+ * full-resolution image's coordinates. Horizontal extents scale by the width
+ * ratio; row centers and the unit size (both vertical) by the height ratio.
+ */
+function scaleStaff(staff: Staff, scaleX: number, scaleY: number): Staff {
+  return {
+    lines: staff.lines.map((line) => line * scaleY),
+    unitSize: staff.unitSize * scaleY,
+    left: Math.round(staff.left * scaleX),
+    right: Math.round(staff.right * scaleX),
+  };
+}
+
 async function process(
   config: OmrConfig,
   requestId: number,
@@ -98,6 +141,18 @@ async function process(
 ) {
   const backend = await getBackend(config);
   const models = await getModels(backend, requestId);
+
+  // Segmentation runs on a downscaled copy for speed (the pixel budget is the
+  // main speed/accuracy knob), but TrOMR transcription crops from the full
+  // resolution: the transformer was trained on full-resolution staves, and
+  // shrinking them blurs noteheads and stafflines together. Detected staff
+  // coordinates live in the segmentation image's space and are scaled up to the
+  // full image before cropping.
+  const segImage: RgbaImage = resizeToPixelBudget(image);
+  console.info(
+    `[omr] input: ${image.width}×${image.height} (${((image.width * image.height) / 1e6).toFixed(1)} Mpx), ` +
+      `seg: ${segImage.width}×${segImage.height}`,
+  );
 
   // The optimized weights bake a fixed batch into the graph, so the batch is
   // dictated by the weights (not the provider): feed exactly FIXED_BATCH_SIZE
@@ -108,7 +163,7 @@ async function process(
   // cost, so log the page size, provider, and wall-clock per phase to find the
   // bottleneck without a profiler.
   const segmentStart = performance.now();
-  const masks = await segment(image, models, {
+  const masks = await segment(segImage, models, {
     batchSize,
     onProgress: (fraction) => {
       post({ type: "progress", requestId, phase: "segmenting", fraction });
@@ -119,14 +174,54 @@ async function process(
   post({ type: "progress", requestId, phase: "detecting-staves", fraction: 1 });
   const stavesStart = performance.now();
   const staves = detectStaves(masks.staff);
-  console.info(
-    `[omr] ${image.width}x${image.height} via ${backend.provider}: ` +
-      `segment ${Math.round(segmentMs)}ms, ` +
-      `detect-staves ${Math.round(performance.now() - stavesStart)}ms`,
+  const stavesMs = performance.now() - stavesStart;
+
+  // Transcribe each detected staff with TrOMR, cropping from the full image.
+  const scaleX = image.width / segImage.width;
+  const scaleY = image.height / segImage.height;
+  const fullResStaves = staves.staves.map((staff) =>
+    scaleStaff(staff, scaleX, scaleY),
   );
 
+  let musicXml = "";
+  let transcriptions: import("../../lib/types").Transcription[] = [];
+  if (staves.staves.length > 0) {
+    const tromrSessions = await getTrOMR(backend, requestId);
+    post({ type: "progress", requestId, phase: "transcribing", fraction: 0 });
+    const transcribeStart = performance.now();
+    transcriptions = await transcribeStaves(
+      tromrSessions,
+      image,
+      fullResStaves,
+      {
+        onProgress: (done, total) => {
+          post({
+            type: "progress",
+            requestId,
+            phase: "transcribing",
+            fraction: done / total,
+          });
+        },
+      },
+    );
+    const allNotes = transcriptions.flatMap((t) => t.notes);
+    musicXml = buildMusicXML(allNotes);
+    console.info(
+      `[omr] ${image.width}x${image.height} via ${backend.provider}: ` +
+        `segment ${Math.round(segmentMs)}ms, ` +
+        `detect-staves ${Math.round(stavesMs)}ms, ` +
+        `transcribe ${Math.round(performance.now() - transcribeStart)}ms`,
+    );
+  } else {
+    console.info(
+      `[omr] ${image.width}x${image.height} via ${backend.provider}: ` +
+        `segment ${Math.round(segmentMs)}ms, ` +
+        `detect-staves ${Math.round(stavesMs)}ms (no staves detected)`,
+    );
+  }
+
   // Transfer the mask buffers (~4 MB each) rather than copying them back.
-  post({ type: "result", requestId, masks, staves }, [
+  post({ type: "result", requestId, masks, staves, musicXml, transcriptions }, [
     masks.staff.data.buffer,
     masks.symbols.data.buffer,
     masks.stemsRests.data.buffer,

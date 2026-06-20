@@ -2,6 +2,7 @@ import type {
   RgbaImage,
   SegmentationMasks,
   StaffStructure,
+  Transcription,
 } from "../../lib/types";
 import type {
   OmrConfig,
@@ -20,6 +21,8 @@ import type {
 export interface OmrResult {
   masks: SegmentationMasks;
   staves: StaffStructure;
+  musicXml: string;
+  transcriptions: Transcription[];
 }
 
 export interface OmrClient {
@@ -66,7 +69,10 @@ export function createOmrClient(config: OmrConfig): Promise<OmrClient> {
     return new Promise<OmrResult>((resolve, reject) => {
       jobs.set(requestId, { resolve, reject, onProgress });
       const request: WorkerInbound = { type: "process", requestId, image };
-      worker.postMessage(request);
+      // Transfer the raster buffer (full-resolution, so potentially tens of MB)
+      // rather than structured-cloning it. The caller does not reuse the image
+      // after handing it off.
+      worker.postMessage(request, [image.data.buffer]);
     });
   }
 
@@ -89,7 +95,12 @@ export function createOmrClient(config: OmrConfig): Promise<OmrClient> {
         case "result": {
           const job = jobs.get(message.requestId);
           jobs.delete(message.requestId);
-          job?.resolve({ masks: message.masks, staves: message.staves });
+          job?.resolve({
+            masks: message.masks,
+            staves: message.staves,
+            musicXml: message.musicXml,
+            transcriptions: message.transcriptions,
+          });
           break;
         }
         case "error": {

@@ -21,15 +21,31 @@ function toOrtTensor(tensor: Tensor): ort.Tensor {
   if (tensor.type === "uint8") {
     return new ort.Tensor("uint8", tensor.data as Uint8Array, tensor.dims);
   }
+  if (tensor.type === "int64") {
+    return new ort.Tensor("int64", tensor.data as BigInt64Array, tensor.dims);
+  }
   return new ort.Tensor("float32", tensor.data as Float32Array, tensor.dims);
 }
 
 function fromOrtTensor(value: ort.Tensor): Tensor {
-  return {
-    type: value.type as TensorDataType,
-    data: value.data as Float32Array | Uint8Array,
-    dims: value.dims as number[],
-  };
+  // ORT Web backs output tensors with WASM heap memory that is NOT freed
+  // automatically — it is held until tensor.dispose() is called. Copy the data
+  // into the JS heap first (TypedArray constructors from another TypedArray
+  // always copy, never alias), then dispose so ORT's allocator can reclaim the
+  // WASM region. Without this, every decoder step leaks its 32 cache output
+  // tensors into the WASM heap, causing std::bad_alloc after a few staves.
+  const type = value.type as TensorDataType;
+  const dims = Array.from(value.dims);
+  let data: Float32Array | Uint8Array | BigInt64Array;
+  if (type === "uint8") {
+    data = new Uint8Array(value.data as Uint8Array);
+  } else if (type === "int64") {
+    data = new BigInt64Array(value.data as BigInt64Array);
+  } else {
+    data = new Float32Array(value.data as Float32Array);
+  }
+  value.dispose();
+  return { type, data, dims };
 }
 
 /**
@@ -99,12 +115,15 @@ export async function createWebBackend(
     provider === "webgpu" ? ["webgpu", "wasm"] : ["wasm"];
   return {
     provider,
-    async createSession(modelBytes) {
+    async createSession(modelBytes, sessionOptions = {}) {
       const session = await ort.InferenceSession.create(modelBytes, {
-        executionProviders,
+        executionProviders: sessionOptions.forceWasm
+          ? ["wasm"]
+          : executionProviders,
         logSeverityLevel: 3,
       });
       return {
+        inputNames: session.inputNames,
         async run(feeds) {
           const ortFeeds: Record<string, ort.Tensor> = {};
           for (const [name, tensor] of Object.entries(feeds)) {
