@@ -84,13 +84,26 @@ Phase 2 staff structure (pure algorithm in `lib/staves/`, fully unit-tested):
   size, cut the lines into five-line staves (new staff at a large gap or every
   fifth line), drop non-five-line groups, and measure each staff's horizontal
   extent from a vertical projection over its own row band.
-- `lib/staves/system-grouping.ts` — `groupSystems` turns the page's per-staff
-  transcriptions (top to bottom) into `ScoreSystem`s. It pairs a treble staff
-  directly over a bass staff into one two-staff (grand-staff) system using the
-  recovered opening clefs — a robust, image-free signal that targets the piano
-  case and degrades to consecutive single-staff systems if a clef was missed
-  (rather than risk a fragile brace detection). Systems come out in reading
-  order, so concatenating them (within and across pages) gives the part timeline.
+- `lib/staves/brace-detection.ts` — `detectBraces(image, staves)` returns the
+  per-adjacent-pair brace links (length `staves.length − 1`) that drive grouping.
+  The cue is image-based: for each pair it scans a narrow column band just left of
+  the stafflines, over the rows of the inter-staff gap (upper's bottom line to
+  lower's top line), and marks the pair braced when most of those gap rows carry
+  ink there (luma ≤ threshold). Taking the per-row union across the band's columns
+  counts a curved brace as well as a straight connecting barline; stopping the
+  band at the stafflines' left edge keeps notes and clefs (inside the staff) out.
+  Runtime-agnostic — it works on the segmentation-resolution RGBA raster and the
+  detected geometry, both in the same coordinate space.
+- `lib/staves/system-grouping.ts` — `groupSystems(transcriptions, braces?)` turns
+  the page's per-staff transcriptions (top to bottom) into `ScoreSystem`s. The
+  **primary** signal is the brace links from `detectBraces`: a maximal run of
+  brace-linked staves becomes one system (two for a grand staff, more for an
+  organ-style group). Where no brace was detected it **falls back** to the
+  recovered opening clefs — a treble staff directly over a bass staff pairs into
+  one two-staff system — so grouping still works when the margin scan comes up
+  empty, degrading to consecutive single-staff systems rather than mis-pairing.
+  Systems come out in reading order, so concatenating them (within and across
+  pages) gives the part timeline.
 - `src/components/SegmentationView.tsx` strokes each detected staff's bounding
   box and five lines over the canvas (toggleable) and reports the staff count +
   unit size.
@@ -171,9 +184,10 @@ Phase 3 transcription + MusicXML assembly:
   consumed so the result has one continuous timeline. `buildScore` uses it for
   the single-staff path (one staff per system, systems run in sequence). The
   public `importFile` (`index.ts`) runs the worker once per decoded page,
-  `groupSystems` each page's transcriptions, concatenates the systems across
-  pages, and calls `buildScore` once — returning `""` when nothing was
-  recognized, matching the worker's empty-result contract.
+  `groupSystems` each page's transcriptions (with that page's brace links, also
+  returned by the worker), concatenates the systems across pages, and calls
+  `buildScore` once — returning `""` when nothing was recognized, matching the
+  worker's empty-result contract.
 - `src/components/ScoreView.tsx` — renders MusicXML via OSMD and provides a
   download button for the `.musicxml` file.
 - `src/components/TranscriptionDebug.tsx` — collapsible per-staff panel showing
@@ -198,11 +212,13 @@ transcription run off the main thread so the heavy WASM pass never freezes the U
 
 - `src/worker/omr.worker.ts` — owns the inference backend and model weights. It
   waits for a `config` message before resolving its provider, then per request
-  runs `segment` (on the downscaled image) → `detectStaves` → `transcribeStaves`
-  (on the full-resolution image, with staff coordinates scaled up) → `groupSystems`
-  → `buildScore`, streaming phase/fraction progress and posting masks + staff
-  structure + MusicXML + transcription debug data back. Reports its provider
-  after config so the UI can show it before any file drop.
+  runs `segment` (on the downscaled image) → `detectStaves` → `detectBraces` (on
+  the same downscaled image, in staff-coordinate space) → `transcribeStaves` (on
+  the full-resolution image, with staff coordinates scaled up) → `groupSystems`
+  (brace links primary, clefs fallback) → `buildScore`, streaming phase/fraction
+  progress and posting masks + staff structure + MusicXML + transcription debug
+  data + the brace links back. Reports its provider after config so the UI can
+  show it before any file drop.
 - `src/worker/omr-client.ts` — main-thread handle that starts the worker, sends
   the `OmrConfig`, waits for the provider, and exposes `process(image,
   onProgress)` plus `dispose()`.

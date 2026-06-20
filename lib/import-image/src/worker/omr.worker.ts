@@ -6,6 +6,7 @@ import {
   segment,
 } from "../../lib/segmentation/segment";
 import { detectStaves } from "../../lib/staves/detect-staves";
+import { detectBraces } from "../../lib/staves/brace-detection";
 import type { RgbaImage, Staff } from "../../lib/types";
 import { buildScore } from "../../lib/assembly/musicxml-builder";
 import { groupSystems } from "../../lib/staves/system-grouping";
@@ -177,6 +178,11 @@ async function process(
   const staves = detectStaves(masks.staff);
   const stavesMs = performance.now() - stavesStart;
 
+  // Detect grand-staff braces from the left margin of the segmentation image
+  // (same coordinate space as the detected staves). These drive system grouping
+  // both here and, returned in the result, in the multi-page importer.
+  const braces = detectBraces(segImage, staves.staves);
+
   // Transcribe each detected staff with TrOMR, cropping from the full image.
   const scaleX = image.width / segImage.width;
   const scaleY = image.height / segImage.height;
@@ -205,9 +211,9 @@ async function process(
         },
       },
     );
-    // Group staves into systems (pairing a treble over a bass into a grand
-    // staff) and assemble them into one part, sequential in time.
-    musicXml = buildScore(groupSystems(transcriptions));
+    // Group staves into systems (brace-linked staves form a grand staff, with a
+    // clef fallback) and assemble them into one part, sequential in time.
+    musicXml = buildScore(groupSystems(transcriptions, braces));
     console.info(
       `[omr] ${image.width}x${image.height} via ${backend.provider}: ` +
         `segment ${Math.round(segmentMs)}ms, ` +
@@ -223,13 +229,24 @@ async function process(
   }
 
   // Transfer the mask buffers (~4 MB each) rather than copying them back.
-  post({ type: "result", requestId, masks, staves, musicXml, transcriptions }, [
-    masks.staff.data.buffer,
-    masks.symbols.data.buffer,
-    masks.stemsRests.data.buffer,
-    masks.noteheads.data.buffer,
-    masks.clefsKeys.data.buffer,
-  ]);
+  post(
+    {
+      type: "result",
+      requestId,
+      masks,
+      staves,
+      musicXml,
+      transcriptions,
+      braces,
+    },
+    [
+      masks.staff.data.buffer,
+      masks.symbols.data.buffer,
+      masks.stemsRests.data.buffer,
+      masks.noteheads.data.buffer,
+      masks.clefsKeys.data.buffer,
+    ],
+  );
 }
 
 // The config message arrives once at startup, before any process request, and
