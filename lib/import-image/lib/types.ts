@@ -156,3 +156,13 @@ export interface Transcription {
   /** Leading clef/key/time recovered from this staff's tokens. */
   attributes: ScoreAttributes;
 }
+
+/**
+ * One system: the staves that sound together at the same point in the music
+ * (top to bottom), grouped from the page's staves (e.g. the treble + bass of a
+ * piano grand staff). A single-staff system has one entry. Systems are ordered
+ * in time, so concatenating them yields the part's full measure sequence.
+ */
+export interface ScoreSystem {
+  staves: Transcription[];
+}

@@ -7,7 +7,8 @@ import {
 } from "../../lib/segmentation/segment";
 import { detectStaves } from "../../lib/staves/detect-staves";
 import type { RgbaImage, Staff } from "../../lib/types";
-import { buildMusicXML } from "../../lib/assembly/musicxml-builder";
+import { buildScore } from "../../lib/assembly/musicxml-builder";
+import { groupSystems } from "../../lib/staves/system-grouping";
 import { transcribeStaves } from "../../lib/transcription/transcribe";
 import type { TrOMRSessions } from "../../lib/transcription/tromr-session";
 import { loadSegmentationModels, loadTrOMRModels } from "../models/registry";
@@ -204,11 +205,9 @@ async function process(
         },
       },
     );
-    const allNotes = transcriptions.flatMap((t) => t.notes);
-    // Open the part with the first staff's recovered clef/key/time.
-    musicXml = buildMusicXML(allNotes, {
-      attributes: transcriptions[0]?.attributes,
-    });
+    // Group staves into systems (pairing a treble over a bass into a grand
+    // staff) and assemble them into one part, sequential in time.
+    musicXml = buildScore(groupSystems(transcriptions));
     console.info(
       `[omr] ${image.width}x${image.height} via ${backend.provider}: ` +
         `segment ${Math.round(segmentMs)}ms, ` +

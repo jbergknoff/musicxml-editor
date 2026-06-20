@@ -54,11 +54,13 @@ export interface ResultMessage {
   requestId: number;
   masks: SegmentationMasks;
   staves: StaffStructure;
-  /**
-   * MusicXML string for all detected staves (one part per staff in order).
-   * Empty string when the TrOMR model is not yet available or no staves were
-   * detected.
-   */
+   /**
+    * MusicXML for this page: staves grouped into systems (a treble over a bass
+    * becomes one grand-staff system) and assembled into a single part. Empty
+    * string when the TrOMR model is not yet available or no staves were detected.
+    * The multi-page importer rebuilds across pages from `transcriptions`; this
+    * field is the standalone (single-page) rendering.
+    */
   musicXml: string;
   /** Per-staff transcription results in the same order as `staves.staves`. */
   transcriptions: Transcription[];

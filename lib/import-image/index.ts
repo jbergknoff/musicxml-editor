@@ -12,9 +12,9 @@
  * the page must be cross-origin isolated (COOP/COEP) for ORT's threaded WASM
  * backend; see the root build script and netlify.toml.
  */
-import { combinePages } from "./lib/assembly/combine-pages";
-import { buildMusicXML } from "./lib/assembly/musicxml-builder";
-import type { NoteEvent, ScoreAttributes } from "./lib/types";
+import { buildScore } from "./lib/assembly/musicxml-builder";
+import { groupSystems } from "./lib/staves/system-grouping";
+import type { ScoreSystem } from "./lib/types";
 import { decodeFilePages, isPdf } from "./src/input/decode";
 import { createOmrClient } from "./src/worker/omr-client";
 import type { BackendChoice, ProgressUpdate } from "./src/worker/protocol";
@@ -59,9 +59,11 @@ export async function createImageImporter(
       // then hand each full-resolution page raster to the worker in turn. A
       // multi-page PDF yields one raster per page; a raster image yields one.
       const pages = await decodeFilePages(file);
-      const pageNotes: NoteEvent[][] = [];
-      // Open the document with the first recognized staff's clef/key/time.
-      let attributes: ScoreAttributes | undefined;
+      // Each page contributes its systems (a treble-over-bass pair becomes one
+      // grand-staff system) in reading order; concatenating across pages gives
+      // the part's full timeline.
+      const systems: ScoreSystem[] = [];
+      let recognizedNotes = 0;
       for (let page = 0; page < pages.length; page++) {
         const result = await client.process(pages[page], (update) => {
           onProgress?.(
@@ -70,16 +72,14 @@ export async function createImageImporter(
               : update,
           );
         });
-        pageNotes.push(result.transcriptions.flatMap((t) => t.notes));
-        attributes ??= result.transcriptions[0]?.attributes;
+        systems.push(...groupSystems(result.transcriptions));
+        for (const transcription of result.transcriptions) {
+          recognizedNotes += transcription.notes.length;
+        }
       }
-      // Stitch the per-page note streams into one continuous-measure document.
-      // A single page round-trips identically to the worker's own musicXml,
-      // since both build from the same flattened note list. Preserve the
-      // worker's empty-string contract (nothing recognized) so callers can tell
-      // a failed import from a one-rest document.
-      const notes = combinePages(pageNotes);
-      return notes.length === 0 ? "" : buildMusicXML(notes, { attributes });
+      // Preserve the worker's empty-string contract (nothing recognized) so
+      // callers can tell a failed import from a one-rest document.
+      return recognizedNotes === 0 ? "" : buildScore(systems);
     },
     dispose() {
       client.dispose();

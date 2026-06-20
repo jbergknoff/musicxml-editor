@@ -8,9 +8,10 @@
  * Durations are expressed in divisions where one quarter note = 4 divisions,
  * giving clean integer values for all standard subdivisions down to 32nd notes.
  */
-import type { NoteEvent, ScoreAttributes } from "../types";
+import type { NoteEvent, ScoreAttributes, ScoreSystem } from "../types";
 import { type BeamElement, computeBeams } from "./beams";
-import { DIVISIONS, DURATION_DIVISIONS } from "./durations";
+import { combinePages } from "./combine-pages";
+import { DIVISIONS, DURATION_DIVISIONS, noteDivisions } from "./durations";
 
 const MUSICXML_TYPE: Record<NoteEvent["duration"], string> = {
   whole: "whole",
@@ -60,10 +61,24 @@ function beamLines(beams: BeamElement[]): string[] {
   );
 }
 
-function noteXml(note: NoteEvent, beams: BeamElement[]): string {
+/**
+ * One `<note>`. When `staffNumber` is given (multi-staff parts), the note also
+ * carries `<voice>` and `<staff>`; without it the output is the single-staff,
+ * single-voice form. Beams render only at the chosen level(s).
+ */
+function noteXml(
+  note: NoteEvent,
+  beams: BeamElement[],
+  staffNumber?: number,
+): string {
   const divisions = DURATION_DIVISIONS[note.duration];
   const dottedDivisions = note.dotted ? Math.round(divisions * 1.5) : divisions;
   const type = MUSICXML_TYPE[note.duration];
+  // One voice per staff keeps the two hands' rhythms independent.
+  const voiceLine =
+    staffNumber !== undefined ? `  <voice>${staffNumber}</voice>` : "";
+  const staffLine =
+    staffNumber !== undefined ? `  <staff>${staffNumber}</staff>` : "";
 
   if (note.pitch === "rest") {
     return [
@@ -71,8 +86,10 @@ function noteXml(note: NoteEvent, beams: BeamElement[]): string {
       note.chord ? "  <chord/>" : "",
       "  <rest/>",
       `  <duration>${dottedDivisions}</duration>`,
+      voiceLine,
       `  <type>${type}</type>`,
       note.dotted ? "  <dot/>" : "",
+      staffLine,
       "</note>",
     ]
       .filter(Boolean)
@@ -99,9 +116,11 @@ function noteXml(note: NoteEvent, beams: BeamElement[]): string {
     `    <octave>${escapeXml(octave)}</octave>`,
     "  </pitch>",
     `  <duration>${dottedDivisions}</duration>`,
+    voiceLine,
     `  <type>${type}</type>`,
     note.dotted ? "  <dot/>" : "",
     accidentalTag,
+    staffLine,
     ...beamLines(beams),
     "</note>",
   ]
@@ -135,7 +154,10 @@ function attributesXml(attributes: ScoreAttributes): string {
  * fields that changed (no `<divisions>`, no defaults), emitted before the note it
  * takes effect on. Element order follows the MusicXML schema (key, time, clef).
  */
-function attributeChangeXml(change: ScoreAttributes): string {
+function attributeChangeXml(
+  change: ScoreAttributes,
+  staffNumber?: number,
+): string {
   const lines = ["<attributes>"];
   if (change.keyFifths !== undefined) {
     lines.push(`  <key><fifths>${change.keyFifths}</fifths></key>`);
@@ -147,13 +169,21 @@ function attributeChangeXml(change: ScoreAttributes): string {
     );
   }
   if (change.clef !== undefined) {
+    // A clef change targets a specific staff in a multi-staff part.
+    const number = staffNumber !== undefined ? ` number="${staffNumber}"` : "";
     lines.push(
-      `  <clef><sign>${escapeXml(change.clef.sign)}</sign>` +
+      `  <clef${number}><sign>${escapeXml(change.clef.sign)}</sign>` +
         `<line>${change.clef.line}</line></clef>`,
     );
   }
   lines.push("</attributes>");
   return lines.join("\n");
+}
+
+/** Indent a measure's children and wrap them in `<measure number="…">`. */
+function wrapMeasure(measureNumber: number, children: string[]): string {
+  const indent = children.map((line) => `    ${line}`).join("\n");
+  return `  <measure number="${measureNumber}">\n${indent}\n  </measure>`;
 }
 
 function measureXml(
@@ -191,8 +221,7 @@ function measureXml(
     }
   }
 
-  const indent = children.map((line) => `    ${line}`).join("\n");
-  return `  <measure number="${measureNumber}">\n${indent}\n  </measure>`;
+  return wrapMeasure(measureNumber, children);
 }
 
 export interface BuildOptions {
@@ -255,6 +284,209 @@ export function buildMusicXML(
     return xml;
   });
 
+  return wrapDocument(partName, measures);
+}
+
+// ---------------------------------------------------------------------------
+// Multi-staff (grand staff) assembly
+// ---------------------------------------------------------------------------
+
+/** Measures spanned by a staff's notes: one past the maximum measure index. */
+function measureSpanOf(notes: NoteEvent[]): number {
+  let maxIndex = -1;
+  for (const note of notes) {
+    if (note.measureIndex > maxIndex) {
+      maxIndex = note.measureIndex;
+    }
+  }
+  return maxIndex + 1;
+}
+
+/** A full measure's worth of divisions for the given meter. */
+function measureLength(beats: number, beatType: number): number {
+  return (beats * DIVISIONS * 4) / beatType;
+}
+
+/** Default clef for a staff that did not recover one: bass for the 2nd, else treble. */
+function defaultClefForStaff(staffIndex: number): { sign: string; line: number } {
+  return staffIndex === 1 ? { sign: "F", line: 4 } : DEFAULT_CLEF;
+}
+
+/** Opening `<attributes>` for a multi-staff part: shared key/time, a clef per staff. */
+function grandStaffAttributesXml(
+  staffAttributes: (ScoreAttributes | undefined)[],
+): string {
+  const top = staffAttributes[0] ?? {};
+  const fifths = top.keyFifths ?? DEFAULT_FIFTHS;
+  const beats = top.time?.beats ?? DEFAULT_BEATS;
+  const beatType = top.time?.beatType ?? DEFAULT_BEAT_TYPE;
+  const lines = [
+    "<attributes>",
+    `  <divisions>${DIVISIONS}</divisions>`,
+    `  <key><fifths>${fifths}</fifths></key>`,
+    `  <time><beats>${beats}</beats><beat-type>${beatType}</beat-type></time>`,
+    `  <staves>${staffAttributes.length}</staves>`,
+  ];
+  for (let staffIndex = 0; staffIndex < staffAttributes.length; staffIndex++) {
+    const clef = staffAttributes[staffIndex]?.clef ?? defaultClefForStaff(staffIndex);
+    lines.push(
+      `  <clef number="${staffIndex + 1}"><sign>${escapeXml(clef.sign)}</sign>` +
+        `<line>${clef.line}</line></clef>`,
+    );
+  }
+  lines.push("</attributes>");
+  return lines.join("\n");
+}
+
+/** `<backup>` to rewind the cursor (by the previous staff's written duration). */
+function backupXml(duration: number): string {
+  return `<backup>\n  <duration>${duration}</duration>\n</backup>`;
+}
+
+/** A whole-measure rest on a specific staff, spanning the measure's length. */
+function staffMeasureRestXml(staffNumber: number, length: number): string {
+  return [
+    "<note>",
+    '  <rest measure="yes"/>',
+    `  <duration>${length}</duration>`,
+    `  <voice>${staffNumber}</voice>`,
+    "  <type>whole</type>",
+    `  <staff>${staffNumber}</staff>`,
+    "</note>",
+  ].join("\n");
+}
+
+/** One measure of a multi-staff part: each staff's notes, separated by `<backup>`. */
+function grandStaffMeasureXml(
+  staffNotes: NoteEvent[][],
+  measureNumber: number,
+  openingAttributes: string | null,
+  beats: number,
+  beatType: number,
+): string {
+  const children: string[] = [];
+  if (openingAttributes !== null) {
+    children.push(openingAttributes);
+  }
+  const length = measureLength(beats, beatType);
+  let previousDuration = 0;
+  for (let staffIndex = 0; staffIndex < staffNotes.length; staffIndex++) {
+    const notes = staffNotes[staffIndex];
+    const staffNumber = staffIndex + 1;
+    // Rewind to the measure start before laying down the next staff.
+    if (staffIndex > 0) {
+      children.push(backupXml(previousDuration));
+    }
+    if (notes.length === 0) {
+      children.push(staffMeasureRestXml(staffNumber, length));
+      previousDuration = length;
+      continue;
+    }
+    const beams = computeBeams(notes, beats, beatType);
+    let duration = 0;
+    for (let index = 0; index < notes.length; index++) {
+      const note = notes[index];
+      if (note.attributeChange !== undefined) {
+        children.push(attributeChangeXml(note.attributeChange, staffNumber));
+      }
+      children.push(noteXml(note, beams.get(index) ?? [], staffNumber));
+      // Chord tail notes share the previous note's time slot (no advance).
+      if (!note.chord) {
+        duration += noteDivisions(note);
+      }
+    }
+    previousDuration = duration;
+  }
+  return wrapMeasure(measureNumber, children);
+}
+
+/**
+ * Assemble a MusicXML document from a sequence of systems (in time order). The
+ * systems are concatenated into one part: single-staff systems flow into one
+ * staff, while a system whose staves were paired (a grand staff) places its
+ * staves into `<staff>1</staff>`, `<staff>2</staff>`, … of the same part. A
+ * single-staff score routes through {@link buildMusicXML} for byte-identical
+ * output.
+ */
+export function buildScore(
+  systems: ScoreSystem[],
+  options: BuildOptions = {},
+): string {
+  const partName = options.partName ?? "Music";
+  const staffCount = systems.reduce(
+    (max, system) => Math.max(max, system.staves.length),
+    1,
+  );
+
+  if (staffCount === 1) {
+    // Concatenate single-staff systems sequentially (each numbers measures from
+    // 0) and reuse the single-staff builder unchanged.
+    const notes = combinePages(
+      systems.map((system) => system.staves[0]?.notes ?? []),
+    );
+    return buildMusicXML(notes, {
+      attributes: systems[0]?.staves[0]?.attributes,
+      partName,
+    });
+  }
+
+  // Place every system's staves onto a shared measure grid. Each system numbers
+  // its measures from 0; offset by the running total so systems run in sequence.
+  const staffAttributes: (ScoreAttributes | undefined)[] = new Array(staffCount);
+  const measureStaffNotes: NoteEvent[][][] = [];
+  const ensureMeasure = (measure: number): void => {
+    while (measureStaffNotes.length <= measure) {
+      measureStaffNotes.push(
+        Array.from({ length: staffCount }, () => [] as NoteEvent[]),
+      );
+    }
+  };
+
+  let offset = 0;
+  for (const system of systems) {
+    let span = 0;
+    for (const staff of system.staves) {
+      span = Math.max(span, measureSpanOf(staff.notes));
+    }
+    for (let staffIndex = 0; staffIndex < system.staves.length; staffIndex++) {
+      const staff = system.staves[staffIndex];
+      staffAttributes[staffIndex] ??= staff.attributes;
+      for (const note of staff.notes) {
+        const measure = offset + note.measureIndex;
+        ensureMeasure(measure);
+        measureStaffNotes[measure][staffIndex].push(note);
+      }
+    }
+    offset += span;
+  }
+  ensureMeasure(0); // always at least one measure
+
+  // Track the meter at each measure's start (top staff), for beams and rests.
+  let beats = staffAttributes[0]?.time?.beats ?? DEFAULT_BEATS;
+  let beatType = staffAttributes[0]?.time?.beatType ?? DEFAULT_BEAT_TYPE;
+  const openingAttributes = grandStaffAttributesXml(staffAttributes);
+  const measures = measureStaffNotes.map((staffNotes, index) => {
+    const xml = grandStaffMeasureXml(
+      staffNotes,
+      index + 1,
+      index === 0 ? openingAttributes : null,
+      beats,
+      beatType,
+    );
+    for (const note of staffNotes[0]) {
+      if (note.attributeChange?.time !== undefined) {
+        beats = note.attributeChange.time.beats;
+        beatType = note.attributeChange.time.beatType;
+      }
+    }
+    return xml;
+  });
+
+  return wrapDocument(partName, measures);
+}
+
+/** Wrap rendered `<measure>` strings in the score/part/part-list boilerplate. */
+function wrapDocument(partName: string, measures: string[]): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.1 Partwise//EN"',

@@ -84,6 +84,13 @@ Phase 2 staff structure (pure algorithm in `lib/staves/`, fully unit-tested):
   size, cut the lines into five-line staves (new staff at a large gap or every
   fifth line), drop non-five-line groups, and measure each staff's horizontal
   extent from a vertical projection over its own row band.
+- `lib/staves/system-grouping.ts` — `groupSystems` turns the page's per-staff
+  transcriptions (top to bottom) into `ScoreSystem`s. It pairs a treble staff
+  directly over a bass staff into one two-staff (grand-staff) system using the
+  recovered opening clefs — a robust, image-free signal that targets the piano
+  case and degrades to consecutive single-staff systems if a clef was missed
+  (rather than risk a fragile brace detection). Systems come out in reading
+  order, so concatenating them (within and across pages) gives the part timeline.
 - `src/components/SegmentationView.tsx` strokes each detected staff's bounding
   box and five lines over the canvas (toggleable) and reports the staff count +
   unit size.
@@ -138,6 +145,15 @@ Phase 3 transcription + MusicXML assembly:
   The first measure's `<attributes>` come from the optional `BuildOptions.attributes`
   (the first staff's recovered clef/key/time), each field defaulting to treble /
   C major / 4/4 when TrOMR did not emit it.
+  **`buildScore(systems)`** is the multi-staff entry point: it concatenates
+  `ScoreSystem`s in time order into one part. Single-staff systems flow through
+  `buildMusicXML` (byte-identical output). A grand-staff system places its staves
+  into `<staff>1</staff>`/`<staff>2</staff>` of the same part with `<staves>`, a
+  `<clef number="n">` per staff, per-staff `<voice>`, and a `<backup>` between
+  staves (sized to the prior staff's written duration); an empty staff in a
+  non-empty measure gets a whole-measure rest. The worker and the public
+  `importFile` both build via `groupSystems` → `buildScore` (the importer
+  concatenating systems across pages first).
 - `lib/assembly/durations.ts` — shared duration arithmetic (divisions per
   quarter, each type's divisions, dotted length, and `BEAM_COUNT` per type) used
   by both the builder and the beam grouper (one source of truth, no import cycle).
@@ -150,13 +166,14 @@ Phase 3 transcription + MusicXML assembly:
   dotted quarter — so a beam never crosses a beat. Rests and chord-tail notes
   break/skip beams. The builder threads the running time signature (opening, then
   any mid-staff `attributeChange.time`) into it per measure.
-- `lib/assembly/combine-pages.ts` — `combinePages` concatenates the per-page
-  note streams of a multi-page score, offsetting each page's `measureIndex` past
-  the measures of earlier pages so the combined document has one continuous
-  measure timeline. The public `importFile` (`index.ts`) drives the worker once
-  per decoded page, flattens each page's transcriptions to notes, combines them,
-  and builds a single MusicXML document (returning `""` when nothing was
-  recognized, matching the worker's empty-result contract).
+- `lib/assembly/combine-pages.ts` — `combinePages` concatenates note streams
+  sequentially, offsetting each one's `measureIndex` past the measures already
+  consumed so the result has one continuous timeline. `buildScore` uses it for
+  the single-staff path (one staff per system, systems run in sequence). The
+  public `importFile` (`index.ts`) runs the worker once per decoded page,
+  `groupSystems` each page's transcriptions, concatenates the systems across
+  pages, and calls `buildScore` once — returning `""` when nothing was
+  recognized, matching the worker's empty-result contract.
 - `src/components/ScoreView.tsx` — renders MusicXML via OSMD and provides a
   download button for the `.musicxml` file.
 - `src/components/TranscriptionDebug.tsx` — collapsible per-staff panel showing
@@ -182,10 +199,10 @@ transcription run off the main thread so the heavy WASM pass never freezes the U
 - `src/worker/omr.worker.ts` — owns the inference backend and model weights. It
   waits for a `config` message before resolving its provider, then per request
   runs `segment` (on the downscaled image) → `detectStaves` → `transcribeStaves`
-  (on the full-resolution image, with staff coordinates scaled up), streaming
-  phase/fraction progress and posting masks + staff structure + MusicXML +
-  transcription debug data back. Reports its provider after config so the UI
-  can show it before any file drop.
+  (on the full-resolution image, with staff coordinates scaled up) → `groupSystems`
+  → `buildScore`, streaming phase/fraction progress and posting masks + staff
+  structure + MusicXML + transcription debug data back. Reports its provider
+  after config so the UI can show it before any file drop.
 - `src/worker/omr-client.ts` — main-thread handle that starts the worker, sends
   the `OmrConfig`, waits for the provider, and exposes `process(image,
   onProgress)` plus `dispose()`.
