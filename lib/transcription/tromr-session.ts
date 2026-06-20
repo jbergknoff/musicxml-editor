@@ -71,6 +71,7 @@ async function runEncoder(
   const context = contextTensor.data as Float32Array;
   // Context shape: [1, seq_len, 512]. Recover seq_len from the total size.
   const seqLen = context.length / 512;
+  console.info(`[omr] encoder context: seqLen=${seqLen} (${context.length} floats)`);
   return { context, seqLen };
 }
 
@@ -117,8 +118,17 @@ async function runDecoder(
     () => new Float32Array(initialCacheSeqLen * numHeads * headDim),
   );
 
+  // After step 0 the cross-attention K/V values for all encoder tokens are
+  // stored in cache_in (4 of the 32 KV tensors per layer are cross-attention).
+  // Subsequent steps only need a single placeholder token to satisfy the input
+  // shape; the cached cross-attention handles the rest. This avoids copying
+  // seqLen×512 floats into WASM on every one of the 256 decoding steps.
+  const firstContextToken = context.slice(0, 512);
+
   for (let step = 0; step < maxDecodingSteps; step++) {
-    const contextSeqLen = seqLen;
+    const isFirstStep = step === 0;
+    const contextData = isFirstStep ? context : firstContextToken;
+    const contextSeqLen = isFirstStep ? seqLen : 1;
 
     const feeds: Record<string, Tensor> = {
       rhythms: {
@@ -148,7 +158,7 @@ async function runDecoder(
       },
       context: {
         type: "float32",
-        data: context,
+        data: contextData,
         dims: [1, contextSeqLen, 512],
       },
       cache_len: {
