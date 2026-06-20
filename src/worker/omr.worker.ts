@@ -1,10 +1,12 @@
 import { MODEL_MANIFEST } from "../../lib/models/manifest";
+import { resizeToPixelBudget } from "../../lib/input/preprocess";
 import type { InferenceBackend } from "../../lib/runtime/inference-backend";
 import {
   type SegmentationModels,
   segment,
 } from "../../lib/segmentation/segment";
 import { detectStaves } from "../../lib/staves/detect-staves";
+import type { RgbaImage, Staff } from "../../lib/types";
 import { buildMusicXML } from "../../lib/assembly/musicxml-builder";
 import { transcribeStaves } from "../../lib/transcription/transcribe";
 import type { TrOMRSessions } from "../../lib/transcription/tromr-session";
@@ -118,6 +120,20 @@ function getTrOMR(
   return tromrPromise;
 }
 
+/**
+ * Scale a detected staff from segmentation-image coordinates into the
+ * full-resolution image's coordinates. Horizontal extents scale by the width
+ * ratio; row centers and the unit size (both vertical) by the height ratio.
+ */
+function scaleStaff(staff: Staff, scaleX: number, scaleY: number): Staff {
+  return {
+    lines: staff.lines.map((line) => line * scaleY),
+    unitSize: staff.unitSize * scaleY,
+    left: Math.round(staff.left * scaleX),
+    right: Math.round(staff.right * scaleX),
+  };
+}
+
 async function process(
   config: OmrConfig,
   requestId: number,
@@ -125,6 +141,14 @@ async function process(
 ) {
   const backend = await getBackend(config);
   const models = await getModels(backend, requestId);
+
+  // Segmentation runs on a downscaled copy for speed (the pixel budget is the
+  // main speed/accuracy knob), but TrOMR transcription crops from the full
+  // resolution: the transformer was trained on full-resolution staves, and
+  // shrinking them blurs noteheads and stafflines together. Detected staff
+  // coordinates live in the segmentation image's space and are scaled up to the
+  // full image before cropping.
+  const segImage: RgbaImage = resizeToPixelBudget(image);
 
   // The optimized weights bake a fixed batch into the graph, so the batch is
   // dictated by the weights (not the provider): feed exactly FIXED_BATCH_SIZE
@@ -135,7 +159,7 @@ async function process(
   // cost, so log the page size, provider, and wall-clock per phase to find the
   // bottleneck without a profiler.
   const segmentStart = performance.now();
-  const masks = await segment(image, models, {
+  const masks = await segment(segImage, models, {
     batchSize,
     onProgress: (fraction) => {
       post({ type: "progress", requestId, phase: "segmenting", fraction });
@@ -148,7 +172,13 @@ async function process(
   const staves = detectStaves(masks.staff);
   const stavesMs = performance.now() - stavesStart;
 
-  // Transcribe each detected staff with TrOMR.
+  // Transcribe each detected staff with TrOMR, cropping from the full image.
+  const scaleX = image.width / segImage.width;
+  const scaleY = image.height / segImage.height;
+  const fullResStaves = staves.staves.map((staff) =>
+    scaleStaff(staff, scaleX, scaleY),
+  );
+
   let musicXml = "";
   let transcriptions: import("../../lib/types").Transcription[] = [];
   if (staves.staves.length > 0) {
@@ -158,7 +188,7 @@ async function process(
     transcriptions = await transcribeStaves(
       tromrSessions,
       image,
-      staves.staves,
+      fullResStaves,
       {
         onProgress: (done, total) => {
           post({

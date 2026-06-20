@@ -77,11 +77,15 @@ export function App({ client, config, onConfigChange }: AppProps) {
     try {
       setStatus(`Decoding ${file.name}…`);
       const decoded = await decodeFile(file);
-      const image = resizeToPixelBudget(decoded);
+      // The worker segments on its own downscaled copy but transcribes from the
+      // full-resolution image, so hand it the full raster. For display and the
+      // mask overlay we need the same downscaled image the worker segments —
+      // resizeToPixelBudget is deterministic, so this matches the worker's copy.
+      const displayImage = resizeToPixelBudget(decoded);
 
       const slow = client.provider !== "webgpu";
       const { masks, staves, musicXml, transcriptions } = await client.process(
-        image,
+        decoded,
         (update) => {
           setStatus(describeProgress(update, slow));
         },
@@ -91,7 +95,7 @@ export function App({ client, config, onConfigChange }: AppProps) {
       // Strip the extension from the original filename for the download suggestion.
       const baseName = file.name.replace(/\.[^.]+$/, "");
       setResult({
-        image,
+        image: displayImage,
         masks,
         staves,
         musicXml,
