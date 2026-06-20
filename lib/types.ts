@@ -120,9 +120,11 @@ export interface NoteEvent {
 
 /**
  * The fully decoded transcription of one staff: all note events in order,
- * segmented by the barline tokens TrOMR emitted.
+ * segmented by the barline tokens TrOMR emitted. `rawRhythm` holds the
+ * decoder's rhythm token strings (before note/rest filtering) for inspection.
  */
 export interface Transcription {
   notes: NoteEvent[];
   measureCount: number;
+  rawRhythm: string[];
 }

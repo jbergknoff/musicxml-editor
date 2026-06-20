@@ -150,7 +150,7 @@ async function process(
   // full image before cropping.
   const segImage: RgbaImage = resizeToPixelBudget(image);
   console.info(
-    `[omr] input: ${image.width}×${image.height} (${(image.width * image.height / 1e6).toFixed(1)} Mpx), ` +
+    `[omr] input: ${image.width}×${image.height} (${((image.width * image.height) / 1e6).toFixed(1)} Mpx), ` +
       `seg: ${segImage.width}×${segImage.height}`,
   );
 

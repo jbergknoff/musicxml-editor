@@ -7,6 +7,7 @@ import type { RgbaImage, Staff, Transcription } from "../types";
 import { decodeTokens } from "./decode-tokens";
 import type { TrOMRSessions } from "./tromr-session";
 import { runTrOMR } from "./tromr-session";
+import { RHYTHM_VOCAB } from "./vocabulary";
 
 export interface TranscribeOptions {
   /** Called after each staff is processed, for progress reporting. */
@@ -30,7 +31,8 @@ export async function transcribeStaves(
     const notes = decodeTokens(tokens.rhythm, tokens.pitch, tokens.lift);
     const measureCount =
       notes.length === 0 ? 0 : notes[notes.length - 1].measureIndex + 1;
-    results.push({ notes, measureCount });
+    const rawRhythm = tokens.rhythm.map((id) => RHYTHM_VOCAB[id] ?? `?${id}`);
+    results.push({ notes, measureCount, rawRhythm });
     options.onProgress?.(index + 1, staves.length);
   }
   return results;

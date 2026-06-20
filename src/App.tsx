@@ -10,6 +10,7 @@ import { FileDrop } from "./components/FileDrop";
 import { InferenceSettings } from "./components/InferenceSettings";
 import { ScoreView } from "./components/ScoreView";
 import { SegmentationView } from "./components/SegmentationView";
+import { TranscriptionDebug } from "./components/TranscriptionDebug";
 import { decodeFile } from "./input/decode";
 import type { OmrClient } from "./worker/omr-client";
 import type { OmrConfig, ProgressUpdate } from "./worker/protocol";
@@ -142,6 +143,11 @@ export function App({ client, config, onConfigChange }: AppProps) {
           {result.musicXml !== "" ? (
             <ScoreView musicXml={result.musicXml} fileName={result.fileName} />
           ) : null}
+          <TranscriptionDebug
+            image={result.image}
+            staves={result.staves.staves}
+            transcriptions={result.transcriptions}
+          />
         </>
       ) : null}
     </main>
