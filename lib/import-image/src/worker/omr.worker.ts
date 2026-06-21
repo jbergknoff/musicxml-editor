@@ -6,7 +6,8 @@ import {
   segment,
 } from "../../lib/segmentation/segment";
 import { detectStaves } from "../../lib/staves/detect-staves";
-import type { RgbaImage, Staff } from "../../lib/types";
+import { detectBraces } from "../../lib/staves/brace-detection";
+import type { Mask, RgbaImage, Staff } from "../../lib/types";
 import { buildScore } from "../../lib/assembly/musicxml-builder";
 import { groupSystems } from "../../lib/staves/system-grouping";
 import { transcribeStaves } from "../../lib/transcription/transcribe";
@@ -45,6 +46,16 @@ function post(message: WorkerOutbound, transfer?: Transferable[]): void {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Set-pixel count and percentage of a binary mask, for debug logging. */
+function maskCoverage(mask: Mask): string {
+  let count = 0;
+  for (let index = 0; index < mask.data.length; index++) {
+    count += mask.data[index];
+  }
+  const percent = ((count / mask.data.length) * 100).toFixed(2);
+  return `${count}px (${percent}%)`;
 }
 
 // The served weights are optimized with a fixed batch dimension baked into the
@@ -172,10 +183,42 @@ async function process(
   });
   const segmentMs = performance.now() - segmentStart;
 
+  // Copious oemer (segmentation) output logging: per-class set-pixel coverage on
+  // the downscaled page. Low staff/notehead coverage explains missed staves or
+  // notes downstream.
+  console.info(
+    `[omr] oemer masks ${masks.width}×${masks.height}: ` +
+      `staff ${maskCoverage(masks.staff)}, symbols ${maskCoverage(masks.symbols)}, ` +
+      `stems/rests ${maskCoverage(masks.stemsRests)}, ` +
+      `noteheads ${maskCoverage(masks.noteheads)}, ` +
+      `clefs/keys ${maskCoverage(masks.clefsKeys)}`,
+  );
+
   post({ type: "progress", requestId, phase: "detecting-staves", fraction: 1 });
   const stavesStart = performance.now();
   const staves = detectStaves(masks.staff);
   const stavesMs = performance.now() - stavesStart;
+
+  // Log the detected staff geometry (segmentation-image space): a wrong staff
+  // count or unit size is the first suspect for bad crops and transcription.
+  console.info(
+    `[omr] detected ${staves.staves.length} staves, page unitSize=${staves.unitSize.toFixed(2)}`,
+  );
+  for (let index = 0; index < staves.staves.length; index++) {
+    const staff = staves.staves[index];
+    console.info(
+      `[omr]   staff ${index + 1}: lines=[${staff.lines
+        .map((line) => line.toFixed(1))
+        .join(", ")}] unitSize=${staff.unitSize.toFixed(2)} ` +
+        `x=[${staff.left}, ${staff.right}]`,
+    );
+  }
+
+  // Detect grand-staff braces from the left margin of the segmentation image
+  // (same coordinate space as the detected staves). These drive system grouping
+  // both here and, returned in the result, in the multi-page importer.
+  const braces = detectBraces(segImage, staves.staves);
+  console.info(`[omr] brace links (adjacent staves): [${braces.join(", ")}]`);
 
   // Transcribe each detected staff with TrOMR, cropping from the full image.
   const scaleX = image.width / segImage.width;
@@ -205,9 +248,9 @@ async function process(
         },
       },
     );
-    // Group staves into systems (pairing a treble over a bass into a grand
-    // staff) and assemble them into one part, sequential in time.
-    musicXml = buildScore(groupSystems(transcriptions));
+    // Group staves into systems (brace-linked staves form a grand staff, with a
+    // clef fallback) and assemble them into one part, sequential in time.
+    musicXml = buildScore(groupSystems(transcriptions, braces));
     console.info(
       `[omr] ${image.width}x${image.height} via ${backend.provider}: ` +
         `segment ${Math.round(segmentMs)}ms, ` +
@@ -223,13 +266,24 @@ async function process(
   }
 
   // Transfer the mask buffers (~4 MB each) rather than copying them back.
-  post({ type: "result", requestId, masks, staves, musicXml, transcriptions }, [
-    masks.staff.data.buffer,
-    masks.symbols.data.buffer,
-    masks.stemsRests.data.buffer,
-    masks.noteheads.data.buffer,
-    masks.clefsKeys.data.buffer,
-  ]);
+  post(
+    {
+      type: "result",
+      requestId,
+      masks,
+      staves,
+      musicXml,
+      transcriptions,
+      braces,
+    },
+    [
+      masks.staff.data.buffer,
+      masks.symbols.data.buffer,
+      masks.stemsRests.data.buffer,
+      masks.noteheads.data.buffer,
+      masks.clefsKeys.data.buffer,
+    ],
+  );
 }
 
 // The config message arrives once at startup, before any process request, and

@@ -23,6 +23,8 @@ export interface OmrResult {
   staves: StaffStructure;
   musicXml: string;
   transcriptions: Transcription[];
+  /** Brace links between adjacent staves (entry `i` joins staff `i` and `i + 1`). */
+  braces: boolean[];
 }
 
 export interface OmrClient {
@@ -100,6 +102,7 @@ export function createOmrClient(config: OmrConfig): Promise<OmrClient> {
             staves: message.staves,
             musicXml: message.musicXml,
             transcriptions: message.transcriptions,
+            braces: message.braces,
           });
           break;
         }

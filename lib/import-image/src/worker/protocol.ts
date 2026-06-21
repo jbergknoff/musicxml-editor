@@ -64,6 +64,13 @@ export interface ResultMessage {
   musicXml: string;
   /** Per-staff transcription results in the same order as `staves.staves`. */
   transcriptions: Transcription[];
+  /**
+   * Brace links between adjacent staves (entry `i` joins staff `i` and `i + 1`),
+   * detected from the page image; length `max(0, staves.length - 1)`. The
+   * multi-page importer feeds these to `groupSystems` when it rebuilds across
+   * pages, so the same grand-staff grouping the worker used is preserved.
+   */
+  braces: boolean[];
 }
 
 export interface ErrorMessage {

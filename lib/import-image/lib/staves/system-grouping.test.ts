@@ -58,4 +58,37 @@ describe("groupSystems", () => {
   it("returns nothing for no staves", () => {
     expect(groupSystems([])).toEqual([]);
   });
+
+  it("groups brace-linked staves even when the clefs disagree", () => {
+    // Two trebles the clef heuristic would keep apart, but a detected brace
+    // joins them into one system.
+    const systems = groupSystems([staff("G"), staff("G")], [true]);
+    expect(systems).toHaveLength(1);
+    expect(systems[0].staves).toHaveLength(2);
+  });
+
+  it("groups a maximal run of brace-linked staves into one system", () => {
+    const systems = groupSystems(
+      [staff("G"), staff("C"), staff("F")],
+      [true, true],
+    );
+    expect(systems).toHaveLength(1);
+    expect(systems[0].staves).toHaveLength(3);
+  });
+
+  it("falls back to the clef pairing where no brace was detected", () => {
+    const systems = groupSystems([staff("G"), staff("F")], [false]);
+    expect(systems).toHaveLength(1);
+    expect(systems[0].staves).toHaveLength(2);
+  });
+
+  it("mixes brace groups and clef pairs across the page", () => {
+    // First pair joins by clef (no brace), the second by a detected brace.
+    const systems = groupSystems(
+      [staff("G"), staff("F"), staff("G"), staff("G")],
+      [false, false, true],
+    );
+    expect(systems).toHaveLength(2);
+    expect(systems.every((system) => system.staves.length === 2)).toBe(true);
+  });
 });

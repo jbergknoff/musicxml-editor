@@ -72,7 +72,7 @@ export async function createImageImporter(
               : update,
           );
         });
-        systems.push(...groupSystems(result.transcriptions));
+        systems.push(...groupSystems(result.transcriptions, result.braces));
         for (const transcription of result.transcriptions) {
           recognizedNotes += transcription.notes.length;
         }
