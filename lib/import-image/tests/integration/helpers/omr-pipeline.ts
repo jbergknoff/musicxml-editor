@@ -44,6 +44,7 @@ import { classicalStaffMask } from "../../../lib/staves/classical-staff-mask";
 import { detectBraces } from "../../../lib/staves/brace-detection";
 import { detectStaves } from "../../../lib/staves/detect-staves";
 import { groupSystems } from "../../../lib/staves/system-grouping";
+import { transcribeStavesClassically } from "../../../lib/transcription/classical-transcription";
 import { transcribeStaves } from "../../../lib/transcription/transcribe";
 import type { TrOMRSessions } from "../../../lib/transcription/tromr-session";
 import type {
@@ -56,6 +57,9 @@ import type {
 
 /** Staff-detection path, mirroring the worker's OmrConfig.staffDetection. */
 export type StaffDetectionMode = "classical" | "model";
+
+/** Transcription path, mirroring the worker's OmrConfig.transcription. */
+export type TranscriptionMode = "classical" | "model";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -260,11 +264,15 @@ export interface RecognitionResult {
  * segment (downscaled) → detect staves → detect braces → transcribe (full-res
  * crops) → group systems → build score. Returns "" for MusicXML when no notes
  * were recognized, matching the worker/importer empty-result contract.
+ *
+ * Pass `models: null` when using classical staff detection and classical
+ * transcription — no ONNX sessions are needed in that path.
  */
 export async function recognizeImage(
   image: RgbaImage,
-  models: OmrModels,
+  models: OmrModels | null,
   staffDetection: StaffDetectionMode = "classical",
+  transcription: TranscriptionMode = "classical",
 ): Promise<RecognitionResult> {
   const segImage = resizeToPixelBudget(image);
 
@@ -272,6 +280,7 @@ export async function recognizeImage(
   // default), running the oemer segmentation model only when configured or when
   // the classical path finds nothing — keep this in sync with omr.worker.ts.
   const runModel = async (): Promise<StaffStructure> => {
+    if (!models) throw new Error("models required for oemer staff detection");
     const masks = await segment(segImage, models.segmentation, {
       batchSize: FIXED_BATCH_SIZE,
     });
@@ -299,11 +308,10 @@ export async function recognizeImage(
     scaleStaff(staff, scaleX, scaleY),
   );
 
-  const transcriptions: Transcription[] = await transcribeStaves(
-    models.tromr,
-    image,
-    fullResStaves,
-  );
+  const transcriptions: Transcription[] =
+    transcription === "classical"
+      ? transcribeStavesClassically(image, fullResStaves)
+      : await transcribeStaves(models!.tromr, image, fullResStaves);
   let noteCount = 0;
   for (const transcription of transcriptions) {
     noteCount += transcription.notes.length;
