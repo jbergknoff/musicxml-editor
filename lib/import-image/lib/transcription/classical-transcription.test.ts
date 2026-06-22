@@ -397,32 +397,26 @@ describe("transcribeStavesClassically", () => {
     const data = blankImage(width, height);
     drawStaffLines(data, width, spec);
 
-    // Draw two sharps after a clef region. A sharp is roughly square (~u × 1.5u).
+    // Draw two sharps after a clef region. A realistic # has two thin vertical
+    // bars with two thin horizontal bars crossing them (and extending slightly
+    // beyond). The vertical bars must be disconnected in the top zone so the
+    // avgTopRunCount discriminator sees ≥2 runs there.
     const sharpW = Math.round(u * 0.85);
     const sharpH = Math.round(u * 1.5);
+    const barW = Math.max(1, Math.round(sharpW * 0.2)); // ~2px vertical bar width
+    const leftX = Math.round(sharpW * 0.15);   // left bar inset from edge
+    const rightX = sharpW - leftX - barW;       // symmetric right bar
     const afterClefX = Math.round(u * 3.5);
     for (let i = 0; i < 2; i++) {
       const sx = afterClefX + i * (sharpW + Math.round(u * 0.4));
       const sy = Math.round(spec.topLine + u);
-      // Draw outer rectangle, erase center rows to create the sharp's internal white
-      paintRect(data, width, sx, sy, sx + sharpW, sy + sharpH);
-      // Thin horizontal white bands inside (the short horizontal bars of a sharp)
-      paintRect(
-        data,
-        width,
-        sx + 1,
-        sy + Math.round(sharpH * 0.35),
-        sx + sharpW - 1,
-        sy + Math.round(sharpH * 0.45),
-      );
-      paintRect(
-        data,
-        width,
-        sx + 1,
-        sy + Math.round(sharpH * 0.55),
-        sx + sharpW - 1,
-        sy + Math.round(sharpH * 0.65),
-      );
+      // Two thin vertical bars (disconnected from each other)
+      paintRect(data, width, sx + leftX, sy, sx + leftX + barW - 1, sy + sharpH);
+      paintRect(data, width, sx + rightX, sy, sx + rightX + barW - 1, sy + sharpH);
+      // Two thin horizontal bars spanning the full width at 35% and 65% height
+      const hBarH = Math.max(1, Math.round(barW * 0.8));
+      paintRect(data, width, sx, sy + Math.round(sharpH * 0.35), sx + sharpW - 1, sy + Math.round(sharpH * 0.35) + hBarH - 1);
+      paintRect(data, width, sx, sy + Math.round(sharpH * 0.65), sx + sharpW - 1, sy + Math.round(sharpH * 0.65) + hBarH - 1);
     }
 
     const image: RgbaImage = { data, width, height };

@@ -467,7 +467,7 @@ function classifyComponent(
     w <= 1.3 * u &&
     h >= w * 1.3
   ) {
-    return h / w >= 2.2 ? "flat" : "sharp";
+    return avgTopRunCount(ink, comp, imageWidth, 0.2) >= 1.5 ? "sharp" : "flat";
   }
 
   // Notehead-sized blob: whether standalone or with a stem attached
@@ -663,6 +663,44 @@ function countHoles(
     }
   }
   return holes;
+}
+
+/**
+ * Count the average number of distinct horizontal ink runs per row in the top
+ * `fraction` of a component's bounding box. Used to distinguish sharps from
+ * flats and naturals: a sharp (#) has two disconnected vertical bars above its
+ * horizontal bars, giving an average of ≈2 runs; a flat (♭) has only the single
+ * vertical stem at the top, giving ≈1. The vertical close never merges
+ * horizontally, so the two bars of a sharp remain separate.
+ */
+function avgTopRunCount(
+  ink: Uint8Array,
+  comp: Component,
+  imageWidth: number,
+  fraction = 0.2,
+): number {
+  const h = comp.y1 - comp.y0 + 1;
+  const yEnd = comp.y0 + Math.round(h * fraction);
+  let totalRuns = 0;
+  let activeRows = 0;
+  for (let y = comp.y0; y < yEnd; y++) {
+    let runs = 0;
+    let inRun = false;
+    for (let x = comp.x0; x <= comp.x1; x++) {
+      const pixel = ink[y * imageWidth + x] === 1;
+      if (pixel && !inRun) {
+        runs++;
+        inRun = true;
+      } else if (!pixel) {
+        inRun = false;
+      }
+    }
+    if (runs > 0) {
+      totalRuns += runs;
+      activeRows++;
+    }
+  }
+  return activeRows > 0 ? totalRuns / activeRows : 0;
 }
 
 /**
@@ -962,7 +1000,9 @@ function readNotes(
     .filter(
       (s) =>
         (s.kind === "notehead-filled" || s.kind === "notehead-open") &&
-        centroidX(s.component) > noteStartX,
+        centroidX(s.component) > noteStartX &&
+        centroidY(s.component) >= lineYsInCrop[0] - 2.2 * u &&
+        centroidY(s.component) <= lineYsInCrop[4] + 2.2 * u,
     )
     .sort((a, b) => centroidX(a.component) - centroidX(b.component));
 
