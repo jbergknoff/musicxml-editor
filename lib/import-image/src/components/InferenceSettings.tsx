@@ -2,6 +2,7 @@ import type {
   BackendChoice,
   OmrConfig,
   StaffDetectionMode,
+  TranscriptionMode,
 } from "../worker/protocol";
 
 /**
@@ -34,6 +35,13 @@ const STAFF_DETECTION_LABELS: Record<StaffDetectionMode, string> = {
 const STAFF_DETECTION_CHOICES = Object.keys(
   STAFF_DETECTION_LABELS,
 ) as StaffDetectionMode[];
+
+const TRANSCRIPTION_LABELS: Record<TranscriptionMode, string> = {
+  classical: "Classical (fast, model-free)",
+  model: "TrOMR (robust, ~109 MB)",
+};
+
+const TRANSCRIPTION_CHOICES = Object.keys(TRANSCRIPTION_LABELS) as TranscriptionMode[];
 
 export function InferenceSettings({
   config,
@@ -79,6 +87,26 @@ export function InferenceSettings({
           {STAFF_DETECTION_CHOICES.map((choice) => (
             <option key={choice} value={choice}>
               {STAFF_DETECTION_LABELS[choice]}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label class="settings__field">
+        <span>Transcription</span>
+        <select
+          disabled={disabled}
+          value={config.transcription}
+          onChange={(event) => {
+            onChange({
+              ...config,
+              transcription: event.currentTarget.value as TranscriptionMode,
+            });
+          }}
+        >
+          {TRANSCRIPTION_CHOICES.map((choice) => (
+            <option key={choice} value={choice}>
+              {TRANSCRIPTION_LABELS[choice]}
             </option>
           ))}
         </select>

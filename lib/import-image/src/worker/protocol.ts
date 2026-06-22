@@ -104,10 +104,20 @@ export type BackendChoice = "auto" | "webgpu" | "wasm";
  */
 export type StaffDetectionMode = "classical" | "model";
 
+/**
+ * How to transcribe each detected staff into notes:
+ *  - "classical": model-free connected-component analysis (fast, weight-free,
+ *    the default for born-digital scores — no ~109 MB TrOMR weights needed);
+ *  - "model": TrOMR ConvNeXt encoder + autoregressive decoder (robust to
+ *    handwritten/scanned music, but requires downloading large weights).
+ */
+export type TranscriptionMode = "classical" | "model";
+
 /** UI-controlled inference options, sent to the worker before it starts up. */
 export interface OmrConfig {
   backend: BackendChoice;
   staffDetection: StaffDetectionMode;
+  transcription: TranscriptionMode;
 }
 
 /**

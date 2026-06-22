@@ -11,6 +11,7 @@ import type { OmrConfig } from "./worker/protocol";
 const DEFAULT_CONFIG: OmrConfig = {
   backend: "auto",
   staffDetection: "classical",
+  transcription: "classical",
 };
 
 /**

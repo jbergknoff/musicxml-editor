@@ -21,10 +21,11 @@ import type {
   BackendChoice,
   ProgressUpdate,
   StaffDetectionMode,
+  TranscriptionMode,
 } from "./src/worker/protocol";
 
 export { isPdf };
-export type { BackendChoice, ProgressUpdate, StaffDetectionMode };
+export type { BackendChoice, ProgressUpdate, StaffDetectionMode, TranscriptionMode };
 
 export interface ImageImporterOptions {
   /** Inference provider; "auto" (default) picks WebGPU when an adapter works. */
@@ -35,6 +36,12 @@ export interface ImageImporterOptions {
    * when it finds no staves. "model" always uses the oemer staff mask.
    */
   staffDetection?: StaffDetectionMode;
+  /**
+   * How to transcribe each detected staff; "classical" (default) uses
+   * model-free connected-component analysis (fast, no weights). "model" uses
+   * TrOMR for robustness on handwritten/scanned music.
+   */
+  transcription?: TranscriptionMode;
 }
 
 /**
@@ -64,6 +71,7 @@ export async function createImageImporter(
   const client = await createOmrClient({
     backend: options.backend ?? "auto",
     staffDetection: options.staffDetection ?? "classical",
+    transcription: options.transcription ?? "classical",
   });
   return {
     provider: client.provider,
@@ -114,6 +122,7 @@ export async function imageToMusicXml(
   const importer = await createImageImporter({
     backend: options.backend,
     staffDetection: options.staffDetection,
+    transcription: options.transcription,
   });
   try {
     return await importer.importFile(file, options.onProgress);

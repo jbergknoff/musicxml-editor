@@ -22,6 +22,7 @@ import type {
 import { buildScore } from "../../lib/assembly/musicxml-builder";
 import { groupSystems } from "../../lib/staves/system-grouping";
 import { transcribeStaves } from "../../lib/transcription/transcribe";
+import { transcribeStavesClassically } from "../../lib/transcription/classical-transcription";
 import type { TrOMRSessions } from "../../lib/transcription/tromr-session";
 import { loadSegmentationModels, loadTrOMRModels } from "../models/registry";
 import { createWebBackend } from "../runtime/web-backend";
@@ -303,14 +304,12 @@ async function process(
   let musicXml = "";
   let transcriptions: Transcription[] = [];
   if (staves.staves.length > 0) {
-    const tromrSessions = await getTrOMR(backend, requestId);
     post({ type: "progress", requestId, phase: "transcribing", fraction: 0 });
     const transcribeStart = performance.now();
-    transcriptions = await transcribeStaves(
-      tromrSessions,
-      image,
-      fullResStaves,
-      {
+
+    if (config.transcription === "classical") {
+      // Model-free path: no weights needed, runs synchronously in a few ms.
+      transcriptions = transcribeStavesClassically(image, fullResStaves, {
         onProgress: (done, total) => {
           post({
             type: "progress",
@@ -319,8 +318,26 @@ async function process(
             fraction: done / total,
           });
         },
-      },
-    );
+      });
+    } else {
+      const tromrSessions = await getTrOMR(backend, requestId);
+      transcriptions = await transcribeStaves(
+        tromrSessions,
+        image,
+        fullResStaves,
+        {
+          onProgress: (done, total) => {
+            post({
+              type: "progress",
+              requestId,
+              phase: "transcribing",
+              fraction: done / total,
+            });
+          },
+        },
+      );
+    }
+
     // Group staves into systems (brace-linked staves form a grand staff, with a
     // clef fallback) and assemble them into one part, sequential in time.
     musicXml = buildScore(groupSystems(transcriptions, braces));
@@ -328,7 +345,8 @@ async function process(
       `[omr] ${image.width}x${image.height} via ${backend.provider}: ` +
         `segment ${Math.round(segmentMs)}ms, ` +
         `detect-staves ${Math.round(stavesMs)}ms, ` +
-        `transcribe ${Math.round(performance.now() - transcribeStart)}ms`,
+        `transcribe ${Math.round(performance.now() - transcribeStart)}ms ` +
+        `(${config.transcription})`,
     );
   } else {
     console.info(
@@ -369,6 +387,7 @@ workerScope.addEventListener("message", (event) => {
     config = {
       backend: request.backend,
       staffDetection: request.staffDetection,
+      transcription: request.transcription,
     };
     // Resolve the backend now so the UI can show the provider before any drop.
     getBackend(config).then((backend) => {
