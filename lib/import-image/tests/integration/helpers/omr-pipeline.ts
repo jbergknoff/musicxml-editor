@@ -41,8 +41,12 @@ import {
   type SegmentationModels,
 } from "../../../lib/segmentation/segment";
 import { classicalStaffMask } from "../../../lib/staves/classical-staff-mask";
+import { fetchModelFromSource } from "../../../scripts/model-source";
 import { detectBraces } from "../../../lib/staves/brace-detection";
-import { detectStaves } from "../../../lib/staves/detect-staves";
+import {
+  detectStaves,
+  staffDetectionLooksReliable,
+} from "../../../lib/staves/detect-staves";
 import { groupSystems } from "../../../lib/staves/system-grouping";
 import { transcribeStaves } from "../../../lib/transcription/transcribe";
 import type { TrOMRSessions } from "../../../lib/transcription/tromr-session";
@@ -139,14 +143,30 @@ async function fetchModelToDisk(
   entry: ModelManifestEntry,
   target: string,
 ): Promise<void> {
+  // Primary source: the served v2 weights (same bytes the app ships). This is
+  // what local and CI runs use, so their behavior is unchanged.
   const url = `${MODELS_BASE_URL}${modelUrl(entry)}`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(
-      `Failed to fetch model "${entry.fileName}" from ${url}: ${response.status}`,
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`${response.status} from ${url}`);
+    }
+    writeFileSync(target, Buffer.from(await response.arrayBuffer()));
+    return;
+  } catch (servedError) {
+    // Fallback: fetch from the original upstream release (the same source
+    // `make models` uses). Equivalent for these tests — TrOMR weights are served
+    // as-is, and the classical staff path never runs the segmentation weights —
+    // so an environment that cannot reach the served host (e.g. a restricted
+    // network) can still run the suite. See scripts/model-source.ts.
+    console.warn(
+      `[omr-models] served weights host unreachable for ${entry.fileName} ` +
+        `(${String(servedError)}); falling back to the upstream release ` +
+        `${entry.sourceUrl}`,
     );
+    const bytes = await fetchModelFromSource(entry);
+    writeFileSync(target, bytes);
   }
-  writeFileSync(target, Buffer.from(await response.arrayBuffer()));
 }
 
 /**
@@ -253,6 +273,10 @@ export interface RecognitionResult {
   staffCount: number;
   /** Total note events across all staves. */
   noteCount: number;
+  /** Per-staff transcriptions (notes, raw rhythm tokens, decoded attributes) —
+   * empty when nothing was recognized. Exposed for the token-dump harness
+   * (scripts/dump-omr-tokens.ts); the spec asserts on the other fields. */
+  transcriptions: Transcription[];
 }
 
 /**
@@ -269,8 +293,10 @@ export async function recognizeImage(
   const segImage = resizeToPixelBudget(image);
 
   // Locate stafflines. Default to the model-free classical mask (the worker's
-  // default), running the oemer segmentation model only when configured or when
-  // the classical path finds nothing — keep this in sync with omr.worker.ts.
+  // default), falling back to the oemer segmentation model when configured, or
+  // when the classical detection looks unreliable (no staves, or a noisy mask
+  // whose lines don't resolve into clean staves — see staffDetectionLooksReliable).
+  // Keep this in sync with omr.worker.ts.
   const runModel = async (): Promise<StaffStructure> => {
     const masks = await segment(segImage, models.segmentation, {
       batchSize: FIXED_BATCH_SIZE,
@@ -280,8 +306,9 @@ export async function recognizeImage(
 
   let staves: StaffStructure;
   if (staffDetection === "classical") {
-    staves = detectStaves(classicalStaffMask(segImage));
-    if (staves.staves.length === 0) {
+    const classicalMask = classicalStaffMask(segImage);
+    staves = detectStaves(classicalMask);
+    if (!staffDetectionLooksReliable(classicalMask, staves)) {
       staves = await runModel();
     }
   } else {
@@ -290,7 +317,7 @@ export async function recognizeImage(
   const braces = detectBraces(segImage, staves.staves);
 
   if (staves.staves.length === 0) {
-    return { musicXml: "", staffCount: 0, noteCount: 0 };
+    return { musicXml: "", staffCount: 0, noteCount: 0, transcriptions: [] };
   }
 
   const scaleX = image.width / segImage.width;
@@ -311,5 +338,10 @@ export async function recognizeImage(
 
   const systems: ScoreSystem[] = groupSystems(transcriptions, braces);
   const musicXml = noteCount === 0 ? "" : buildScore(systems);
-  return { musicXml, staffCount: staves.staves.length, noteCount };
+  return {
+    musicXml,
+    staffCount: staves.staves.length,
+    noteCount,
+    transcriptions,
+  };
 }

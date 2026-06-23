@@ -99,8 +99,11 @@ Phase 2 staff structure (pure algorithm in `lib/staves/`, fully unit-tested):
   scores it recovers the same staves as the UNet in ~20 ms instead of ~15–37 s,
   and lets the pipeline skip segmentation entirely. This is the **default**
   staff-detection path (`OmrConfig.staffDetection: "classical"`), with the UNet
-  as fallback (used when classical finds no staves, or when set to `"model"` for
-  photos/skew). Validated against the OMR integration fixtures.
+  as fallback (used when the classical result looks unreliable —
+  `staffDetectionLooksReliable`: no staves, or a noisy mask whose detected
+  stafflines mostly fail to resolve into clean five-line staves, as on the dense
+  binchois engraving — or when set to `"model"` for photos/skew). Validated
+  against the OMR integration fixtures.
 - `lib/staves/brace-detection.ts` — `detectBraces(image, staves)` returns the
   per-adjacent-pair brace links (length `staves.length − 1`) that drive grouping.
   The cue is image-based: for each pair it scans a narrow column band just left of
@@ -189,6 +192,19 @@ Phase 3 transcription + MusicXML assembly:
   — the editor surfaces the message and the `[omr]` TrOMR token logs show what was
   decoded. The worker and the public `importFile` both build via `groupSystems` →
   `buildScore` (the importer concatenating systems across pages first).
+  **Meter inference:** when no staff recovered a time signature (TrOMR often
+  emits none), `buildScore` infers one from the recovered rhythms via
+  `lib/assembly/meter.ts` (`inferMeterFromStaves`) instead of letting the builder
+  fall back to a blind 4/4 — the modal per-measure total duration is the measure
+  length, mapped to a *simple* (quarter-beat) meter. It needs ≥2 measures to agree
+  (a single unmetered measure keeps 4/4) and cannot recover simple-vs-compound
+  (6/8 reads as 3/4, since beaming is not in TrOMR's tokens). The inference is
+  confined to `buildScore`; low-level `buildMusicXML` keeps its plain 4/4 default
+  for direct/test use.
+- `lib/assembly/meter.ts` — `inferMeterFromStaves(staffNotes)` derives a meter
+  from recovered note durations (the modal per-measure total), used by
+  `buildScore` as the time-signature fallback (see above). Pure and unit-tested
+  (`meter.test.ts`).
 - `lib/assembly/durations.ts` — shared duration arithmetic (divisions per
   quarter, each type's divisions, dotted length, and `BEAM_COUNT` per type) used
   by both the builder and the beam grouper (one source of truth, no import cycle).
@@ -254,7 +270,8 @@ transcription run off the main thread so the heavy WASM pass never freezes the U
   locates stafflines by `config.staffDetection`: **`"classical"` (default)** runs
   `classicalStaffMask` → `detectStaves` and **skips `segment` entirely** (the
   ~70 MB unet weights load only on the model path), falling back to the model if
-  no staves are found; **`"model"`** runs `segment` (on the downscaled image) →
+  the classical detection looks unreliable (`staffDetectionLooksReliable`);
+  **`"model"`** runs `segment` (on the downscaled image) →
   `detectStaves`. On the classical path the result's `masks` carries the
   classical staff mask with empty symbol layers (the overlay simply has nothing
   to draw for them). Then per request it runs `detectBraces` (on
@@ -295,6 +312,18 @@ form (see below), before `make build`/`make dev`.
 The only local requirements are `make` and `docker`. Bun, Biome, tsc, and
 Playwright run inside containers via `docker compose`; nothing is installed on
 the host. (On Netlify, `NETLIFY=true` makes the Makefile run the tools directly.)
+
+`make models` downloads from the original upstream releases via
+`scripts/model-source.ts` (oemer GitHub `checkpoints` + homr `onnx_checkpoints`
+ZIPs). That same module is the OMR integration tests' offline fallback: their
+`ensureModels` helper fetches the served (Netlify) weights first and falls back to
+the upstream releases when that host is unreachable. The fixtures use the
+model-free classical staff path (segmentation weights never run) and the TrOMR
+weights are served as-is, so the upstream and served weights recover identical
+MusicXML. On a network-restricted machine where the test container can't reach
+either host (e.g. a proxy CA mounted only into the `main` Docker service), run
+`make models` first to populate `public/models/` from the `main` container, then
+`make omr-integration-test`.
 
 ```sh
 make models           # download oemer ONNX weights -> public/models/ (local, once)

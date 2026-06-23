@@ -76,15 +76,25 @@ function fixtureNames(): string[] {
 // here — see NEVER_COMPARED_FEATURES in helpers/musicxml-diff.ts. What remains is
 // only the genuine recognition gap. `chant` and `saltarello` recover every pitch
 // and attribute except the meter; the dense scores also drop/mis-place notes.
+//
+// Meter note: TrOMR emits no time-signature token for these staves, so the
+// builder now *infers* the meter from the recovered rhythms (lib/assembly/meter.ts)
+// instead of defaulting to 4/4. That inference resolves a measure to its simple
+// (quarter-beat) meter, so `mozart` (2/4) becomes exact and `saltarello` (6/8) is
+// inferred as 3/4 — the right measure length, but simple/compound is not
+// recoverable from durations alone, so its affordance shrinks rather than
+// vanishing. `chant` is a single unmetered measure, too little to infer from, so
+// it keeps the 4/4 default. (Predictions made without a local weights run; the
+// omr-integration CI job confirms the exact recovered meters.)
 const EXPECTED_DIFFERENCES: Record<string, Affordance[]> = {
   chant: [codify.timeSignature("senza-misura", "4/4")],
-  saltarello: [codify.timeSignature("6/8", "4/4")],
+  saltarello: [codify.timeSignature("6/8", "3/4")],
   // Recovered via the default classical (model-free) staff detection — see the
   // staffDetection note below. (This list differs slightly from the oemer-mask
   // recovery; the classical staff crop drops the two spurious ledger notes and a
   // wrong accidental the model produced.)
   "mozart-piano-sonata": [
-    codify.timeSignature("2/4", "4/4"),
+    // Meter (2/4) is now recovered by rhythm inference — no time affordance.
     codify.missedNote(98, "A2"),
     codify.wrongNote(98, "C#3", "E5"),
     codify.missedNote(98, "C#5"),
@@ -118,9 +128,14 @@ const EXPECTED_DIFFERENCES: Record<string, Affordance[]> = {
   ],
   // binchois is currently skipped (below); these are kept ready for when the
   // pipeline improves enough to unskip it. The list is long on purpose — it is
-  // exactly how far the recovery is from the real score today.
+  // exactly how far the recovery is from the real score today. NOTE: staff
+  // detection now recovers all four staves (the classical mask was unreliable on
+  // this dense engraving, so the pipeline falls back to the oemer UNet — see
+  // staffDetectionLooksReliable). The remaining blockers before unskip are system
+  // grouping (its two-system × two-staff layout is mis-paired) and the note
+  // errors; this list still reflects the older two-staff recovery and will be
+  // rewritten when binchois is unskipped.
   binchois: [
-    codify.timeSignature("3/4", "4/4"),
     codify.clefCount(4, 2),
     codify.measureCount(34, 23),
     codify.missedNote(1, "C4"),

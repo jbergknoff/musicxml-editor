@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { Mask } from "../types";
-import { detectStaves } from "./detect-staves";
+import { detectStaves, staffDetectionLooksReliable } from "./detect-staves";
 
 /** Draw `count` evenly spaced full-staff lines starting at `top`. */
 function staffLines(
@@ -82,5 +82,40 @@ describe("detectStaves", () => {
   it("returns an empty structure when there are too few lines", () => {
     const mask = maskWithLines(60, 40, staffLines(8, 4, 6, 53, 3));
     expect(detectStaves(mask)).toEqual({ staves: [], unitSize: 0 });
+  });
+});
+
+describe("staffDetectionLooksReliable", () => {
+  it("is reliable when every detected line forms a staff", () => {
+    const mask = maskWithLines(60, 40, staffLines(8, 4, 6, 53));
+    expect(staffDetectionLooksReliable(mask, detectStaves(mask))).toBe(true);
+  });
+
+  it("tolerates a few stray lines between clean staves", () => {
+    // Two full staves (10 lines) plus one stray line: 10/11 ≈ 0.91 resolved.
+    const mask = maskWithLines(80, 200, [
+      ...staffLines(10, 5, 5, 74),
+      ...staffLines(80, 5, 5, 74),
+      { row: 150, from: 5, to: 74 },
+    ]);
+    const structure = detectStaves(mask);
+    expect(structure.staves).toHaveLength(2);
+    expect(staffDetectionLooksReliable(mask, structure)).toBe(true);
+  });
+
+  it("is unreliable when many detected lines never form a staff", () => {
+    // One staff plus three stray lines: only 5 of 8 lines resolve (0.625).
+    const mask = maskWithLines(60, 80, [
+      ...staffLines(8, 4, 6, 53),
+      ...staffLines(60, 4, 6, 53, 3),
+    ]);
+    const structure = detectStaves(mask);
+    expect(structure.staves).toHaveLength(1);
+    expect(staffDetectionLooksReliable(mask, structure)).toBe(false);
+  });
+
+  it("is unreliable when no staff was detected", () => {
+    const mask = maskWithLines(60, 40, staffLines(8, 4, 6, 53, 3));
+    expect(staffDetectionLooksReliable(mask, detectStaves(mask))).toBe(false);
   });
 });

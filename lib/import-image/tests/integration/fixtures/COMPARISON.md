@@ -49,24 +49,70 @@ ignores them rather than asking each fixture to codify them:
 | fixture               | codified affordances                                                                 |
 | --------------------- | ------------------------------------------------------------------------------------ |
 | `chant`               | time signature `senza-misura`→`4/4`                                                   |
-| `saltarello`          | time signature `6/8`→`4/4`                                                            |
-| `mozart-piano-sonata` | time `2/4`→`4/4`; 19 missed, 11 wrong-pitch, 2 spurious, 1 wrong-accidental           |
-| `binchois` (skipped)  | time `3/4`→`4/4`; 34→23 measures; 4→2 clefs; 58 missed, 20 wrong, 29 spurious, 3 acc. |
+| `saltarello`          | time signature `6/8`→`3/4`                                                            |
+| `mozart-piano-sonata` | 19 missed, 11 wrong-pitch (meter `2/4` now recovered by rhythm inference)            |
+| `binchois` (skipped)  | 34→23 measures; 4→2 clefs; 58 missed, 20 wrong, 29 spurious, 3 acc. — *stale*, see below |
 
 Read this as: `chant` and `saltarello` recover **every pitch and attribute except
-the meter**; the only thing standing between them and a strict source-equality
-assertion is time-signature recovery. The dense scores additionally drop and
-mis-place notes.
+the meter**. The dense scores additionally drop and mis-place notes.
 
-## The highest-value fixes (which affordances to retire first)
+`binchois`'s row is the **old two-staff recovery** and will be rewritten when the
+fixture is unskipped: staff detection now recovers all four staves (see fix 2),
+so the `4→2 clefs` and inflated measure/note counts no longer reflect the
+pipeline — they are kept only as a placeholder until system grouping is fixed and
+real numbers can be measured.
 
-1. **Time signature.** Codified on *all four* fixtures — TrOMR emits no time
-   signature, so the builder defaults to `4/4`. Recovering the meter would retire
-   four affordances at once and let `chant`/`saltarello` assert exact equality.
-2. **Notehead recall on dense staves** (`mozart`, `binchois` missed-notes).
-   Accidentals, once a note is found, are essentially correct (the
-   wrong-accidental counts are tiny), so the weakness is *finding and placing*
-   notes, not spelling them.
-3. **Staff/system detection** (`binchois` clef-count and measure-count): only two
-   of its four bass-clef staves survive, which is also why it over-fills a measure
-   and can't be engraved — hence it is in `SKIPPED_FIXTURES`.
+## Meter inference
+
+TrOMR emits no time-signature token for any of these fixtures, so the builder
+**infers the meter from the recovered rhythms** (`lib/assembly/meter.ts`): the
+most common per-measure total duration is the measure length, mapped to a simple
+(quarter-beat) meter. This made `mozart` (2/4) exact — its time affordance is
+retired — and gives `saltarello` the right measure length. It does **not**
+recover simple-vs-compound (a 6/8 measure has the same length as 3/4, and beaming
+is not in TrOMR's tokens), so `saltarello` is inferred as `3/4`; closing that last
+gap needs a beaming/beat-grouping signal. `chant` is a single unmetered measure —
+too little to infer from — so it keeps the `4/4` default.
+
+## Findings so far
+
+Two affordance classes have already been retired by recent work:
+
+- **Meter is now inferred, not guessed.** `buildScore` derives the time signature
+  from the recovered rhythms (`lib/assembly/meter.ts`) instead of defaulting to
+  4/4. This made `mozart` (2/4) exact — its time affordance is gone — and gives
+  `saltarello` the correct *measure length* (it now reads 3/4; only the
+  simple-vs-compound distinction, which needs a beaming signal TrOMR does not
+  emit, keeps a residual affordance). `chant`'s single unmetered measure is too
+  short to infer from, so it keeps the 4/4 default.
+- **Staff detection on dense engravings is fixed.** The model-free classical
+  staff path was unreliable on `binchois` (recovering only two of four staves),
+  so the pipeline now falls back to the oemer UNet when the classical mask looks
+  unreliable (`staffDetectionLooksReliable`). All four `binchois` staves are now
+  recovered.
+
+## The highest-value fixes next (which affordances to retire first)
+
+1. **Notehead recall on dense staves** — the dominant remaining gap. `mozart`'s
+   list is now *entirely* missed (19) and wrong-pitch (11) notes — no spurious,
+   no wrong-accidental. Accidentals, once a note is found, are essentially
+   correct, so the weakness is **finding and placing** notes (and resolving
+   chord stacks), not spelling them. The missed/wrong notes cluster in the
+   densest measures (98–102), which points at TrOMR notehead recall on tightly
+   packed staves rather than at the crop or the assembler. This is the single
+   change that would retire the most affordances across both dense fixtures.
+
+2. **`binchois` system grouping (the unskip blocker).** Staff detection now
+   recovers all four staves (fix above), so the remaining blockers before
+   `binchois` can leave `SKIPPED_FIXTURES` are: (a) its two-system × two-staff
+   layout is mis-paired by `groupSystems` — the four staves need to group as
+   *two systems of two* (treble/bass each), and getting that wrong is what
+   inflates the measure count and over-fills measures; and (b) the note errors
+   from fix 1. The recovery path is: fix grouping → run the suite to get the
+   real four-staff diff → rewrite `binchois`'s `EXPECTED_DIFFERENCES` from the
+   placeholder list to the measured one → remove it from `SKIPPED_FIXTURES`.
+
+3. **Simple-vs-compound meter (`saltarello`).** Closing the last `6/8`→`3/4`
+   affordance needs a beat-grouping/beaming signal. TrOMR emits no beam tokens,
+   so this is a genuine model-input gap, not a builder fix — lowest priority of
+   the three, and tracked here so the affordance isn't mistaken for a bug.
