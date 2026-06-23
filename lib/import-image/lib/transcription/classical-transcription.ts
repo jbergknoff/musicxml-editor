@@ -512,6 +512,8 @@ function detectClef(
   symbols: ClassifiedSymbol[],
   lineYs: number[],
   unitSize: number,
+  ink: Uint8Array,
+  imageWidth: number,
 ): { clef: ScoreAttributes["clef"] | undefined; endX: number } {
   const clefSymbols = symbols
     .filter((s) => s.kind === "clef")
@@ -525,17 +527,44 @@ function detectClef(
   // Use 1u margin so bass-clef dots (just to the right of the body) are
   // excluded from the key-signature scan window.
   const endX = comp.x1 + Math.round(unitSize);
-  const topLine = lineYs[0];
-  // Treble clef extends above the staff; bass (and C) clefs stay within or just
-  // below the top line. Empirically the treble clef reaches ≥0.35u above the top
-  // line in rendered scores; 0.35u separates it from bass clefs (which sit at or
-  // below the top line, or at most ~0.3u above in drawn/synthetic test shapes).
-  const isTreble = comp.y0 < topLine - unitSize * 0.35;
+  const top = lineYs[0];
+  const bottom = lineYs[4];
+  const mid = (top + bottom) / 2;
+  const h = comp.y1 - comp.y0;
 
-  return {
-    clef: isTreble ? { sign: "G", line: 2 } : { sign: "F", line: 4 },
-    endX,
-  };
+  // Treble (G2): the tall spiral plus its descender span ~6–7u, far taller than
+  // any C- or F-clef body (both ≤ ~5u). This is the cleanest single cue.
+  if (h > unitSize * 5.5) {
+    return { clef: { sign: "G", line: 2 }, endX };
+  }
+
+  // Among the remaining (shorter) clefs, distinguish an alto C-clef from a bass
+  // clef by vertical symmetry: a C-clef's two mirror-image bowls are balanced
+  // about the staff's middle line, so its ink centroid sits on that line, while
+  // a bass clef is asymmetric (its mass and dots cluster off-centre). The clef's
+  // left vertical bar is split off as its own component by staff-line removal,
+  // so we judge symmetry from the bowls' component alone.
+  let sumY = 0;
+  let inkCount = 0;
+  for (let y = comp.y0; y <= comp.y1; y++) {
+    for (let x = comp.x0; x <= comp.x1; x++) {
+      if (ink[y * imageWidth + x] === 1) {
+        sumY += y;
+        inkCount++;
+      }
+    }
+  }
+  const centroidY = inkCount > 0 ? sumY / inkCount : (comp.y0 + comp.y1) / 2;
+  // Symmetric about the middle line → alto C-clef (reference line = middle line
+  // = C4). The criterion itself pins the reference to the middle, so this only
+  // recognizes the alto C-clef; a tenor C-clef (centred a line higher) reads as
+  // bass, which is an acceptable known gap.
+  if (Math.abs(centroidY - mid) < unitSize * 0.27) {
+    return { clef: { sign: "C", line: 3 }, endX };
+  }
+
+  // Otherwise a bass (F4) clef.
+  return { clef: { sign: "F", line: 4 }, endX };
 }
 
 // ─── Key signature detection ──────────────────────────────────────────────────
@@ -812,16 +841,32 @@ function detectTimeSignature(
 const DIATONIC_NAMES = ["C", "D", "E", "F", "G", "A", "B"] as const;
 
 /**
- * Absolute diatonic value of the top staff line for each supported clef.
- * Value = octave × 7 + noteIndex (C=0, D=1, …, B=6).
- *
- *   Treble (G2): top line = F5 = 5×7+3 = 38
- *   Bass   (F4): top line = A3 = 3×7+5 = 26
+ * Absolute diatonic value (octave × 7 + noteIndex, C=0 … B=6) of the pitch a
+ * clef sign names *on its own reference line*: a G-clef puts G4 on its line, an
+ * F-clef puts F3 on its line, a C-clef puts C4 on its line.
  */
-const TOP_LINE_DIATONIC: Record<string, number> = {
-  G: 38,
-  F: 26,
+const CLEF_REFERENCE_DIATONIC: Record<string, number> = {
+  G: 4 * 7 + 4, // G4 = 32
+  F: 3 * 7 + 3, // F3 = 24
+  C: 4 * 7 + 0, // C4 = 28
 };
+
+type ClefAttribute = NonNullable<ScoreAttributes["clef"]>;
+
+/**
+ * Absolute diatonic value of the *top* staff line under a given clef. The clef
+ * `line` counts from the bottom (1 = bottom staff line), so its row index from
+ * the top is `5 − line`; each line up the staff is a third (two diatonic steps).
+ *
+ *   Treble (G2): G4 on line 2 → top line = 32 + 2×3 = 38 = F5
+ *   Bass   (F4): F3 on line 4 → top line = 24 + 2×1 = 26 = A3
+ *   Alto   (C3): C4 on line 3 → top line = 28 + 2×2 = 32 = G4
+ */
+function topLineDiatonic(clef: ClefAttribute): number {
+  const reference = CLEF_REFERENCE_DIATONIC[clef.sign] ?? CLEF_REFERENCE_DIATONIC.G;
+  const indexFromTop = 5 - clef.line;
+  return reference + 2 * indexFromTop;
+}
 
 /**
  * Convert an absolute diatonic value to a pitch string like "F5" or "C4".
@@ -842,11 +887,10 @@ function yToPitch(
   y: number,
   lineYsInCrop: number[],
   unitSize: number,
-  clefSign: string,
+  clef: ClefAttribute,
 ): string {
   const steps = Math.round((y - lineYsInCrop[0]) / (unitSize / 2));
-  const referenceDiatonic = TOP_LINE_DIATONIC[clefSign] ?? TOP_LINE_DIATONIC.G;
-  return diatonicToPitch(referenceDiatonic - steps);
+  return diatonicToPitch(topLineDiatonic(clef) - steps);
 }
 
 // ─── Duration determination ───────────────────────────────────────────────────
@@ -951,7 +995,7 @@ function readNotes(
   imageWidth: number,
   lineYsInCrop: number[],
   unitSize: number,
-  clefSign: string,
+  clef: ClefAttribute,
   noteStartX: number,
 ): NoteEvent[] {
   const u = unitSize;
@@ -1011,7 +1055,7 @@ function readNotes(
     const nhRow = notePitchRow(ink, comp, imageWidth);
     const nhCenterX = (comp.x0 + comp.x1) / 2;
 
-    const pitch = yToPitch(nhRow, lineYsInCrop, u, clefSign);
+    const pitch = yToPitch(nhRow, lineYsInCrop, u, clef);
     const duration = determineDuration(comp, ink, imageWidth, beamComps, u);
     const isDotted = dotSymbols.some(
       (d) =>
@@ -1099,7 +1143,13 @@ function transcribeStaffClassically(image: RgbaImage, staff: Staff): Transcripti
   const symbols = [...baseSymbols, ...beamSymbols];
 
   // ── Header: clef → key → time ─────────────────────────────────────────────
-  const { clef, endX: clefEndX } = detectClef(symbols, lineYsInCrop, u);
+  const { clef, endX: clefEndX } = detectClef(
+    symbols,
+    lineYsInCrop,
+    u,
+    inkClosed,
+    cropped.width,
+  );
   const { keyFifths, endX: keyEndX } = detectKeySignature(symbols, clefEndX, u);
   const { time, endX: timeEndX } = detectTimeSignature(
     symbols,
@@ -1117,7 +1167,8 @@ function transcribeStaffClassically(image: RgbaImage, staff: Staff): Transcripti
     ...(time !== undefined && { time }),
   };
 
-  const clefSign = clef?.sign ?? "G";
+  // Default to a treble clef for pitch mapping when none was recognized.
+  const clefForPitch: ClefAttribute = clef ?? { sign: "G", line: 2 };
 
   // ── Note reading ──────────────────────────────────────────────────────────
   const notes = readNotes(
@@ -1126,7 +1177,7 @@ function transcribeStaffClassically(image: RgbaImage, staff: Staff): Transcripti
     cropped.width,
     lineYsInCrop,
     u,
-    clefSign,
+    clefForPitch,
     noteStartX,
   );
 

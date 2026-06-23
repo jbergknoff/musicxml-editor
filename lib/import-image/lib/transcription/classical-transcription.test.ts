@@ -203,6 +203,28 @@ function drawBassClef(
   );
 }
 
+/**
+ * Draw a minimal alto C-clef: two mirror-image bumps balanced about the staff's
+ * middle line, joined by a thin spine so they form one component. The vertical
+ * symmetry about the middle line is what marks it a C-clef (and pins the
+ * reference line to the middle = C4).
+ */
+function drawAltoClef(
+  data: Uint8ClampedArray,
+  width: number,
+  x: number,
+  spec: StaffSpec,
+): void {
+  const u = spec.unitSize;
+  const mid = Math.round(spec.topLine + 2 * u); // middle staff line
+  const bumpWidth = Math.round(2 * u);
+  // Upper bump above the middle line, lower bump symmetric below it.
+  paintRect(data, width, x, mid - Math.round(2 * u), x + bumpWidth, mid - Math.round(0.5 * u));
+  paintRect(data, width, x, mid + Math.round(0.5 * u), x + bumpWidth, mid + Math.round(2 * u));
+  // Thin spine joining the two bumps into a single connected component.
+  paintRect(data, width, x, mid - Math.round(2 * u), x + Math.round(0.4 * u), mid + Math.round(2 * u));
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("transcribeStavesClassically", () => {
@@ -387,6 +409,30 @@ describe("transcribeStavesClassically", () => {
     const [result] = transcribeStavesClassically(image, [staff]);
 
     expect(result.attributes.clef?.sign).toBe("F");
+  });
+
+  it("detects an alto C-clef and maps the middle line to C4", () => {
+    const u = 12;
+    const spec: StaffSpec = { unitSize: u, topLine: 50, left: 5, right: 295 };
+    const width = 300;
+    const height = 180;
+    const data = blankImage(width, height);
+    drawStaffLines(data, width, spec);
+    drawAltoClef(data, width, 10, spec);
+
+    // Note on the middle line = C4 under an alto clef.
+    const noteX = 140;
+    const noteY = Math.round(spec.topLine + 2 * u);
+    drawFilledNotehead(data, width, noteX, noteY, u);
+    drawStem(data, width, noteX + Math.round(u * 0.5), noteY - Math.round(u * 3.5), noteY);
+
+    const image: RgbaImage = { data, width, height };
+    const staff = staffFrom(spec);
+    const [result] = transcribeStavesClassically(image, [staff]);
+
+    expect(result.attributes.clef?.sign).toBe("C");
+    expect(result.attributes.clef?.line).toBe(3);
+    expect(result.notes[0]?.pitch).toBe("C4");
   });
 
   it("detects a key signature of two sharps", () => {
