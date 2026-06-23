@@ -9,7 +9,10 @@ import {
   segment,
 } from "../../lib/segmentation/segment";
 import { classicalStaffMask } from "../../lib/staves/classical-staff-mask";
-import { detectStaves } from "../../lib/staves/detect-staves";
+import {
+  detectStaves,
+  staffDetectionLooksReliable,
+} from "../../lib/staves/detect-staves";
 import { detectBraces } from "../../lib/staves/brace-detection";
 import type {
   Mask,
@@ -253,7 +256,7 @@ async function process(
     const stavesStart = performance.now();
     staves = detectStaves(staffMask);
     stavesMs = performance.now() - stavesStart;
-    if (staves.staves.length > 0) {
+    if (staffDetectionLooksReliable(staffMask, staves)) {
       masks = masksFromStaff(staffMask);
       staffMethod = "classical";
     } else {
@@ -261,7 +264,7 @@ async function process(
       const fallbackStart = performance.now();
       staves = detectStaves(masks.staff);
       stavesMs = performance.now() - fallbackStart;
-      staffMethod = "classical→model (no staves found classically)";
+      staffMethod = "classical→model (classical detection unreliable)";
     }
   } else {
     masks = await runModel();

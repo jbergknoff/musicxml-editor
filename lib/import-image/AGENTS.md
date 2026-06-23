@@ -99,8 +99,11 @@ Phase 2 staff structure (pure algorithm in `lib/staves/`, fully unit-tested):
   scores it recovers the same staves as the UNet in ~20 ms instead of ~15–37 s,
   and lets the pipeline skip segmentation entirely. This is the **default**
   staff-detection path (`OmrConfig.staffDetection: "classical"`), with the UNet
-  as fallback (used when classical finds no staves, or when set to `"model"` for
-  photos/skew). Validated against the OMR integration fixtures.
+  as fallback (used when the classical result looks unreliable —
+  `staffDetectionLooksReliable`: no staves, or a noisy mask whose detected
+  stafflines mostly fail to resolve into clean five-line staves, as on the dense
+  binchois engraving — or when set to `"model"` for photos/skew). Validated
+  against the OMR integration fixtures.
 - `lib/staves/brace-detection.ts` — `detectBraces(image, staves)` returns the
   per-adjacent-pair brace links (length `staves.length − 1`) that drive grouping.
   The cue is image-based: for each pair it scans a narrow column band just left of
@@ -267,7 +270,8 @@ transcription run off the main thread so the heavy WASM pass never freezes the U
   locates stafflines by `config.staffDetection`: **`"classical"` (default)** runs
   `classicalStaffMask` → `detectStaves` and **skips `segment` entirely** (the
   ~70 MB unet weights load only on the model path), falling back to the model if
-  no staves are found; **`"model"`** runs `segment` (on the downscaled image) →
+  the classical detection looks unreliable (`staffDetectionLooksReliable`);
+  **`"model"`** runs `segment` (on the downscaled image) →
   `detectStaves`. On the classical path the result's `masks` carries the
   classical staff mask with empty symbol layers (the overlay simply has nothing
   to draw for them). Then per request it runs `detectBraces` (on

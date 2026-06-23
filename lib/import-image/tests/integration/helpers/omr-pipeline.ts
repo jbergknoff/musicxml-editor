@@ -43,7 +43,10 @@ import {
 import { classicalStaffMask } from "../../../lib/staves/classical-staff-mask";
 import { fetchModelFromSource } from "../../../scripts/model-source";
 import { detectBraces } from "../../../lib/staves/brace-detection";
-import { detectStaves } from "../../../lib/staves/detect-staves";
+import {
+  detectStaves,
+  staffDetectionLooksReliable,
+} from "../../../lib/staves/detect-staves";
 import { groupSystems } from "../../../lib/staves/system-grouping";
 import { transcribeStaves } from "../../../lib/transcription/transcribe";
 import type { TrOMRSessions } from "../../../lib/transcription/tromr-session";
@@ -290,8 +293,10 @@ export async function recognizeImage(
   const segImage = resizeToPixelBudget(image);
 
   // Locate stafflines. Default to the model-free classical mask (the worker's
-  // default), running the oemer segmentation model only when configured or when
-  // the classical path finds nothing — keep this in sync with omr.worker.ts.
+  // default), falling back to the oemer segmentation model when configured, or
+  // when the classical detection looks unreliable (no staves, or a noisy mask
+  // whose lines don't resolve into clean staves — see staffDetectionLooksReliable).
+  // Keep this in sync with omr.worker.ts.
   const runModel = async (): Promise<StaffStructure> => {
     const masks = await segment(segImage, models.segmentation, {
       batchSize: FIXED_BATCH_SIZE,
@@ -301,8 +306,9 @@ export async function recognizeImage(
 
   let staves: StaffStructure;
   if (staffDetection === "classical") {
-    staves = detectStaves(classicalStaffMask(segImage));
-    if (staves.staves.length === 0) {
+    const classicalMask = classicalStaffMask(segImage);
+    staves = detectStaves(classicalMask);
+    if (!staffDetectionLooksReliable(classicalMask, staves)) {
       staves = await runModel();
     }
   } else {

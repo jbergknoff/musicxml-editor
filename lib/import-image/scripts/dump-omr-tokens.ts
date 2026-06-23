@@ -36,10 +36,16 @@ import {
   loadOmrModels,
   type OmrModels,
   recognizeImage,
+  type StaffDetectionMode,
 } from "../tests/integration/helpers/omr-pipeline";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIRECTORY = join(here, "../tests/integration/fixtures");
+
+// Staff-detection path to exercise (mirrors the worker's OmrConfig). Defaults to
+// the pipeline default; set OMR_STAFF_DETECTION=model to A/B the oemer UNet path.
+const STAFF_DETECTION: StaffDetectionMode =
+  process.env.OMR_STAFF_DETECTION === "model" ? "model" : "classical";
 
 function fixtureNames(): string[] {
   return readdirSync(FIXTURES_DIRECTORY)
@@ -96,9 +102,9 @@ function dumpStaff(transcription: Transcription, index: number): void {
 }
 
 async function dumpFixture(name: string, models: OmrModels): Promise<void> {
-  console.log(`\n=== ${name} ===`);
+  console.log(`\n=== ${name} (staffDetection=${STAFF_DETECTION}) ===`);
   const image = decodeImageFile(join(FIXTURES_DIRECTORY, `${name}.png`));
-  const result = await recognizeImage(image, models);
+  const result = await recognizeImage(image, models, STAFF_DETECTION);
   console.log(
     `staves: ${result.staffCount} · notes: ${result.noteCount} · ` +
       `xml: ${result.musicXml.length > 0 ? "built" : "(empty)"}`,

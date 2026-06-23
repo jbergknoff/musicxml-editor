@@ -128,11 +128,14 @@ const EXPECTED_DIFFERENCES: Record<string, Affordance[]> = {
   ],
   // binchois is currently skipped (below); these are kept ready for when the
   // pipeline improves enough to unskip it. The list is long on purpose — it is
-  // exactly how far the recovery is from the real score today.
+  // exactly how far the recovery is from the real score today. NOTE: staff
+  // detection now recovers all four staves (the classical mask was unreliable on
+  // this dense engraving, so the pipeline falls back to the oemer UNet — see
+  // staffDetectionLooksReliable). The remaining blockers before unskip are system
+  // grouping (its two-system × two-staff layout is mis-paired) and the note
+  // errors; this list still reflects the older two-staff recovery and will be
+  // rewritten when binchois is unskipped.
   binchois: [
-    // Meter (3/4) is now expected from rhythm inference — no time affordance.
-    // (Binchois is skipped below, so this is a prediction the omr-integration job
-    // would confirm once the fixture is good enough to unskip.)
     codify.clefCount(4, 2),
     codify.measureCount(34, 23),
     codify.missedNote(1, "C4"),

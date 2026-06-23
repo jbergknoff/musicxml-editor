@@ -92,6 +92,35 @@ export function detectStaves(
 }
 
 /**
+ * Most detected stafflines should resolve into accepted five-line staves. When a
+ * large fraction do not, the mask was too noisy to trust — typically the
+ * model-free classical mask on a dense/old engraving, where it drops some outer
+ * stafflines and invents stray ones, so whole staves fail to form five clean
+ * lines (e.g. binchois: 18 lines detected, only 2 staves → 10 used). The pipeline
+ * uses this to fall back from the classical path to the oemer UNet, which
+ * recovers such pages cleanly.
+ */
+const MIN_RESOLVED_LINE_FRACTION = 0.7;
+
+export function staffDetectionLooksReliable(
+  staffMask: Mask,
+  result: StaffStructure,
+  options: DetectStavesOptions = {},
+): boolean {
+  if (result.staves.length === 0) {
+    return false;
+  }
+  const detectedLines = detectStafflineRows(staffMask, {
+    thresholdFraction: options.thresholdFraction,
+  }).length;
+  if (detectedLines === 0) {
+    return false;
+  }
+  const resolvedLines = result.staves.length * STANDARD_STAFF_LINES;
+  return resolvedLines >= detectedLines * MIN_RESOLVED_LINE_FRACTION;
+}
+
+/**
  * Leftmost and rightmost columns carrying staffline pixels, measured over the
  * rows this staff spans (padded by half a unit so line thickness is included).
  * A column is part of the staff if it intersects at least half of the five
