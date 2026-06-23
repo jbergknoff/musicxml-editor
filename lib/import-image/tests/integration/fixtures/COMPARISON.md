@@ -160,6 +160,36 @@ Four affordance classes have already been retired by recent work:
    them needs a stronger transcription model (or a model fine-tuned on dense
    bass-clef grace passages), not a crop/tiling change in our pipeline.
 
+   *External evidence that these are model limits, not pipeline bugs:*
+   - The upstream [homr](https://github.com/liebharc/homr) README (the project our
+     TrOMR weights come from) states the model "focuses on pitch and rhythm
+     information on the bass or treble clef, neglecting dynamics, articulation,
+     **double sharps/flats**, and other musical symbols," and — key for our case
+     — that "the transformer output provides the sequence of symbols but does not
+     include explicit positional information (horizontal or vertical
+     coordinates)." The model commits to a pitch *token*; there is no notehead
+     coordinate to sanity-check a low ledger-line note against, which is exactly
+     how `D2` becomes `C#2`.
+   - homr's
+     [`transformer/configs.py`](https://github.com/liebharc/homr/blob/main/homr/transformer/configs.py)
+     pins the staff input to `max_height = 256`, `max_width = 1280` — **identical**
+     to our `staff-crop.ts` canvas. So our wide-staff width-compression is not a
+     deviation from upstream; the same scaling is what homr ships, which is
+     consistent with the slicing experiment above showing resolution isn't the
+     lever.
+   - The [TrOMR paper](https://arxiv.org/abs/2308.09370) (Cui et al., ICASSP 2023)
+     reports, on its own test set, note accuracy ≈ 88% and pitch/type accuracy
+     ≈ 90% (figures relayed from secondary summaries — arxiv blocked a direct
+     fetch). At ~1 wrong note in 8–10 even in-distribution, mozart's 3/70 ≈ 4%
+     residual sits *inside* the model's expected error envelope, and a dense
+     early-music page (binchois) faring worse is the predicted behaviour. The
+     paper's headline contribution is a *consistency loss* added because pitch and
+     rhythm are predicted as separate, mutually-inconsistent sequences — i.e.
+     pitch is a known-weak channel. General OMR work (e.g.
+     [M-DETR](https://www.sciencedirect.com/science/article/abs/pii/S095741742400530X))
+     likewise notes "a large number of small and dense notes … becomes a great
+     challenge to recognition accuracy."
+
 2. **`binchois` multi-part assembly (the unskip blocker).** This was previously
    filed as a system-grouping fix, but measuring the real four-staff recovery
    shows grouping is *not* the gate. `binchois` is a **two-part vocal score**
