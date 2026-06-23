@@ -51,16 +51,35 @@ ignores them rather than asking each fixture to codify them:
 | `chant`               | time signature `senza-misura`→`4/4`                                                   |
 | `saltarello`          | time signature `6/8`→`3/4`                                                            |
 | `mozart-piano-sonata` | 1 grace-acc + 2 low-bass misreads (meter `2/4` recovered; grace notes emitted; chords compared as sets) |
-| `binchois` (skipped)  | 34→23 measures; 4→2 clefs; 58 missed, 20 wrong, 29 spurious, 3 acc. — *stale*, see below |
+| `binchois` (skipped)  | key `-1` + meter `3/4` now recovered; 34→23 measures; 4→2 clefs; 59 missed, 0 wrong, 30 spurious, 3 acc. (measured; **mostly diff artifacts**, see below) |
 
 Read this as: `chant` and `saltarello` recover **every pitch and attribute except
 the meter**. The dense scores additionally drop and mis-place notes.
 
-`binchois`'s row is the **old two-staff recovery** and will be rewritten when the
-fixture is unskipped: staff detection now recovers all four staves (see fix 2),
-so the `4→2 clefs` and inflated measure/note counts no longer reflect the
-pipeline — they are kept only as a placeholder until system grouping is fixed and
-real numbers can be measured.
+`binchois`'s row was rewritten from a stale two-staff placeholder to the **measured
+four-staff recovery** (run the pipeline over the fixture and diff it; the numbers
+are deterministic). Two things improved and are no longer a gap: the **key
+signature** (`-1`, one flat) and the **meter** (`3/4`, via rhythm inference) now
+come out right. But the note-level counts are **misleading**, and the fixture
+stays skipped, because `binchois` is a **two-part vocal score** (Cantus + "Cantus 2
+and Tenor") that the single-part pipeline flattens:
+
+- **`4→2 clefs` and `34→23 measures` are structural, not recognition gaps.** The
+  source is `score-partwise` with two `<part>`s, so it declares four clefs (two per
+  part) and 34 `<measure>` elements (17 per part). The pipeline assembles one part,
+  so it emits two clefs and 23 continuously-numbered measures. No amount of better
+  recognition closes this without **emitting two parts**.
+- **The 59 missed / 30 spurious notes are largely alignment artifacts.** The diff
+  compares one flat, document-order note stream. The source's is `P1`-then-`P2`
+  (each part's two systems concatenated); the recovery's interleaves the staves of
+  each system and runs system-by-system — a *different order* over largely the
+  *same pitches*, which Needleman–Wunsch charges as paired deletions+insertions.
+  131 of the source's 160 notes are recovered; the "missed/spurious" split mostly
+  reflects re-ordering, not true misses. A part-aware diff (or multi-part assembly)
+  would collapse most of these.
+
+So unskipping `binchois` needs **multi-part assembly** (or a part-aware diff), not
+the system-grouping tweak the next-fixes list previously implied — see fix 2.
 
 ## Meter inference
 
@@ -114,7 +133,8 @@ Four affordance classes have already been retired by recent work:
   staff path was unreliable on `binchois` (recovering only two of four staves),
   so the pipeline now falls back to the oemer UNet when the classical mask looks
   unreliable (`staffDetectionLooksReliable`). All four `binchois` staves are now
-  recovered.
+  recovered. (The classical path's reliability check fires here, so `binchois`
+  goes through the UNet; the other three fixtures stay on the classical path.)
 
 ## The highest-value fixes next (which affordances to retire first)
 
@@ -122,18 +142,78 @@ Four affordance classes have already been retired by recent work:
    that is left on `mozart` are 3 real model errors, every one in the tightly
    packed low-bass grace arpeggios: a lift error (m98 A2→A#2) and two pitch
    misreads (m100 D2→C#2, F#2→E2). These are TrOMR notehead/accidental limits at
-   the bottom of the bass staff, not assembler or diff issues — closing them needs
-   a stronger transcription pass (or a higher-resolution crop) on that region.
+   the bottom of the bass staff, not assembler or diff issues.
 
-2. **`binchois` system grouping (the unskip blocker).** Staff detection now
-   recovers all four staves (fix above), so the remaining blockers before
-   `binchois` can leave `SKIPPED_FIXTURES` are: (a) its two-system × two-staff
-   layout is mis-paired by `groupSystems` — the four staves need to group as
-   *two systems of two* (treble/bass each), and getting that wrong is what
-   inflates the measure count and over-fills measures; and (b) the note errors
-   from fix 1. The recovery path is: fix grouping → run the suite to get the
-   real four-staff diff → rewrite `binchois`'s `EXPECTED_DIFFERENCES` from the
-   placeholder list to the measured one → remove it from `SKIPPED_FIXTURES`.
+   **The "higher-resolution crop" idea was tested and ruled out.** mozart's bass
+   staff is one wide grand-staff strip (~4500 px), so the TrOMR canvas scales it
+   to fit width 1280 — squeezing the staff to ~48 px tall in the 256-tall canvas
+   (interline ~12 px) and leaving most of the vertical resolution unused. The
+   obvious fix is to split a wide staff into narrower horizontal slices so each
+   slice fills more of the canvas. Transcribing the bass staff in half-width
+   slices (interline ~22 px, ~2× the vertical resolution) does **not** fix the
+   misreads: the m100 arpeggio still decodes `C#2 E2 A2`, byte-identical to the
+   full-width read, and the m98 arpeggio gets *worse* (`G#2 B2 E3`). Splitting
+   also re-centers each slice, which shifts the absolute vertical reference the
+   model reads pitch from and throws the read off by an octave on other slices.
+   So the remaining errors are the model reading these specific densely-packed
+   low ledger noteheads/accidentals wrong, independent of resolution — closing
+   them needs a stronger transcription model (or a model fine-tuned on dense
+   bass-clef grace passages), not a crop/tiling change in our pipeline.
+
+   *External evidence that these are model limits, not pipeline bugs:*
+   - The upstream [homr](https://github.com/liebharc/homr) README (the project our
+     TrOMR weights come from) states the model "focuses on pitch and rhythm
+     information on the bass or treble clef, neglecting dynamics, articulation,
+     **double sharps/flats**, and other musical symbols," and — key for our case
+     — that "the transformer output provides the sequence of symbols but does not
+     include explicit positional information (horizontal or vertical
+     coordinates)." The model commits to a pitch *token*; there is no notehead
+     coordinate to sanity-check a low ledger-line note against, which is exactly
+     how `D2` becomes `C#2`.
+   - homr's
+     [`transformer/configs.py`](https://github.com/liebharc/homr/blob/main/homr/transformer/configs.py)
+     pins the staff input to `max_height = 256`, `max_width = 1280` — **identical**
+     to our `staff-crop.ts` canvas. So our wide-staff width-compression is not a
+     deviation from upstream; the same scaling is what homr ships, which is
+     consistent with the slicing experiment above showing resolution isn't the
+     lever.
+   - The [TrOMR paper](https://arxiv.org/abs/2308.09370) (Cui et al., ICASSP 2023)
+     reports, on its own test set, note accuracy ≈ 88% and pitch/type accuracy
+     ≈ 90% (figures relayed from secondary summaries — arxiv blocked a direct
+     fetch). At ~1 wrong note in 8–10 even in-distribution, mozart's 3/70 ≈ 4%
+     residual sits *inside* the model's expected error envelope, and a dense
+     early-music page (binchois) faring worse is the predicted behaviour. The
+     paper's headline contribution is a *consistency loss* added because pitch and
+     rhythm are predicted as separate, mutually-inconsistent sequences — i.e.
+     pitch is a known-weak channel. General OMR work (e.g.
+     [M-DETR](https://www.sciencedirect.com/science/article/abs/pii/S095741742400530X))
+     likewise notes "a large number of small and dense notes … becomes a great
+     challenge to recognition accuracy."
+
+2. **`binchois` multi-part assembly (the unskip blocker).** This was previously
+   filed as a system-grouping fix, but measuring the real four-staff recovery
+   shows grouping is *not* the gate. `binchois` is a **two-part vocal score**
+   (Cantus + "Cantus 2 and Tenor"), laid out as two systems of two staves each;
+   the single-part pipeline flattens it, which is what produces the structural
+   `4→2 clefs` / `34→23 measures` differences and scrambles the note order the
+   flat diff aligns on (so its 59 missed / 30 spurious are mostly alignment
+   artifacts, not recognition gaps — see the affordances table). The real path to
+   unskip is to **emit two `<part>`s** (and have the diff compare part-by-part),
+   not to re-pair systems. Two sub-points worth recording for whoever does it:
+   - The four staves are **evenly spaced** (every inter-staff gap is ≈11 unit
+     sizes), so vertical-gap geometry cannot tell a within-system gap from a
+     between-system one. And there is **no brace ink** bridging the first
+     system's two staves (the second system's *is* detected), so brace links come
+     out `[false, false, true]` and `groupSystems` mis-pairs to `[s0],[s1],[s2,s3]`.
+     Neither geometry nor braces disambiguate this layout; part assignment has to
+     come from elsewhere (e.g. a fixed staves-per-system count once part count is
+     known).
+   - Staff detection also mis-measures the second staff's left extent (it starts
+     at `left≈227` while the others start at `left≈0`), which is the proximate
+     reason the first system's brace scan lands in blank margin. Worth fixing
+     independently of the part-assembly work.
+   - The remaining genuine *recognition* gap is then the note errors (recall on a
+     dense early-music engraving), in the same family as fix 1.
 
 3. **Simple-vs-compound meter (`saltarello`).** Closing the last `6/8`→`3/4`
    affordance needs a beat-grouping/beaming signal. TrOMR emits no beam tokens,
