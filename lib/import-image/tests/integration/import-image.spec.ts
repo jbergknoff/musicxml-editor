@@ -113,15 +113,23 @@ const EXPECTED_DIFFERENCES: Record<string, Affordance[]> = {
     codify.wrongNote(100, "D2", "C#2"),
     codify.wrongNote(100, "F#2", "E2"),
   ],
-  // binchois is currently skipped (below); these are kept ready for when the
-  // pipeline improves enough to unskip it. The list is long on purpose — it is
-  // exactly how far the recovery is from the real score today. NOTE: staff
-  // detection now recovers all four staves (the classical mask was unreliable on
-  // this dense engraving, so the pipeline falls back to the oemer UNet — see
-  // staffDetectionLooksReliable). The remaining blockers before unskip are system
-  // grouping (its two-system × two-staff layout is mis-paired) and the note
-  // errors; this list still reflects the older two-staff recovery and will be
-  // rewritten when binchois is unskipped.
+  // binchois is currently skipped (below), so this list is inert — it is not
+  // asserted while the fixture is skipped, and is kept as a standing record of
+  // how far the recovery is from the real score. NOTE: staff detection now
+  // recovers all four staves (the classical mask was unreliable on this dense
+  // engraving, so the pipeline falls back to the oemer UNet — see
+  // staffDetectionLooksReliable), and the key (-1) and meter (3/4) now recover
+  // correctly. The per-note entries below predate that and are a placeholder, not
+  // the current measured diff.
+  //
+  // The real unskip blocker is NOT system grouping (as previously filed) but that
+  // binchois is a TWO-PART vocal score (Cantus + "Cantus 2 and Tenor") the
+  // single-part pipeline flattens: that is what makes `4→2 clefs` / `34→23
+  // measures` structural, and it scrambles the flat note order the diff aligns on
+  // (so the measured 59 missed / 30 spurious are largely alignment artifacts).
+  // Unskipping needs multi-part assembly (emit two <part>s) and a part-aware diff,
+  // after which this list should be regenerated from the measured diff. See
+  // fixtures/COMPARISON.md ("binchois multi-part assembly").
   binchois: [
     codify.clefCount(4, 2),
     codify.measureCount(34, 23),
@@ -245,9 +253,11 @@ const EXPECTED_DIFFERENCES: Record<string, Affordance[]> = {
 // pipeline produces correct, renderable output for it.
 //
 // TODO: improve the OMR until `binchois` passes, then drop it from this set.
-// Today its recovery (see EXPECTED_DIFFERENCES above) drops a third of the
-// measures and over-fills one, so OSMD/VexFlow refuses to engrave it — the same
-// failure the editor's ScoreView surfaces.
+// `binchois` is a two-part vocal score the single-part pipeline flattens; until
+// it emits two <part>s (and the diff compares part-by-part), the recovery differs
+// from the source structurally (4→2 clefs, 34→23 measures) and the flat note
+// order is scrambled — see the binchois note in EXPECTED_DIFFERENCES above and
+// fixtures/COMPARISON.md.
 const SKIPPED_FIXTURES = new Set<string>(["binchois"]);
 
 // Loading ~109 MB of weights and creating four inference sessions is the
