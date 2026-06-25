@@ -111,7 +111,10 @@ omr-integration-test: node_modules
 # skipped (delete tmp/homr-output/<name>.musicxml to re-run one).
 homr-comparison: node_modules
 	docker compose run --rm homr sh -c \
-		'pip install --quiet homr && cd lib/import-image && python scripts/run-homr.py'
+		'DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+		 && apt-get install -y -q --no-install-recommends libxcb1 libgl1 \
+		 && pip install --quiet homr \
+		 && cd lib/import-image && python scripts/run-homr.py'
 	$(call in_import_image,bun run scripts/compare-homr.ts)
 
 pr-ready: format lint typecheck build unit-test
