@@ -64,6 +64,13 @@ services:
     environment:
       - NODE_EXTRA_CA_CERTS=$host_ca
       - SSL_CERT_FILE=$host_ca
+  homr:
+    volumes:
+      - $host_ca:$host_ca:ro
+    environment:
+      - SSL_CERT_FILE=$host_ca
+      - REQUESTS_CA_BUNDLE=$host_ca
+      - PIP_CERT=$host_ca
 EOF
   log "wrote docker-compose.override.yml (host CA for in-container installs)"
 else
