@@ -106,14 +106,16 @@ omr-integration-test: node_modules
 # integration test fixtures. Step 1: install HOMR and run it on each fixture
 # image (outputs to lib/import-image/tmp/homr-output/). Step 2: diff the
 # recovered MusicXML against source scores and print a side-by-side report.
+# opencv-python (a HOMR dep) is swapped for opencv-python-headless so cv2
+# loads without X11/display system libraries in the slim Python image.
 # HOMR downloads its own model weights (~100 MB) on first use, cached in
 # .homr-cache/ (XDG_CACHE_HOME). Idempotent: already-recovered fixtures are
 # skipped (delete tmp/homr-output/<name>.musicxml to re-run one).
 homr-comparison: node_modules
 	docker compose run --rm homr sh -c \
-		'DEBIAN_FRONTEND=noninteractive apt-get update -qq \
-		 && apt-get install -y -q --no-install-recommends libxcb1 libgl1 \
-		 && pip install --quiet homr \
+		'pip install --quiet homr \
+		 && pip uninstall -y opencv-python \
+		 && pip install --quiet opencv-python-headless \
 		 && cd lib/import-image && python scripts/run-homr.py'
 	$(call in_import_image,bun run scripts/compare-homr.ts)
 
