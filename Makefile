@@ -114,8 +114,7 @@ omr-integration-test: node_modules
 homr-comparison: node_modules
 	docker compose run --rm homr sh -c \
 		'pip install --quiet homr \
-		 && pip uninstall -y opencv-python \
-		 && pip install --quiet opencv-python-headless \
+		 && pip install --quiet --force-reinstall opencv-python-headless \
 		 && cd lib/import-image && python scripts/run-homr.py'
 	$(call in_import_image,bun run scripts/compare-homr.ts)
 
