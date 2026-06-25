@@ -500,6 +500,33 @@ function elementForHandle(doc: Document, handle: NoteHandle): Element | null {
   );
 }
 
+// Remove several notes at once (e.g. every member of a selected chord). All
+// target elements are resolved up front — while the handles are still valid
+// against the current document — and each affected measure is rebuilt once, so
+// the index shifts a sequence of single removals would cause cannot occur.
+export function removeNotes(doc: Document, handles: NoteHandle[]): void {
+  const elements = handles
+    .map((handle) => elementForHandle(doc, handle))
+    .filter((element): element is Element => element !== null);
+  if (elements.length === 0) {
+    return;
+  }
+  const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+  const removeSet = new Set(elements);
+  const measureEls = new Set<Element>();
+  for (const element of elements) {
+    if (element.parentElement) {
+      measureEls.add(element.parentElement);
+    }
+  }
+  for (const measureEl of measureEls) {
+    const notes = readRealNotes(measureEl, divisions).filter(
+      (note) => !removeSet.has(note.element),
+    );
+    writeMeasure(doc, measureEl, notes, divisionsPerMeasure);
+  }
+}
+
 // Remove a note; its span becomes rest (rebalanced by writeMeasure).
 export function removeNote(doc: Document, handle: NoteHandle): void {
   const measures = measuresOf(doc);

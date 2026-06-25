@@ -8,6 +8,7 @@ import {
   type NoteHandle,
   parseDocument,
   removeNote,
+  removeNotes,
   serializeDocument,
 } from "./dom-edit";
 import {
@@ -179,6 +180,55 @@ describe("removeNote", () => {
     const score = reparse(doc);
     expect(chords(score).length).toBe(0);
     expect(score.parts[0].measures[0].events.every(isRest)).toBe(true);
+  });
+});
+
+describe("removeNotes", () => {
+  test("removes several notes from one measure in a single rebuild", () => {
+    const doc = createBlankDocument();
+    const a = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    const b = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    const c = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 2,
+      durationBeats: 1,
+      pitch: { step: "G", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    // Removing the first and last (by their original handles, resolved up front)
+    // leaves only the middle note — the index shift of sequential removals would
+    // otherwise drop the wrong elements.
+    removeNotes(doc, [a, c]);
+    const placed = chords(reparse(doc));
+    expect(placed.length).toBe(1);
+    expect(placed[0].onsetBeat).toBe(1);
+    expect(placed[0].chord.notes[0].pitch.step).toBe("E");
+    // Sanity: `b` still resolves to the surviving note.
+    expect(b.measureIndex).toBe(0);
+  });
+
+  test("ignores handles that do not resolve", () => {
+    const doc = createBlankDocument();
+    const handle = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    removeNotes(doc, [{ measureIndex: 9, noteElementIndex: 9 }]);
+    // The real note is untouched.
+    expect(chords(reparse(doc)).length).toBe(1);
+    removeNotes(doc, [handle]);
+    expect(chords(reparse(doc)).length).toBe(0);
   });
 });
 

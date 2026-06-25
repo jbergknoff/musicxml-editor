@@ -2,6 +2,11 @@
 // selection, and import/export. The Document is the source of truth (held in a
 // ref); a `version` counter forces a re-render after each in-place mutation, and
 // the serialized string is recomputed from it.
+//
+// Interaction is click-to-select, not drag-to-edit: a tap selects the chord at
+// a beat, a second tap (or a tap on a note already in the selected chord)
+// narrows to one note, a right-click / long-press opens a context menu, and the
+// arrow keys nudge a focused note. A plain drag only scrolls the staff.
 
 import {
   useCallback,
@@ -10,11 +15,13 @@ import {
   useRef,
   useState,
 } from "preact/hooks";
+import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
 import {
   beatsForDuration,
   DurationPalette,
 } from "./components/DurationPalette";
 import {
+  type ContextMenuRequest,
   EditableSheetMusic,
   type EditorGesture,
 } from "./components/EditableSheetMusic";
@@ -24,10 +31,18 @@ import {
   moveNote,
   type NoteHandle,
   parseDocument,
-  removeNote,
+  removeNotes,
   serializeDocument,
 } from "./dom-edit";
-import { idForHandle, locateBeat } from "./hit-test";
+import {
+  chordAtBeat,
+  type ChordSelection,
+  chordForHandle,
+  idForHandle,
+  locateBeat,
+  pitchForHandle,
+  stepPitch,
+} from "./hit-test";
 import {
   computeMeasureStartBeats,
   type NoteHighlight,
@@ -36,7 +51,43 @@ import {
 } from "./sheet-music/index";
 import { isImportableImage, useImageImport } from "./use-image-import";
 
-const SELECTION_COLOR = "#1976d2";
+// A focused single note draws stronger than the rest of its selected chord.
+const FOCUS_COLOR = "#1976d2";
+const CHORD_COLOR = "#90caf9";
+// Arrow-key (and context-menu) horizontal nudge, in quarter-note beats.
+const BEAT_STEP = 1;
+
+// The current selection: either a whole chord (every note at one beat) or one
+// focused note. Both follow their notes across edits via the stable handles.
+type Selection =
+  | { kind: "chord"; chord: ChordSelection }
+  | { kind: "note"; handle: NoteHandle }
+  | null;
+
+function sameHandle(a: NoteHandle, b: NoteHandle): boolean {
+  return (
+    a.measureIndex === b.measureIndex &&
+    a.noteElementIndex === b.noteElementIndex
+  );
+}
+
+function sameChord(a: ChordSelection, b: ChordSelection): boolean {
+  return a.measureIndex === b.measureIndex && a.onsetBeat === b.onsetBeat;
+}
+
+// The single note edits (nudge) act on: an explicitly focused note, or a chord
+// that holds exactly one note. A multi-note chord has no unambiguous target.
+function focusedHandle(selection: Selection): NoteHandle | null {
+  if (!selection) {
+    return null;
+  }
+  if (selection.kind === "note") {
+    return selection.handle;
+  }
+  return selection.chord.handles.length === 1
+    ? selection.chord.handles[0]
+    : null;
+}
 
 export function Editor() {
   const documentRef = useRef<Document | null>(null);
@@ -45,7 +96,8 @@ export function Editor() {
   }
   const [version, setVersion] = useState(0);
   const [selectedDuration, setSelectedDuration] = useState<NoteType>("quarter");
-  const [selectedHandle, setSelectedHandle] = useState<NoteHandle | null>(null);
+  const [selection, setSelection] = useState<Selection>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const imageImport = useImageImport();
 
   // Bump the version after every document mutation so the render recomputes.
@@ -62,23 +114,46 @@ export function Editor() {
     [score],
   );
 
-  // The selection follows its note across edits via the (stable) handle; the
-  // renderer id is re-derived each render from the freshly parsed score.
-  const selectedId = selectedHandle ? idForHandle(score, selectedHandle) : null;
-  const noteHighlights: NoteHighlight[] = selectedId
-    ? [{ kind: "score", id: selectedId, color: SELECTION_COLOR }]
-    : [];
+  // Selection highlights are re-derived from handles each render (ids change as
+  // notes are added/removed): the focused note draws strong, chord-mates light.
+  const noteHighlights: NoteHighlight[] = useMemo(() => {
+    if (!selection) {
+      return [];
+    }
+    if (selection.kind === "note") {
+      const id = idForHandle(score, selection.handle);
+      return id ? [{ kind: "score", id, color: FOCUS_COLOR }] : [];
+    }
+    return selection.chord.handles
+      .map((handle) => idForHandle(score, handle))
+      .filter((id): id is string => id !== null)
+      .map((id) => ({ kind: "score", id, color: CHORD_COLOR }));
+  }, [selection, score]);
 
-  // Tracks an in-progress note drag (its current handle is updated as moveNote
-  // re-fits and rewrites the note on each pointer move).
-  const dragRef = useRef<{ handle: NoteHandle } | null>(null);
+  const hasSelection = selection !== null;
 
-  const handleGestureDown = useCallback(
+  // Tap on the staff: select (widen to the chord, then narrow to one note on a
+  // repeat tap), or add a note on empty staff.
+  const handleTap = useCallback(
     (gesture: EditorGesture) => {
+      setMenu(null);
       const doc = documentRef.current as Document;
       if (gesture.hit) {
-        setSelectedHandle(gesture.hit.handle);
-        dragRef.current = { handle: gesture.hit.handle };
+        const picked = gesture.hit.handle;
+        const chord = chordForHandle(score, picked);
+        if (!chord) {
+          setSelection({ kind: "note", handle: picked });
+          return;
+        }
+        setSelection((prev) => {
+          const alreadyHere =
+            (prev?.kind === "chord" && sameChord(prev.chord, chord)) ||
+            (prev?.kind === "note" &&
+              chord.handles.some((handle) => sameHandle(handle, prev.handle)));
+          return alreadyHere
+            ? { kind: "note", handle: picked }
+            : { kind: "chord", chord };
+        });
         return;
       }
       // Empty staff: place a note of the selected duration.
@@ -93,62 +168,116 @@ export function Editor() {
         pitch: gesture.pitch,
       });
       if (handle) {
-        setSelectedHandle(handle);
+        setSelection({ kind: "note", handle });
       }
       commit();
     },
-    [commit, measureStartBeats, selectedDuration],
+    [commit, measureStartBeats, score, selectedDuration],
   );
 
-  const handleGestureMove = useCallback(
-    (gesture: EditorGesture) => {
-      const drag = dragRef.current;
-      if (!drag) {
+  // Right-click / long-press: select the chord at that beat (keeping a focused
+  // note if it belongs to that chord) and open the menu at the pointer.
+  const handleContextMenu = useCallback(
+    (request: ContextMenuRequest) => {
+      const chord = chordAtBeat(score, request.beat);
+      if (!chord) {
+        setMenu(null);
+        return;
+      }
+      setSelection((prev) => {
+        if (
+          prev?.kind === "note" &&
+          chord.handles.some((handle) => sameHandle(handle, prev.handle))
+        ) {
+          return prev;
+        }
+        return { kind: "chord", chord };
+      });
+      setMenu({ x: request.clientX, y: request.clientY });
+    },
+    [score],
+  );
+
+  // Move the focused note by a diatonic step (pitch) or a beat (onset). Used by
+  // both the arrow keys and the context menu.
+  const nudge = useCallback(
+    (axis: "pitch" | "beat", delta: number) => {
+      const handle = focusedHandle(selection);
+      if (!handle) {
         return;
       }
       const doc = documentRef.current as Document;
-      const { measureIndex, onsetBeatInMeasure } = locateBeat(
-        gesture.beat,
-        measureStartBeats,
-      );
-      const handle = moveNote(doc, drag.handle, {
-        measureIndex,
-        onsetBeatInMeasure,
-        pitch: gesture.pitch,
-      });
-      if (handle) {
-        drag.handle = handle;
-        setSelectedHandle(handle);
+      const pitch = pitchForHandle(score, handle);
+      const chord = chordForHandle(score, handle);
+      if (!pitch || !chord) {
+        return;
+      }
+      const measureStart = measureStartBeats[handle.measureIndex] ?? 0;
+      const target =
+        axis === "pitch"
+          ? {
+              measureIndex: handle.measureIndex,
+              onsetBeatInMeasure: chord.onsetBeat - measureStart,
+              pitch: stepPitch(pitch, delta),
+            }
+          : (() => {
+              const newBeat = Math.max(0, chord.onsetBeat + delta * BEAT_STEP);
+              const loc = locateBeat(newBeat, measureStartBeats);
+              return { ...loc, pitch };
+            })();
+      const moved = moveNote(doc, handle, target);
+      if (moved) {
+        setSelection({ kind: "note", handle: moved });
         commit();
       }
     },
-    [commit, measureStartBeats],
+    [commit, measureStartBeats, score, selection],
   );
 
-  const handleGestureUp = useCallback(() => {
-    dragRef.current = null;
-  }, []);
-
-  const deleteSelected = useCallback(() => {
-    if (!selectedHandle) {
+  const deleteSelection = useCallback(() => {
+    if (!selection) {
       return;
     }
-    removeNote(documentRef.current as Document, selectedHandle);
-    setSelectedHandle(null);
+    const handles =
+      selection.kind === "note" ? [selection.handle] : selection.chord.handles;
+    removeNotes(documentRef.current as Document, handles);
+    setSelection(null);
+    setMenu(null);
     commit();
-  }, [commit, selectedHandle]);
+  }, [commit, selection]);
 
-  // Delete / Backspace removes the selected note.
+  // Delete / Backspace removes the selection; arrow keys nudge a focused note.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Delete" || event.key === "Backspace") {
-        event.preventDefault();
-        deleteSelected();
+      switch (event.key) {
+        case "Delete":
+        case "Backspace":
+          event.preventDefault();
+          deleteSelection();
+          break;
+        case "ArrowUp":
+          event.preventDefault();
+          nudge("pitch", 1);
+          break;
+        case "ArrowDown":
+          event.preventDefault();
+          nudge("pitch", -1);
+          break;
+        case "ArrowLeft":
+          event.preventDefault();
+          nudge("beat", -1);
+          break;
+        case "ArrowRight":
+          event.preventDefault();
+          nudge("beat", 1);
+          break;
+        default:
+          break;
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [deleteSelected]);
+  }, [deleteSelection, nudge]);
 
   const onImport = useCallback(
     async (event: Event) => {
@@ -169,7 +298,8 @@ export function Editor() {
         return;
       }
       documentRef.current = parseDocument(musicxml);
-      setSelectedHandle(null);
+      setSelection(null);
+      setMenu(null);
       commit();
     },
     [commit, imageImport],
@@ -184,6 +314,32 @@ export function Editor() {
     anchor.click();
     URL.revokeObjectURL(url);
   }, [musicxml]);
+
+  // Items depend on the selection: nudges need an unambiguous focused note.
+  const canNudge = focusedHandle(selection) !== null;
+  const menuItems: ContextMenuItem[] = [
+    {
+      label: "Move up",
+      onSelect: () => nudge("pitch", 1),
+      disabled: !canNudge,
+    },
+    {
+      label: "Move down",
+      onSelect: () => nudge("pitch", -1),
+      disabled: !canNudge,
+    },
+    {
+      label: "Move left",
+      onSelect: () => nudge("beat", -1),
+      disabled: !canNudge,
+    },
+    {
+      label: "Move right",
+      onSelect: () => nudge("beat", 1),
+      disabled: !canNudge,
+    },
+    { label: "Delete", onSelect: deleteSelection, disabled: !hasSelection },
+  ];
 
   return (
     <div
@@ -211,15 +367,15 @@ export function Editor() {
         />
         <button
           type="button"
-          onClick={deleteSelected}
-          disabled={!selectedHandle}
+          onClick={deleteSelection}
+          disabled={!hasSelection}
           style={{
             padding: "6px 12px",
             borderRadius: 6,
             border: "1px solid #ccc",
             background: "#fff",
-            color: selectedHandle ? "#333" : "#aaa",
-            cursor: selectedHandle ? "pointer" : "default",
+            color: hasSelection ? "#333" : "#aaa",
+            cursor: hasSelection ? "pointer" : "default",
             fontSize: 14,
           }}
         >
@@ -274,11 +430,18 @@ export function Editor() {
         <EditableSheetMusic
           musicxml={musicxml}
           noteHighlights={noteHighlights}
-          onGestureDown={handleGestureDown}
-          onGestureMove={handleGestureMove}
-          onGestureUp={handleGestureUp}
+          onTap={handleTap}
+          onContextMenu={handleContextMenu}
         />
       </div>
+      {menu && hasSelection ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
     </div>
   );
 }
