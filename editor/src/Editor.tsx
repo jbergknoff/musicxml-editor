@@ -11,16 +11,11 @@
 import { useCallback, useEffect, useMemo, useState } from "preact/hooks";
 import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
 import {
-  beatsForDuration,
-  DurationPalette,
-} from "./components/DurationPalette";
-import {
   type ContextMenuRequest,
   EditableSheetMusic,
   type EditorGesture,
 } from "./components/EditableSheetMusic";
 import {
-  addNote,
   createBlankDocument,
   isEditableDocument,
   moveNote,
@@ -41,7 +36,6 @@ import {
 import {
   computeMeasureStartBeats,
   type NoteHighlight,
-  type NoteType,
   parseScore,
 } from "./sheet-music/index";
 import { useHistory } from "./use-history";
@@ -104,7 +98,6 @@ export function Editor() {
   // commit. The document is still mutated in place; commit snapshots it.
   const history = useHistory(createBlankDocument);
   const { documentRef, version, commit } = history;
-  const [selectedDuration, setSelectedDuration] = useState<NoteType>("quarter");
   const [selection, setSelection] = useState<Selection>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const imageImport = useImageImport();
@@ -147,52 +140,38 @@ export function Editor() {
 
   const hasSelection = selection !== null;
 
-  // Tap on the staff: select (widen to the chord, then narrow to one note on a
-  // repeat tap), or add a note on empty staff.
+  // Tap on the staff: select the chord at that beat, then narrow to one note on
+  // a repeat tap. A tap on empty space clears the selection — it never inserts a
+  // note (clicking the staff used to add, which made stray clicks destructive).
   const handleTap = useCallback(
     (gesture: EditorGesture) => {
       setMenu(null);
-      // View-only documents: a tap must never add or select (the ops can't edit
-      // them and there's no provenance to select by).
+      // View-only documents: a tap must never select (there's no provenance to
+      // select by) or otherwise act.
       if (!editable) {
         return;
       }
-      const doc = documentRef.current;
-      if (gesture.hit) {
-        const picked = gesture.hit.handle;
-        const chord = chordForHandle(score, picked);
-        if (!chord) {
-          setSelection({ kind: "note", handle: picked });
-          return;
-        }
-        setSelection((prev) => {
-          const alreadyHere =
-            (prev?.kind === "chord" && sameChord(prev.chord, chord)) ||
-            (prev?.kind === "note" &&
-              chord.handles.some((handle) => sameHandle(handle, prev.handle)));
-          return alreadyHere
-            ? { kind: "note", handle: picked }
-            : { kind: "chord", chord };
-        });
+      if (!gesture.hit) {
+        setSelection(null);
         return;
       }
-      // Empty staff: place a note of the selected duration.
-      const { measureIndex, onsetBeatInMeasure } = locateBeat(
-        gesture.beat,
-        measureStartBeats,
-      );
-      const handle = addNote(doc, {
-        measureIndex,
-        onsetBeatInMeasure,
-        durationBeats: beatsForDuration(selectedDuration),
-        pitch: gesture.pitch,
-      });
-      if (handle) {
-        setSelection({ kind: "note", handle });
-        commit();
+      const picked = gesture.hit.handle;
+      const chord = chordForHandle(score, picked);
+      if (!chord) {
+        setSelection({ kind: "note", handle: picked });
+        return;
       }
+      setSelection((prev) => {
+        const alreadyHere =
+          (prev?.kind === "chord" && sameChord(prev.chord, chord)) ||
+          (prev?.kind === "note" &&
+            chord.handles.some((handle) => sameHandle(handle, prev.handle)));
+        return alreadyHere
+          ? { kind: "note", handle: picked }
+          : { kind: "chord", chord };
+      });
     },
-    [commit, documentRef, editable, measureStartBeats, score, selectedDuration],
+    [editable, score],
   );
 
   // Right-click / long-press: select the chord at that beat (keeping a focused
@@ -417,10 +396,6 @@ export function Editor() {
           flexWrap: "wrap",
         }}
       >
-        <DurationPalette
-          value={selectedDuration}
-          onChange={setSelectedDuration}
-        />
         <button
           type="button"
           onClick={undo}

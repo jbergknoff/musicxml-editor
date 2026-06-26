@@ -19,12 +19,10 @@ describe("Editor", () => {
     );
     expect(staffLines.length).toBe(5);
 
-    // The duration palette, the edit/history controls, and Import/Export are
-    // all present.
+    // The edit/history controls and Import/Export are all present.
     const labels = Array.from(container.querySelectorAll("button, label")).map(
       (el) => el.textContent,
     );
-    expect(labels).toContain("Quarter");
     expect(labels).toContain("Undo");
     expect(labels).toContain("Redo");
     expect(labels).toContain("Delete");

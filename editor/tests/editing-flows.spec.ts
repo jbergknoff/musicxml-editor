@@ -3,9 +3,9 @@ import { fileURLToPath } from "node:url";
 import { expect, type Page, test } from "@playwright/test";
 
 // Editing-flow integration tests for the editor. The design contract under test:
-// a tap *selects* (or adds on empty staff) but never silently mutates an
-// existing note, a multi-staff score is view-only, and undo/redo + the dirty
-// indicator behave.
+// tapping the staff only selects (it never inserts a note), tapping empty space
+// clears the selection, a selected note can be deleted/undone, a multi-staff
+// score is view-only, and the dirty indicator behaves.
 
 const SINGLE_STAFF = fileURLToPath(
   new URL("./fixtures/single-staff.musicxml", import.meta.url),
@@ -37,58 +37,88 @@ function pitchCount(xml: string): number {
   return (xml.match(/<pitch>/g) ?? []).length;
 }
 
-// Click the staff at a position (relative to the SVG) that lands inside the
-// first measure.
-async function tapStaff(
-  page: Page,
-  position: { x: number; y: number },
-): Promise<void> {
-  await page.locator("svg").first().click({ position });
+// Load the single-staff fixture (three quarter notes C/E/G) and wait for it.
+async function loadSingleStaff(page: Page): Promise<void> {
+  await importFile(page, SINGLE_STAFF);
+  // The first notehead carries the score id p{part}-m{measureNumber}-n{i}-v{v}.
+  await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
 }
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
-  // The blank document renders its staff before we interact.
   await expect(page.locator("svg").first()).toBeVisible();
 });
 
-test("tapping empty staff adds a note; undo and redo reverse it", async ({
-  page,
-}) => {
+test("tapping empty staff does not insert a note", async ({ page }) => {
+  // The blank document starts with no notes.
   expect(pitchCount(await exportXml(page))).toBe(0);
 
-  await tapStaff(page, { x: 150, y: 70 });
-  expect(pitchCount(await exportXml(page))).toBe(1);
+  // Tap several empty spots on the staff.
+  await page
+    .locator("svg")
+    .first()
+    .click({ position: { x: 150, y: 70 } });
+  await page
+    .locator("svg")
+    .first()
+    .click({ position: { x: 320, y: 90 } });
+  await page
+    .locator("svg")
+    .first()
+    .click({ position: { x: 480, y: 50 } });
 
-  await page.keyboard.press("Control+z");
+  // Still no notes — clicking empty space never inserts.
   expect(pitchCount(await exportXml(page))).toBe(0);
-
-  await page.keyboard.press("Control+Shift+z");
-  expect(pitchCount(await exportXml(page))).toBe(1);
+  // And nothing was committed, so there's nothing to undo.
+  await expect(page.getByRole("button", { name: "Undo" })).toBeDisabled();
 });
 
-test("tapping an existing note selects it without adding a duplicate", async ({
+test("tapping a note selects it; Delete removes it; undo/redo reverse that", async ({
   page,
 }) => {
-  // Place a note, then tap the very same spot again.
-  await tapStaff(page, { x: 150, y: 70 });
-  expect(pitchCount(await exportXml(page))).toBe(1);
+  await loadSingleStaff(page);
+  expect(pitchCount(await exportXml(page))).toBe(3);
 
-  await tapStaff(page, { x: 150, y: 70 });
-  // Still exactly one note — the second tap selected it, it did not add another.
-  expect(pitchCount(await exportXml(page))).toBe(1);
+  // Tapping the first notehead selects it (Delete becomes enabled) without
+  // changing the document.
+  await page.locator("#p0-m1-n0-v0").click();
+  await expect(page.getByRole("button", { name: "Delete" })).toBeEnabled();
+  expect(pitchCount(await exportXml(page))).toBe(3);
 
-  // And the note is now selected, so Delete is enabled and removes it.
   await page.getByRole("button", { name: "Delete" }).click();
-  expect(pitchCount(await exportXml(page))).toBe(0);
+  expect(pitchCount(await exportXml(page))).toBe(2);
+
+  await page.keyboard.press("Control+z");
+  expect(pitchCount(await exportXml(page))).toBe(3);
+
+  await page.keyboard.press("Control+Shift+z");
+  expect(pitchCount(await exportXml(page))).toBe(2);
+});
+
+test("tapping empty space clears the selection", async ({ page }) => {
+  await loadSingleStaff(page);
+  await page.locator("#p0-m1-n0-v0").click();
+  await expect(page.getByRole("button", { name: "Delete" })).toBeEnabled();
+
+  // A tap on an empty region of the staff deselects. The notes sit at the left
+  // of the single measure; the top-right corner of the SVG is empty.
+  const box = await page.locator("svg").first().boundingBox();
+  if (!box) {
+    throw new Error("staff SVG has no bounding box");
+  }
+  await page.mouse.click(box.x + box.width - 6, box.y + 6);
+  await expect(page.getByRole("button", { name: "Delete" })).toBeDisabled();
 });
 
 test("the dirty indicator appears on edit and clears on export", async ({
   page,
 }) => {
+  await loadSingleStaff(page);
+  // A freshly imported document is clean.
   await expect(page.getByText("Unsaved")).toHaveCount(0);
 
-  await tapStaff(page, { x: 150, y: 70 });
+  await page.locator("#p0-m1-n0-v0").click();
+  await page.getByRole("button", { name: "Delete" }).click();
   await expect(page.getByText("Unsaved")).toBeVisible();
 
   await exportXml(page);
@@ -96,9 +126,8 @@ test("the dirty indicator appears on edit and clears on export", async ({
 });
 
 test("an imported single-staff file is editable", async ({ page }) => {
-  await importFile(page, SINGLE_STAFF);
-  // The C/E/G quarter notes load.
-  await expect.poll(async () => pitchCount(await exportXml(page))).toBe(3);
+  await loadSingleStaff(page);
+  expect(pitchCount(await exportXml(page))).toBe(3);
   await expect(page.getByText(/view-only/i)).toHaveCount(0);
 });
 
@@ -114,8 +143,14 @@ test("an imported grand-staff score is view-only and taps never mutate it", asyn
 
   const before = await exportXml(page);
   // Tap squarely on the staff where notes are drawn.
-  await tapStaff(page, { x: 200, y: 80 });
-  await tapStaff(page, { x: 260, y: 120 });
+  await page
+    .locator("svg")
+    .first()
+    .click({ position: { x: 200, y: 80 } });
+  await page
+    .locator("svg")
+    .first()
+    .click({ position: { x: 260, y: 120 } });
   const after = await exportXml(page);
 
   // The document is byte-for-byte unchanged — clicking did not edit the file.
