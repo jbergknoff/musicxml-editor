@@ -269,6 +269,16 @@ export function Editor() {
 
   const hasSelection = selection !== null;
 
+  // Selection chrome geometry: the beat column to highlight and (at Level 2) the
+  // specific note to ring. Both are passed straight through to the renderer.
+  const selectionBeat = chordInfo?.onsetBeat ?? null;
+  const focusNoteId = useMemo(() => {
+    if (selection?.kind !== "note") {
+      return null;
+    }
+    return idForHandle(score, selection.handle) ?? null;
+  }, [selection, score]);
+
   // Tap on the staff: select the chord at that beat, then narrow to one note on
   // a repeat tap (or a direct notehead tap). A tap on empty space clears the
   // selection — it never inserts a note.
@@ -342,10 +352,14 @@ export function Editor() {
         return;
       }
       const measureStart = measureStartBeats[chord.measureIndex] ?? 0;
+      const activeFifths =
+        score.parts[0]?.measures[chord.measureIndex]?.activeFifths ?? 0;
       const moved = moveNote(documentRef.current, handle, {
         measureIndex: chord.measureIndex,
         onsetBeatInMeasure: chord.onsetBeat - measureStart,
-        pitch: octave ? octavePitch(pitch, delta) : stepPitch(pitch, delta),
+        pitch: octave
+          ? octavePitch(pitch, delta)
+          : stepPitch(pitch, delta, activeFifths),
       });
       if (moved) {
         setSelection({ kind: "note", handle: moved });
@@ -373,12 +387,22 @@ export function Editor() {
       if (!editable) {
         return;
       }
+      const chord = chordForHandle(score, handle);
+      const wasMultiNote = chord !== null && chord.handles.length > 1;
+      const onsetBeat = chord?.onsetBeat ?? null;
       removeNotes(documentRef.current, [handle]);
-      setSelection(null);
       setMenu(null);
       commit();
+      if (wasMultiNote && onsetBeat !== null) {
+        // Re-resolve from the freshly mutated document so handle indices are correct.
+        const freshScore = parseScore(serializeDocument(documentRef.current));
+        const remaining = chordAtBeat(freshScore, onsetBeat, 0.1);
+        setSelection(remaining ? { kind: "chord", chord: remaining } : null);
+      } else {
+        setSelection(null);
+      }
     },
-    [editable, documentRef, commit],
+    [editable, score, documentRef, commit],
   );
 
   const addNoteToCurrent = useCallback(
@@ -1015,6 +1039,8 @@ export function Editor() {
               getLiveBeat={listen.getLiveBeat}
               isPlaying={listen.playing}
               scrollLocked={listen.playing}
+              selectionBeat={selectionBeat}
+              focusNoteId={focusNoteId}
             />
           </div>
         </div>

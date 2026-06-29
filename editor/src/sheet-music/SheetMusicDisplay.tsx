@@ -318,6 +318,119 @@ export function computeCursorX(
   return measureEndX;
 }
 
+// ── Selection overlay chrome ──────────────────────────────────────────────────
+
+// Finds the SVG x-span (left, right) of the beat column that contains `beat`.
+// The column runs from the onset notehead to just before the next onset (or the
+// measure's closing anchor for the last event). Returns null when the beat does
+// not land on a spine onset (e.g. the score is empty).
+function beatColumnGeometry(
+  beat: number,
+  score: ParsedScore,
+  layout: ResolvedLayout,
+  measureStartBeats: number[],
+): { left: number; right: number } | null {
+  const timeSig = score.parts[0]?.timeSig ?? { beats: 4, beatType: 4 };
+  let measureIndex = 0;
+  {
+    let low = 0;
+    let high = measureStartBeats.length - 1;
+    while (low < high) {
+      const mid = Math.floor((low + high + 1) / 2);
+      if (measureStartBeats[mid] <= beat) {
+        low = mid;
+      } else {
+        high = mid - 1;
+      }
+    }
+    measureIndex = low;
+  }
+  const spine = layout.measureSpines[measureIndex];
+  if (!spine || spine.divs.length === 0) {
+    return null;
+  }
+  const divisionsPerBeat = DIVISIONS * (4 / timeSig.beatType);
+  const beatInMeasure = beat - (measureStartBeats[measureIndex] ?? 0);
+  const targetDiv = Math.round(beatInMeasure * divisionsPerBeat);
+  const endBarlineX =
+    layout.measureXs[measureIndex] + layout.measureWidths[measureIndex];
+  const nextSpine = layout.measureSpines[measureIndex + 1];
+  const measureEndX = nextSpine?.xs[0] ?? endBarlineX;
+
+  const { staffSpace } = layout;
+  for (let k = 0; k < spine.divs.length; k++) {
+    if (Math.abs(spine.divs[k] - targetDiv) < 1) {
+      const left = spine.xs[k] - staffSpace * 0.8;
+      const rawRight = k + 1 < spine.xs.length ? spine.xs[k + 1] : measureEndX;
+      const right = rawRight - staffSpace * 0.3;
+      return { left, right: Math.max(left + staffSpace, right) };
+    }
+  }
+  return null;
+}
+
+// Tinted rect over the beat column — Level 1 selection chrome.
+const BeatBox = memo(function BeatBox({
+  beat,
+  isLevel2,
+  score,
+  layout,
+  measureStartBeats,
+}: {
+  beat: number;
+  isLevel2: boolean;
+  score: ParsedScore;
+  layout: ResolvedLayout;
+  measureStartBeats: number[];
+}) {
+  const col = beatColumnGeometry(beat, score, layout, measureStartBeats);
+  if (!col) {
+    return null;
+  }
+  const { staffBottomYs, staffSpace } = layout;
+  const y1 = staffBottomYs[0] - 4 * staffSpace;
+  const y2 = staffBottomYs[staffBottomYs.length - 1];
+  return (
+    <rect
+      x={col.left}
+      y={y1 - 4}
+      width={Math.max(0, col.right - col.left)}
+      height={y2 - y1 + 8}
+      fill="rgba(42,111,219,0.10)"
+      stroke={isLevel2 ? "rgba(42,111,219,0.35)" : "rgba(42,111,219,0.55)"}
+      stroke-width="1"
+      stroke-dasharray={isLevel2 ? "4 3" : undefined}
+      rx={2}
+      style={{ pointerEvents: "none" }}
+    />
+  );
+});
+
+// Ring drawn around the drilled note — Level 2 selection chrome.
+const NoteRing = memo(function NoteRing({
+  noteId,
+  infos,
+}: {
+  noteId: string;
+  infos: Map<string, NoteRenderInfo>;
+}) {
+  const info = infos.get(noteId);
+  if (!info) {
+    return null;
+  }
+  return (
+    <circle
+      cx={info.nx}
+      cy={info.ny}
+      r={info.staffSpace * 0.75}
+      fill="rgba(42,111,219,0.12)"
+      stroke="rgba(42,111,219,0.60)"
+      stroke-width="1.5"
+      style={{ pointerEvents: "none" }}
+    />
+  );
+});
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 // Per-note geometry needed to draw (or recolor) a notehead. This is the single
@@ -869,6 +982,14 @@ interface SheetMusicDisplayProps {
   /** Whether playback is active. Drives the cursor rAF loop + scroll-follow. */
   isPlaying?: boolean;
   /**
+   * When set, draws a tinted beat-box column over this absolute quarter-note beat
+   * (Level 1 selection chrome). Setting `focusNoteId` additionally renders a ring
+   * around the drilled notehead (Level 2).
+   */
+  selectionBeat?: number | null;
+  /** Note render-info id for the Level 2 drilled note ring. */
+  focusNoteId?: string | null;
+  /**
    * Editor pointer seam (additive, opt-in). When any of these are supplied, the
    * staff SVG forwards raw pointer gestures up with the SVG-local coordinates
    * plus the already-computed `score`/`layout`/`measureStartBeats`, so a wrapper
@@ -919,6 +1040,8 @@ export function SheetMusicDisplay({
   onSheetContextMenu,
   getLiveBeat,
   isPlaying = false,
+  selectionBeat,
+  focusNoteId,
   onStagePointerDown,
   onStagePointerMove,
   onStagePointerUp,
@@ -1470,6 +1593,16 @@ export function SheetMusicDisplay({
               rx={8}
             />
           )}
+          {/* Beat-box: tinted column behind the ink notes (Level 1 selection chrome) */}
+          {selectionBeat != null && (
+            <BeatBox
+              beat={selectionBeat}
+              isLevel2={focusNoteId != null}
+              score={score}
+              layout={layout}
+              measureStartBeats={measureStartBeats}
+            />
+          )}
           {score.parts.map((part, p) => (
             <Staff
               key={part.id}
@@ -1492,6 +1625,10 @@ export function SheetMusicDisplay({
             />
           )}
           <NoteColorOverlay infos={noteInfos} entries={scoreEntries} />
+          {/* Note ring: drawn over the recolored notehead (Level 2 selection chrome) */}
+          {focusNoteId != null && (
+            <NoteRing noteId={focusNoteId} infos={noteInfos} />
+          )}
           {markerEntries.length > 0 && (
             <PlayerMarkerOverlay
               markers={markerEntries}

@@ -84,6 +84,8 @@ export function EditableSheetMusic({
   getLiveBeat,
   isPlaying,
   scrollLocked,
+  selectionBeat,
+  focusNoteId,
 }: {
   musicxml: string;
   noteHighlights?: ReadonlyArray<NoteHighlight>;
@@ -101,6 +103,10 @@ export function EditableSheetMusic({
   isPlaying?: boolean;
   /** Disable user scroll while playing. */
   scrollLocked?: boolean;
+  /** Absolute quarter-note beat for the Level 1 beat-box selection chrome. */
+  selectionBeat?: number | null;
+  /** Note id (from noteInfos) for the Level 2 note-ring chrome. */
+  focusNoteId?: string | null;
 }) {
   return (
     <SheetMusicDisplay
@@ -111,6 +117,8 @@ export function EditableSheetMusic({
       getLiveBeat={getLiveBeat}
       isPlaying={isPlaying}
       scrollLocked={scrollLocked}
+      selectionBeat={selectionBeat}
+      focusNoteId={focusNoteId}
       // Allow horizontal pan: a plain drag scrolls rather than edits.
       containerStyle={{
         touchAction: "pan-x",

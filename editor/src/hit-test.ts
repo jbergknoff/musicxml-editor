@@ -11,6 +11,7 @@ import {
   diatonicIndex,
   DIVISIONS,
   isRest,
+  keyAlterForStep,
   type NoteType,
   type ParsedScore,
   type Pitch,
@@ -294,13 +295,15 @@ export function pitchForHandle(
 }
 
 // Shift a pitch by a number of diatonic steps (±1 = one staff position). The
-// result is natural (`alter: 0`), matching the spec's "↑/↓ steps diatonically
-// and resets the accidental to natural" (`pitchFromY` likewise infers none).
-export function stepPitch(pitch: Pitch, deltaSteps: number): Pitch {
+// resulting alteration is taken from the key signature so ↑/↓ stays diatonic
+// in the active key (F♯ in G major, B♭ in F major, etc.). Pass `fifths = 0`
+// (the default) for C-major / atonal behaviour.
+export function stepPitch(pitch: Pitch, deltaSteps: number, fifths = 0): Pitch {
   const index = diatonicIndex(pitch) + deltaSteps;
   const octave = Math.floor(index / 7);
   const stepIndex = ((index % 7) + 7) % 7;
-  return { step: STEPS[stepIndex], alter: 0, octave };
+  const step = STEPS[stepIndex];
+  return { step, alter: keyAlterForStep(step, fifths), octave };
 }
 
 // Shift a pitch by whole octaves, preserving its step and accidental (used by
