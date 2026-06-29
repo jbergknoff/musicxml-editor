@@ -613,7 +613,7 @@ const SHARP_ORDER = ["F", "C", "G", "D", "A", "E", "B"];
 const FLAT_ORDER = ["B", "E", "A", "D", "G", "C", "F"];
 
 // The alteration the key signature imposes on a given step (+1 sharp, -1 flat).
-function keyAlterForStep(step: string, fifths: number): number {
+export function keyAlterForStep(step: string, fifths: number): number {
   if (fifths > 0) {
     return SHARP_ORDER.slice(0, fifths).includes(step) ? 1 : 0;
   }

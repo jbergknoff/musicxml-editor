@@ -7,7 +7,7 @@ export type {
   ScoreHighlight,
 } from "./highlights";
 export { computeMeasureStartBeats } from "./measure-beats";
-export { diatonicIndex, isRest, parseScore } from "./musicxml-parser";
+export { diatonicIndex, isRest, keyAlterForStep, parseScore } from "./musicxml-parser";
 export type {
   AccidentalKind,
   ChordGroup,

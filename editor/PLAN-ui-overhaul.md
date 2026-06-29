@@ -47,46 +47,26 @@ documents remain **view-only** (`isEditableDocument`).
 
 ## Immediate follow-ups (polish / correctness)
 
-### 1. Hit-test accuracy (highest impact)
+### 1. Hit-test accuracy — **done** (PR #25)
 
-`beatFromX` (`editor/src/hit-test.ts`) maps x→beat **linearly** across the measure
-width, ignoring the clef/key/time lead-in that pushes the first note well to the
-right of the barline. As a result a click on a notehead can resolve to a
-*neighboring* beat (e.g. clicking the C5 glyph selects the next beat). The
-`selection-loop.spec.ts` tests are written pitch-agnostically to tolerate this; it
-is the main thing that makes the loop feel imprecise.
+### 2. Selection overlay chrome — **done** (PR #28)
 
-**Fix (per the handoff §3):** resolve a click to the nearest beat by x-distance to
-the *actual* onset positions instead of linear interpolation. Reuse
-`layout.measureSpines` — `MeasureSpine.divs`/`xs` (`sheet-music/sheet-music-types.ts`)
-give the real per-onset x within a measure — or invert `computeCursorX`
-(`sheet-music/SheetMusicDisplay.tsx`). Once landed, tighten `selection-loop.spec.ts`
-to assert specific pitches.
+Beat-box rect (Level 1) and note ring (Level 2) implemented via `BeatBox` /
+`NoteRing` memo components in `SheetMusicDisplay`, keyed off `selectionBeat` /
+`focusNoteId` props threaded through `EditableSheetMusic` and `Editor`.
 
-### 2. Selection overlay chrome (medium-fidelity, deferred from the overhaul)
+### 3. Reselect after removing a chord member — **done** (PR #28)
 
-Selection is currently conveyed by recoloring noteheads. Add the design's richer
-overlay: a tinted **beat-box** rect (Level 1), a **note ring** on the drilled note
-(Level 2), and a pulsing **play-cursor box**. Implement as a new overlay layer in
-`SheetMusicDisplay.tsx` keyed off a `selectionBox`/`focusRing` prop, positioned
-from `computeCursorX(onsetBeat)` (x) and `layout.staffBottomYs` (y). The tokens
-already exist in `theme.ts` (`accentHighlight`, `accentBorder`, `accentRingFill`,
-`greenCursorFill`/`greenCursorBorder`).
+`removeHandle` now re-resolves and re-selects the remaining chord (Level 1) after
+removing one note from a multi-note chord, instead of always clearing to null.
 
-### 3. Reselect after removing a chord member
+### 4. Enharmonic spelling by key signature — **done** (PR #28)
 
-`removeHandle` in `Editor.tsx` clears the selection after removing a note. For a
-multi-note chord, re-resolve and reselect the remaining beat after `commit()` so
-the inspector stays on the chord the user was editing.
-
-### 4. Enharmonic spelling by key signature
-
-`stepPitch` (`hit-test.ts`) resets the alteration to natural (a C-major
-assumption), and `setAccidental` writes a raw `alter`. The handoff specifies
-(decided) that ↑/↓ stay **diatonic in the active key** and chromatic edits
-**respell to the key signature** (F♯ in G major, G♭ in D♭ major). Reuse the
-parser's `keyAlterForStep` and per-measure `activeFifths`
-(`sheet-music/musicxml-parser.ts`).
+`stepPitch` now accepts an optional `fifths` parameter and applies
+`keyAlterForStep(step, fifths)` so ↑/↓ stays diatonic in the active key
+(F♯ in G major, B♭ in F major, etc.). `stepHandle` in `Editor.tsx` reads
+`score.parts[0].measures[measureIndex].activeFifths` and passes it through.
+`keyAlterForStep` is now exported from `musicxml-parser.ts` and the barrel.
 
 ---
 
@@ -128,10 +108,11 @@ Each is its own milestone.
 
 ## Suggested order
 
-**Done:** #1 (hit-test accuracy), #6 (multi-staff editing).
+**Done:** #1 (hit-test accuracy, PR #25), #2 (selection overlay chrome, PR #28),
+#3 (reselect on remove, PR #28), #4 (enharmonic spelling, PR #28), #6 (multi-staff
+editing, PR #26).
 
-Do **#2 (selection overlay chrome) next** — it is the main thing that makes the
-UI feel polished — then #3–#4 as follow-on polish, then the larger features
-(#7–#11) as their own milestones. Each follow-up is a self-contained PR; run
-`make pr-ready` (format, lint, typecheck, build, unit-test) plus
-`make editor-integration-test` before committing.
+Remaining immediate follow-ups: none. Next work is the larger features (#7–#11)
+as their own milestones. Each is a self-contained PR; run `make pr-ready`
+(format, lint, typecheck, build, unit-test) plus `make editor-integration-test`
+before committing.

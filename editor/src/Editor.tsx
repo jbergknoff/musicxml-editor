@@ -352,10 +352,14 @@ export function Editor() {
         return;
       }
       const measureStart = measureStartBeats[chord.measureIndex] ?? 0;
+      const activeFifths =
+        score.parts[0]?.measures[chord.measureIndex]?.activeFifths ?? 0;
       const moved = moveNote(documentRef.current, handle, {
         measureIndex: chord.measureIndex,
         onsetBeatInMeasure: chord.onsetBeat - measureStart,
-        pitch: octave ? octavePitch(pitch, delta) : stepPitch(pitch, delta),
+        pitch: octave
+          ? octavePitch(pitch, delta)
+          : stepPitch(pitch, delta, activeFifths),
       });
       if (moved) {
         setSelection({ kind: "note", handle: moved });
@@ -383,12 +387,22 @@ export function Editor() {
       if (!editable) {
         return;
       }
+      const chord = chordForHandle(score, handle);
+      const wasMultiNote = chord !== null && chord.handles.length > 1;
+      const onsetBeat = chord?.onsetBeat ?? null;
       removeNotes(documentRef.current, [handle]);
-      setSelection(null);
       setMenu(null);
       commit();
+      if (wasMultiNote && onsetBeat !== null) {
+        // Re-resolve from the freshly mutated document so handle indices are correct.
+        const freshScore = parseScore(serializeDocument(documentRef.current));
+        const remaining = chordAtBeat(freshScore, onsetBeat, 0.1);
+        setSelection(remaining ? { kind: "chord", chord: remaining } : null);
+      } else {
+        setSelection(null);
+      }
     },
-    [editable, documentRef, commit],
+    [editable, score, documentRef, commit],
   );
 
   const addNoteToCurrent = useCallback(
