@@ -20,6 +20,7 @@ import {
 } from "./components/EditableSheetMusic";
 import { Inspector, type InspectorModel } from "./components/Inspector";
 import { MetadataDialog } from "./components/MetadataDialog";
+import { ScoreHeader } from "./components/ScoreHeader";
 import {
   type EditableMetadata,
   readMetadata,
@@ -994,21 +995,28 @@ export function Editor() {
           style={{
             flex: 1,
             minWidth: 0,
+            display: "flex",
+            flexDirection: "column",
             background: COLORS.canvas,
-            padding: 8,
             boxSizing: "border-box",
           }}
         >
-          <EditableSheetMusic
-            musicxml={musicxml}
-            noteHighlights={noteHighlights}
-            onTap={handleTap}
-            onContextMenu={handleContextMenu}
-            accentColor={COLORS.accent}
-            getLiveBeat={listen.getLiveBeat}
-            isPlaying={listen.playing}
-            scrollLocked={listen.playing}
+          <ScoreHeader
+            metadata={metadata}
+            onEdit={() => setMetadataOpen(true)}
           />
+          <div style={{ flex: 1, minHeight: 0, padding: 8 }}>
+            <EditableSheetMusic
+              musicxml={musicxml}
+              noteHighlights={noteHighlights}
+              onTap={handleTap}
+              onContextMenu={handleContextMenu}
+              accentColor={COLORS.accent}
+              getLiveBeat={listen.getLiveBeat}
+              isPlaying={listen.playing}
+              scrollLocked={listen.playing}
+            />
+          </div>
         </div>
         <Inspector
           model={inspector?.model ?? null}
