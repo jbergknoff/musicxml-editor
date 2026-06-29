@@ -63,14 +63,7 @@ give the real per-onset x within a measure — or invert `computeCursorX`
 (`sheet-music/SheetMusicDisplay.tsx`). Once landed, tighten `selection-loop.spec.ts`
 to assert specific pitches.
 
-### 2. Direct notehead → Level 2 shortcut
-
-The handoff allows clicking *directly on a notehead* to jump straight to Level 2
-(skipping the intermediate beat selection). Add this branch to `handleTap` in
-`Editor.tsx`. Depends on #1 for a trustworthy "directly on a notehead" signal
-(the current `gesture.hit` tolerance is loose).
-
-### 3. Selection overlay chrome (medium-fidelity, deferred from the overhaul)
+### 2. Selection overlay chrome (medium-fidelity, deferred from the overhaul)
 
 Selection is currently conveyed by recoloring noteheads. Add the design's richer
 overlay: a tinted **beat-box** rect (Level 1), a **note ring** on the drilled note
@@ -80,13 +73,13 @@ from `computeCursorX(onsetBeat)` (x) and `layout.staffBottomYs` (y). The tokens
 already exist in `theme.ts` (`accentHighlight`, `accentBorder`, `accentRingFill`,
 `greenCursorFill`/`greenCursorBorder`).
 
-### 4. Reselect after removing a chord member
+### 3. Reselect after removing a chord member
 
 `removeHandle` in `Editor.tsx` clears the selection after removing a note. For a
 multi-note chord, re-resolve and reselect the remaining beat after `commit()` so
 the inspector stays on the chord the user was editing.
 
-### 5. Enharmonic spelling by key signature
+### 4. Enharmonic spelling by key signature
 
 `stepPitch` (`hit-test.ts`) resets the alteration to natural (a C-major
 assumption), and `setAccidental` writes a raw `alter`. The handoff specifies
@@ -101,9 +94,7 @@ parser's `keyAlterForStep` and per-measure `activeFifths`
 
 Each is its own milestone.
 
-6. **Multi-staff (grand-staff) editing** — extend `dom-edit` + parser provenance
-   past the single-voice `isEditableDocument` guard so grand-staff scores become
-   editable; ↑/↓ at Level 1 can cross staves while inside a chord they re-pitch.
+6. ~~**Multi-staff (grand-staff) editing**~~ — **done** (PR #26).
 7. **Grace notes** — a selection sub-level attached to a parent note; `G` adds,
    ←/→ step into/out of the grace group.
 8. **Durations, ties, beaming** — a duration palette (1–5 + dot), `T` to tie across
@@ -137,8 +128,10 @@ Each is its own milestone.
 
 ## Suggested order
 
-Do **#1 (hit-test accuracy) first** — it unblocks #2 and is what makes the whole
-selection loop feel right — then #3–#5 as polish, then the larger features (#6–#11)
-as their own milestones. Each follow-up is a self-contained PR; run `make pr-ready`
-(format, lint, typecheck, build, unit-test) plus `make editor-integration-test`
-before committing.
+**Done:** #1 (hit-test accuracy), #6 (multi-staff editing).
+
+Do **#2 (selection overlay chrome) next** — it is the main thing that makes the
+UI feel polished — then #3–#4 as follow-on polish, then the larger features
+(#7–#11) as their own milestones. Each follow-up is a self-contained PR; run
+`make pr-ready` (format, lint, typecheck, build, unit-test) plus
+`make editor-integration-test` before committing.

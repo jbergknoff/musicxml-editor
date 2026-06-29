@@ -269,6 +269,16 @@ export function Editor() {
 
   const hasSelection = selection !== null;
 
+  // Selection chrome geometry: the beat column to highlight and (at Level 2) the
+  // specific note to ring. Both are passed straight through to the renderer.
+  const selectionBeat = chordInfo?.onsetBeat ?? null;
+  const focusNoteId = useMemo(() => {
+    if (selection?.kind !== "note") {
+      return null;
+    }
+    return idForHandle(score, selection.handle) ?? null;
+  }, [selection, score]);
+
   // Tap on the staff: select the chord at that beat, then narrow to one note on
   // a repeat tap (or a direct notehead tap). A tap on empty space clears the
   // selection — it never inserts a note.
@@ -1015,6 +1025,8 @@ export function Editor() {
               getLiveBeat={listen.getLiveBeat}
               isPlaying={listen.playing}
               scrollLocked={listen.playing}
+              selectionBeat={selectionBeat}
+              focusNoteId={focusNoteId}
             />
           </div>
         </div>
