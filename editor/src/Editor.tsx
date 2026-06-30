@@ -32,6 +32,7 @@ import {
   writeMetadata,
 } from "./metadata";
 import {
+  addGraceNote,
   addNote,
   addNoteToChord,
   createBlankDocument,
@@ -40,9 +41,13 @@ import {
   moveNote,
   type NoteHandle,
   parseDocument,
+  removeGraceNote,
   removeNotes,
+  reorderGrace,
   serializeDocument,
   setAccidental,
+  setGracePitch,
+  setGraceSlash,
   setNoteDuration,
 } from "./dom-edit";
 import {
@@ -298,6 +303,8 @@ export function Editor() {
   const inspector = useMemo<{
     model: InspectorModel;
     handles: NoteHandle[];
+    graceHandles: NoteHandle[];
+    gracePitches: Pitch[];
     allSlots: SlotInfo[];
   } | null>(() => {
     if (!slotInfo) {
@@ -310,11 +317,18 @@ export function Editor() {
     );
     const numParts = score.parts.length;
     const flatHandles: NoteHandle[] = [];
+    const flatGraceHandles: NoteHandle[] = [];
+    const flatGracePitches: Pitch[] = [];
     const noteGroups: InspectorNoteGroup[] = beatStaffSlots.map((staffSlot) => {
       const rows = topFirstNotes(staffSlot);
       const offset = flatHandles.length;
       for (const row of rows) {
         flatHandles.push(row.handle);
+      }
+      const graceOffset = flatGraceHandles.length;
+      for (const grace of staffSlot.graces) {
+        flatGraceHandles.push(grace.handle);
+        flatGracePitches.push(grace.pitch);
       }
       return {
         partIndex: staffSlot.partIndex,
@@ -329,6 +343,15 @@ export function Editor() {
           label: pitchLabel(row.pitch),
           alter: row.pitch.alter,
           focused: focused ? sameHandle(row.handle, focused) : false,
+        })),
+        graceOffset,
+        graces: staffSlot.graces.map((grace) => ({
+          key: grace.id,
+          label: pitchLabel(grace.pitch),
+          alter: grace.pitch.alter,
+          groupIndex: grace.groupIndex,
+          groupCount: grace.groupCount,
+          slash: grace.slash,
         })),
       };
     });
@@ -348,13 +371,15 @@ export function Editor() {
         noteGroups,
       },
       handles: flatHandles,
+      graceHandles: flatGraceHandles,
+      gracePitches: flatGracePitches,
       allSlots: beatStaffSlots,
     };
   }, [slotInfo, focused, selection, score, measureStartBeats]);
 
   // Selection highlights: at Level 2 the focused note draws strong and its
-  // chord-mates light; a slot selection tints all its members (none for a rest —
-  // the beat-box chrome marks a rest instead).
+  // chord-mates light; a slot selection tints all its members across every
+  // staff (none for a rest — the beat-box chrome marks a rest instead).
   const noteHighlights: NoteHighlight[] = useMemo(() => {
     if (!selection || !slotInfo) {
       return [];
@@ -375,11 +400,13 @@ export function Editor() {
       }
       return out;
     }
-    return slotInfo.notes
+    const slots = inspector?.allSlots ?? [slotInfo];
+    return slots
+      .flatMap((slot) => slot.notes)
       .map((note) => idForHandle(score, note.handle))
       .filter((id): id is string => id !== null)
       .map((id) => ({ kind: "score", id, color: CHORD_TINT }));
-  }, [selection, score, slotInfo]);
+  }, [selection, score, slotInfo, inspector]);
 
   const hasSelection = selection !== null;
 
@@ -515,6 +542,91 @@ export function Editor() {
       }
       if (setNoteDuration(documentRef.current, handle, durationBeats)) {
         setSelection({ kind: "note", handle });
+        commit();
+      }
+    },
+    [editable, documentRef, commit],
+  );
+
+  // Grace note edits never move the host's onset, so the active slot selection
+  // (the beat) stays valid through any of these — no reselection needed.
+  const setGraceAccidentalOn = useCallback(
+    (handle: NoteHandle, alter: number) => {
+      if (!editable) {
+        return;
+      }
+      if (setAccidental(documentRef.current, handle, alter)) {
+        commit();
+      }
+    },
+    [editable, documentRef, commit],
+  );
+
+  const stepGraceHandle = useCallback(
+    (handle: NoteHandle, pitch: Pitch, delta: number) => {
+      if (!editable) {
+        return;
+      }
+      const activeFifths =
+        score.parts[slotInfo?.partIndex ?? 0]?.measures[handle.measureIndex]
+          ?.activeFifths ?? 0;
+      if (
+        setGracePitch(
+          documentRef.current,
+          handle,
+          stepPitch(pitch, delta, activeFifths),
+        )
+      ) {
+        commit({ coalesce: "nudge" });
+      }
+    },
+    [editable, score, slotInfo, documentRef, commit],
+  );
+
+  const removeGraceHandle = useCallback(
+    (handle: NoteHandle) => {
+      if (!editable) {
+        return;
+      }
+      if (removeGraceNote(documentRef.current, handle)) {
+        commit();
+      }
+    },
+    [editable, documentRef, commit],
+  );
+
+  const reorderGraceHandle = useCallback(
+    (handle: NoteHandle, direction: "earlier" | "later") => {
+      if (!editable) {
+        return;
+      }
+      if (reorderGrace(documentRef.current, handle, direction)) {
+        commit();
+      }
+    },
+    [editable, documentRef, commit],
+  );
+
+  const setGraceSlashOn = useCallback(
+    (handle: NoteHandle, slash: boolean) => {
+      if (!editable) {
+        return;
+      }
+      if (setGraceSlash(documentRef.current, handle, slash)) {
+        commit();
+      }
+    },
+    [editable, documentRef, commit],
+  );
+
+  // Adds the new grace note immediately before `handle`'s chord; the active
+  // slot selection (the beat) stays valid, same as the other grace edits.
+  const addGraceHandle = useCallback(
+    (handle: NoteHandle) => {
+      if (!editable) {
+        return;
+      }
+      if (addGraceNote(documentRef.current, handle)) {
         commit();
       }
     },
@@ -1309,6 +1421,43 @@ export function Editor() {
             // beat (e.g. a whole rest at beat 0 while beat 1 is selected), pass
             // the selected beat so the note lands at the right rhythmic position.
             addNoteAtSlot(undefined, targetSlot, slotInfo?.onsetBeat);
+          }}
+          onGraceAccidental={(index, alter) => {
+            const handle = inspector?.graceHandles[index];
+            if (handle) {
+              setGraceAccidentalOn(handle, alter);
+            }
+          }}
+          onGraceStep={(index, delta) => {
+            const handle = inspector?.graceHandles[index];
+            const pitch = inspector?.gracePitches[index];
+            if (handle && pitch) {
+              stepGraceHandle(handle, pitch, delta);
+            }
+          }}
+          onGraceRemove={(index) => {
+            const handle = inspector?.graceHandles[index];
+            if (handle) {
+              removeGraceHandle(handle);
+            }
+          }}
+          onGraceReorder={(index, direction) => {
+            const handle = inspector?.graceHandles[index];
+            if (handle) {
+              reorderGraceHandle(handle, direction);
+            }
+          }}
+          onGraceSlash={(index, slash) => {
+            const handle = inspector?.graceHandles[index];
+            if (handle) {
+              setGraceSlashOn(handle, slash);
+            }
+          }}
+          onAddGrace={(index) => {
+            const handle = inspector?.handles[index];
+            if (handle) {
+              addGraceHandle(handle);
+            }
           }}
         />
       </div>

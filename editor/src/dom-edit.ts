@@ -1142,6 +1142,151 @@ export function setAccidental(
   return true;
 }
 
+// Mutate a grace note's pitch in place. Grace notes carry no rhythmic span, so
+// — unlike `moveNote` — there is no onset/duration to rebalance; a direct
+// pitch swap (mirroring `setPitch`) is sufficient. Returns false on a bad
+// handle or a handle that isn't actually a grace note.
+export function setGracePitch(
+  doc: Document,
+  handle: NoteHandle,
+  pitch: Pitch,
+): boolean {
+  const element = elementForHandle(doc, handle);
+  if (!element || !element.querySelector("grace")) {
+    return false;
+  }
+  setPitch(doc, element, pitch);
+  return true;
+}
+
+// Remove a single grace note. Grace notes are never tracked by `writeMeasure`'s
+// real-note scan — they ride along as a host's buffered `graces` — so a direct
+// removal from the DOM (no measure rewrite) is correct and sufficient. Returns
+// false on a bad handle or a handle that isn't actually a grace note.
+export function removeGraceNote(doc: Document, handle: NoteHandle): boolean {
+  const element = elementForHandle(doc, handle);
+  if (!element || !element.querySelector("grace")) {
+    return false;
+  }
+  element.remove();
+  return true;
+}
+
+const isGraceNoteElement = (el: Element): boolean =>
+  el.tagName.toLowerCase() === "note" && el.querySelector("grace") !== null;
+
+// The onset group (the simultaneous grace notes at `handle`'s temporal
+// position) that `handle` belongs to, plus the groups around it — the shared
+// lookup `reorderGrace` and `setGraceSlash` both need. A group is a plain
+// grace note plus any following `<chord/>`-flagged notes (they sound
+// together); groups are in playback order. Returns null on a bad handle, a
+// non-grace handle, or a grace run with no following host note.
+function graceGroupsForHandle(
+  doc: Document,
+  handle: NoteHandle,
+): { measureEl: Element; groups: Element[][]; groupIndex: number } | null {
+  const measureEl = measuresOf(doc)[handle.measureIndex];
+  if (!measureEl) {
+    return null;
+  }
+  const element = elementForHandle(doc, handle);
+  if (!element || !element.querySelector("grace")) {
+    return null;
+  }
+  const children = Array.from(measureEl.children);
+  const elementIndex = children.indexOf(element);
+  if (elementIndex === -1) {
+    return null;
+  }
+
+  // The host is the next non-grace `<note>` after this run of grace notes.
+  let hostIndex = elementIndex + 1;
+  while (
+    hostIndex < children.length &&
+    isGraceNoteElement(children[hostIndex])
+  ) {
+    hostIndex++;
+  }
+  if (hostIndex >= children.length) {
+    return null;
+  }
+
+  // The contiguous run of grace notes immediately before the host, split into
+  // onset groups: a plain note plus any following `<chord/>`-flagged notes
+  // sound together as one group.
+  let runStart = hostIndex;
+  while (runStart > 0 && isGraceNoteElement(children[runStart - 1])) {
+    runStart--;
+  }
+  const groups: Element[][] = [];
+  for (const note of children.slice(runStart, hostIndex)) {
+    if (!note.querySelector("chord") || groups.length === 0) {
+      groups.push([note]);
+    } else {
+      groups[groups.length - 1].push(note);
+    }
+  }
+
+  const groupIndex = groups.findIndex((group) => group.includes(element));
+  return groupIndex === -1 ? null : { measureEl, groups, groupIndex };
+}
+
+// Swap a grace note's group (the simultaneous grace notes at its position)
+// with the temporally adjacent group — the only way to reorder grace notes
+// relative to each other, since their pitch alone carries no rhythmic
+// position. `direction` is relative to playback order: "earlier" swaps with
+// the group that sounds before this one, "later" with the group after.
+// Returns false on a bad handle, a non-grace handle, or no neighbor to swap
+// with (already first/last).
+export function reorderGrace(
+  doc: Document,
+  handle: NoteHandle,
+  direction: "earlier" | "later",
+): boolean {
+  const found = graceGroupsForHandle(doc, handle);
+  if (!found) {
+    return false;
+  }
+  const { measureEl, groups, groupIndex } = found;
+  const neighborIndex =
+    direction === "earlier" ? groupIndex - 1 : groupIndex + 1;
+  if (neighborIndex < 0 || neighborIndex >= groups.length) {
+    return false;
+  }
+
+  // Relocate the later group's notes to just before the earlier group's first
+  // note — the rest of the run keeps its document order, completing the swap.
+  const earlierGroup = groups[Math.min(groupIndex, neighborIndex)];
+  const laterGroup = groups[Math.max(groupIndex, neighborIndex)];
+  const anchor = earlierGroup[0];
+  for (const note of laterGroup) {
+    measureEl.insertBefore(note, anchor);
+  }
+  return true;
+}
+
+// Toggle a grace note between acciaccatura (slashed) and appoggiatura
+// (unslashed). The slash is one visual mark per group of simultaneous grace
+// notes, so it's set on every note in `handle`'s group — matching how the
+// parser reads it (the group's slash comes from its first note's `<grace>`
+// element) and how the renderer draws it (one slash per `GraceGroup`).
+// Returns false on a bad handle or a handle that isn't actually a grace note.
+export function setGraceSlash(
+  doc: Document,
+  handle: NoteHandle,
+  slash: boolean,
+): boolean {
+  const found = graceGroupsForHandle(doc, handle);
+  if (!found) {
+    return false;
+  }
+  const group = found.groups[found.groupIndex];
+  for (const note of group) {
+    note.querySelector("grace")?.setAttribute("slash", slash ? "yes" : "no");
+  }
+  return true;
+}
+
 // Diatonic step index (octave * 7 + step), the staff-position ordinal.
 function diatonicOf(pitch: Pitch): number {
   return pitch.octave * 7 + STEPS.indexOf(pitch.step);
@@ -1215,6 +1360,84 @@ export function addNoteToChord(
   });
   writeMeasure(doc, measureEl, notes, measureLength, divisions, sc);
   return handleFor(measuresOf(doc), handle.measureIndex, element);
+}
+
+// The first ("lead") `<note>` element of the onset group `element` belongs
+// to. Chord members are laid out in document order as
+// [grace notes…, lead (no `<chord/>`), member2 (`<chord/>`), …] — existing
+// grace notes always sit immediately before the lead, regardless of which
+// member a handle happens to point at. Walking back over `<chord/>`-flagged
+// siblings (stopping at any `<grace>` sibling, which belongs to a different,
+// earlier group) finds it from any member.
+function leadElementOfChord(measureEl: Element, element: Element): Element {
+  const children = Array.from(measureEl.children);
+  let index = children.indexOf(element);
+  if (index === -1) {
+    return element;
+  }
+  while (
+    index > 0 &&
+    children[index].querySelector("chord") !== null &&
+    children[index].querySelector("grace") === null
+  ) {
+    index--;
+  }
+  return children[index];
+}
+
+// Add a new grace note immediately before the chord at `handle`'s onset — it
+// becomes the temporally-last grace group (closest to the chord); any
+// existing grace groups keep their order ahead of it (`reorderGrace` can move
+// it earlier). `pitch` defaults to a diatonic step above the chord's current
+// top note. Returns the new grace note's handle, or null on a bad handle.
+export function addGraceNote(
+  doc: Document,
+  handle: NoteHandle,
+  pitch?: Pitch,
+): NoteHandle | null {
+  const measureEl = measuresOf(doc)[handle.measureIndex];
+  if (!measureEl) {
+    return null;
+  }
+  const target = elementForHandle(doc, handle);
+  if (!target) {
+    return null;
+  }
+  const lead = leadElementOfChord(measureEl, target);
+  const { divisions } = measureMetrics(doc);
+  const notes = readRealNotes(measureEl, divisions);
+  const anchor = notes.find((note) => note.element === lead);
+  if (!anchor) {
+    return null;
+  }
+  // The notes already sounding at this beat, to seed the default pitch above.
+  const members = notes.filter(
+    (note) => note.onsetDivisions === anchor.onsetDivisions,
+  );
+  const topDiatonic = members.reduce((max, member) => {
+    const memberPitch = readPitch(member.element);
+    return memberPitch ? Math.max(max, diatonicOf(memberPitch)) : max;
+  }, Number.NEGATIVE_INFINITY);
+  const newPitch =
+    pitch ??
+    (topDiatonic === Number.NEGATIVE_INFINITY
+      ? { step: "C", alter: 0, octave: 5 }
+      : pitchFromDiatonic(topDiatonic + 1));
+
+  const sc = staffCountOf(doc);
+  const leadStaff = sc > 1 ? staffOf(lead) : undefined;
+  const graceEl = doc.createElement("note");
+  graceEl.appendChild(doc.createElement("grace"));
+  appendPitch(doc, graceEl, newPitch);
+  if (anchor.voice > 1) {
+    graceEl.appendChild(child(doc, "voice", String(anchor.voice)));
+  }
+  graceEl.appendChild(child(doc, "type", "16th"));
+  if (leadStaff !== undefined) {
+    graceEl.appendChild(child(doc, "staff", String(leadStaff)));
+  }
+  measureEl.insertBefore(graceEl, lead);
+  return handleFor(measuresOf(doc), handle.measureIndex, graceEl);
 }
 
 // Insert a blank (full-measure-rest) measure after `afterIndex` (default: the
