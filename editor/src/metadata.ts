@@ -286,7 +286,7 @@ function isTempoOnlyDirection(direction: Element): boolean {
   return true;
 }
 
-function writeTempo(doc: Document, tempo: number | null): void {
+export function writeTempo(doc: Document, tempo: number | null): void {
   const existing = doc.querySelector("sound[tempo]");
 
   // A `<sound>` lives as a direct child of its `<direction>` (per the schema),

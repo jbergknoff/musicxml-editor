@@ -30,6 +30,7 @@ import {
   readMetadata,
   stampImportProvenance,
   writeMetadata,
+  writeTempo,
 } from "./metadata";
 import {
   addGraceNote,
@@ -74,6 +75,7 @@ import {
 import { parseMidi } from "midi-file";
 import { extractMusicXmlFromMxl } from "../../lib/mxl";
 import {
+  getMidiTempo,
   getMidiTracks,
   midiToMusicXmlWithTracks,
 } from "../../lib/midi-to-musicxml";
@@ -1046,6 +1048,7 @@ export function Editor() {
       // unstamped so a faithful file round-trips byte-for-byte.
       let importMethod: "optical-music-recognition" | "midi-conversion" | null =
         null;
+      let midiTempo: number | null = null;
       if (isImportableImage(file)) {
         imported = await imageImport.importImage(file);
         importMethod = "optical-music-recognition";
@@ -1058,6 +1061,7 @@ export function Editor() {
         const trackIndices = getMidiTracks(parsed).map((t) => t.index);
         imported = midiToMusicXmlWithTracks(parsed, trackIndices);
         importMethod = "midi-conversion";
+        midiTempo = getMidiTempo(parsed);
       } else {
         imported = await file.text();
       }
@@ -1071,6 +1075,9 @@ export function Editor() {
           method: importMethod,
           sourceFile: file.name,
         });
+      }
+      if (midiTempo !== null) {
+        writeTempo(doc, midiTempo);
       }
       history.reset(doc);
       setSelection(null);
