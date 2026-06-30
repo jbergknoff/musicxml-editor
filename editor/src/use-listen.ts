@@ -1,12 +1,12 @@
-// "Listen" playback: a small WebAudio synth that walks the score beat by beat
-// at a fixed tempo, sounding each beat's pitches. It owns no UI — it exposes
-// `getLiveBeat`/`playing` to drive the renderer's existing on-score cursor +
-// scroll-follow (SheetMusicDisplay's `getLiveBeat`/`isPlaying`), so the visual
-// side comes for free. Notes are scheduled against the AudioContext clock
-// (not setTimeout) for sample-accurate timing, and each note is a small
-// additive tone (fundamental + two harmonics through a lowpass filter, with
-// an attack/decay/release envelope) rather than a single bare oscillator —
-// this mirrors the synth in jbergknoff/piano-practice's MidiPlayer.
+// "Listen" playback: a small WebAudio step-synth that walks the score beat by
+// beat at a fixed tempo, sounding each beat's pitches. It owns no UI — it
+// exposes `getLiveBeat`/`playing` to drive the renderer's existing on-score
+// cursor + scroll-follow (SheetMusicDisplay's `getLiveBeat`/`isPlaying`), so the
+// visual side comes for free. Mirrors the handoff prototype's startListen/beep.
+// Each note is a small additive tone (fundamental + two harmonics through a
+// lowpass filter, with an attack/decay/release envelope) rather than a single
+// bare oscillator — this mirrors the synth in jbergknoff/piano-practice's
+// MidiPlayer.
 
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import {
@@ -24,12 +24,8 @@ const DEFAULT_BPM = 100;
 // default velocity (0-127, MIDI-style) for every note.
 const DEFAULT_VELOCITY = 80;
 
-// Small offset so the first scheduled note is never in the past.
-const LOOKAHEAD = 0.05;
 // Tail (seconds) added past each note's nominal duration for the release ramp.
 const RELEASE_TIME = 0.35;
-// Minimum gap (ms) between getLiveBeat-driving position updates.
-const POSITION_UPDATE_INTERVAL = 50;
 
 interface BeatStep {
   /** Absolute quarter-note beat of this onset. */
@@ -87,18 +83,18 @@ function flattenBeats(score: ParsedScore): BeatStep[] {
   }));
 }
 
-// Schedule one note: a fundamental (triangle) plus two quieter harmonics
-// (sine, at 2x and 3x frequency) through a velocity-brightened lowpass
-// filter, with an attack/decay/sustain/release envelope. Richer and less
-// buzzy than a single bare oscillator.
-function scheduleNote(
+// Sound one note: a fundamental (triangle) plus two quieter harmonics (sine,
+// at 2x and 3x frequency) through a velocity-brightened lowpass filter, with
+// an attack/decay/sustain/release envelope. Richer and less buzzy than a
+// single bare oscillator.
+function beep(
   ac: AudioContext,
-  activeNodes: Set<AudioNode>,
   frequency: number,
-  startTime: number,
-  duration: number,
+  ms: number,
   velocity: number = DEFAULT_VELOCITY,
 ): void {
+  const t = ac.currentTime;
+  const duration = ms / 1000;
   const vol = (velocity / 127) * 0.22;
   const totalDuration = duration + RELEASE_TIME;
 
@@ -110,14 +106,11 @@ function scheduleNote(
 
   const gain = ac.createGain();
   gain.connect(filter);
-  gain.gain.setValueAtTime(0, startTime);
-  gain.gain.linearRampToValueAtTime(vol, startTime + 0.012);
-  gain.gain.exponentialRampToValueAtTime(vol * 0.55, startTime + 0.012 + 0.18);
-  gain.gain.setValueAtTime(vol * 0.55, startTime + duration);
-  gain.gain.exponentialRampToValueAtTime(
-    0.0001,
-    startTime + duration + RELEASE_TIME,
-  );
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(vol, t + 0.012);
+  gain.gain.exponentialRampToValueAtTime(vol * 0.55, t + 0.012 + 0.18);
+  gain.gain.setValueAtTime(vol * 0.55, t + duration);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + duration + RELEASE_TIME);
 
   const harmonics: { multiple: number; type: OscillatorType; gain: number }[] =
     [
@@ -126,39 +119,18 @@ function scheduleNote(
       { multiple: 3, type: "sine", gain: 0.08 },
     ];
 
-  const nodes: AudioNode[] = [filter, gain];
-  const oscillators: OscillatorNode[] = [];
   for (const harmonic of harmonics) {
     const harmonicGain = ac.createGain();
     harmonicGain.gain.value = harmonic.gain;
     harmonicGain.connect(gain);
-    nodes.push(harmonicGain);
 
     const oscillator = ac.createOscillator();
     oscillator.frequency.value = frequency * harmonic.multiple;
     oscillator.type = harmonic.type;
     oscillator.connect(harmonicGain);
-    oscillator.start(startTime);
-    oscillator.stop(startTime + totalDuration);
-    nodes.push(oscillator);
-    oscillators.push(oscillator);
+    oscillator.start(t);
+    oscillator.stop(t + totalDuration);
   }
-
-  for (const node of nodes) {
-    activeNodes.add(node);
-  }
-
-  // Once the note finishes, disconnect its nodes so they can be garbage
-  // collected instead of accumulating for the rest of playback. All
-  // oscillators share the same stop time, so one handler suffices.
-  oscillators[0].onended = () => {
-    for (const node of nodes) {
-      activeNodes.delete(node);
-      try {
-        node.disconnect();
-      } catch {}
-    }
-  };
 }
 
 export interface Listen {
@@ -177,39 +149,22 @@ export function useListen(
   const [playing, setPlaying] = useState(false);
   const liveBeatRef = useRef<number | null>(null);
   const audioRef = useRef<AudioContext | null>(null);
-  const activeNodesRef = useRef<Set<AudioNode>>(new Set());
-  const animationFrameRef = useRef<number | null>(null);
-  const lastPositionEmitRef = useRef(0);
-  const bpmRef = useRef(bpm > 0 ? bpm : DEFAULT_BPM);
-  bpmRef.current = bpm > 0 ? bpm : DEFAULT_BPM;
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Read inside the playback loop so a tempo change mid-session takes effect on
+  // the next step without restarting playback.
+  const quarterMsRef = useRef(60000 / bpm);
+  quarterMsRef.current = 60000 / (bpm > 0 ? bpm : DEFAULT_BPM);
 
   const getLiveBeat = useCallback(() => liveBeatRef.current, []);
 
-  const stopTick = useCallback(() => {
-    if (animationFrameRef.current !== null) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
-  }, []);
-
   const stop = useCallback(() => {
-    stopTick();
-    // Cut off any notes still sounding (including ones scheduled but not yet
-    // started) instead of letting the whole upfront schedule play out.
-    for (const node of activeNodesRef.current) {
-      if (node instanceof OscillatorNode) {
-        try {
-          node.stop(0);
-        } catch {}
-      }
-      try {
-        node.disconnect();
-      } catch {}
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
     }
-    activeNodesRef.current.clear();
     liveBeatRef.current = null;
     setPlaying(false);
-  }, [stopTick]);
+  }, []);
 
   const start = useCallback(
     (fromBeat?: number) => {
@@ -220,10 +175,13 @@ export function useListen(
       if (steps.length === 0) {
         return;
       }
-      const startBeat = fromBeat ?? steps[0].beat;
-      const totalBeats =
-        steps[steps.length - 1].beat + steps[steps.length - 1].durationBeats;
-
+      let index = 0;
+      if (fromBeat !== undefined) {
+        const found = steps.findIndex((step) => step.beat >= fromBeat - 1e-6);
+        if (found >= 0) {
+          index = found;
+        }
+      }
       const AudioCtor =
         window.AudioContext ??
         (window as unknown as { webkitAudioContext: typeof AudioContext })
@@ -235,58 +193,25 @@ export function useListen(
       if (ac.state === "suspended") {
         void ac.resume();
       }
-
-      const secsPerBeat = 60 / bpmRef.current;
-      // AudioContext time at which beat 0 of the piece would play.
-      const startAudioTime =
-        ac.currentTime + LOOKAHEAD - startBeat * secsPerBeat;
-
-      for (const step of steps) {
-        if (step.beat < startBeat - 1e-6) {
-          continue;
-        }
-        const noteStart = startAudioTime + step.beat * secsPerBeat;
-        const duration = step.durationBeats * secsPerBeat;
-        for (const pitch of step.pitches) {
-          scheduleNote(
-            ac,
-            activeNodesRef.current,
-            pitchFrequency(pitch),
-            noteStart,
-            duration,
-          );
-        }
-      }
-
       setPlaying(true);
-      lastPositionEmitRef.current = 0;
 
       const tick = () => {
-        const elapsedBeat = (ac.currentTime - startAudioTime) / secsPerBeat;
-
-        if (elapsedBeat >= totalBeats) {
-          liveBeatRef.current = null;
-          setPlaying(false);
-          animationFrameRef.current = null;
+        if (index >= steps.length) {
+          stop();
           return;
         }
-
-        const now = performance.now();
-        if (now - lastPositionEmitRef.current >= POSITION_UPDATE_INTERVAL) {
-          lastPositionEmitRef.current = now;
-          // Clamp to startBeat so the cursor never dips below the play-start
-          // position during the LOOKAHEAD window right after starting/seeking.
-          liveBeatRef.current = Math.max(
-            startBeat,
-            Math.min(elapsedBeat, totalBeats),
-          );
+        const step = steps[index];
+        liveBeatRef.current = step.beat;
+        const ms = step.durationBeats * quarterMsRef.current;
+        for (const pitch of step.pitches) {
+          beep(ac, pitchFrequency(pitch), ms);
         }
-
-        animationFrameRef.current = requestAnimationFrame(tick);
+        index += 1;
+        timerRef.current = setTimeout(tick, ms);
       };
-      animationFrameRef.current = requestAnimationFrame(tick);
+      tick();
     },
-    [score],
+    [score, stop],
   );
 
   const toggle = useCallback(
@@ -300,12 +225,14 @@ export function useListen(
     [playing, start, stop],
   );
 
-  // Stop any pending animation frame on unmount.
+  // Stop any pending step on unmount.
   useEffect(() => {
     return () => {
-      stopTick();
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+      }
     };
-  }, [stopTick]);
+  }, []);
 
   return { playing, getLiveBeat, toggle, stop };
 }
