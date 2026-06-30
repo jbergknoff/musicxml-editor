@@ -422,6 +422,48 @@ export interface SlotInfo {
   notes: ChordNote[];
   /** Source handles of the chord's notes; empty for a rest. */
   handles: NoteHandle[];
+  /** Grace notes preceding this slot's chord, in playback order; empty for a
+   *  rest or a chord with no grace notes. */
+  graces: GraceNoteRow[];
+}
+
+// One grace note preceding a chord, with everything the inspector needs to
+// list it alongside its parent and reorder it relative to its siblings.
+export interface GraceNoteRow {
+  id: string;
+  handle: NoteHandle;
+  pitch: Pitch;
+  /** Which grace group (temporal position before the host) this note belongs
+   *  to — 0 sounds first. Notes sharing a `groupIndex` sound together. */
+  groupIndex: number;
+  /** Total number of grace groups before this host (bounds reordering). */
+  groupCount: number;
+  slash: boolean;
+}
+
+function graceRowsForGroup(
+  group: ChordGroup,
+  partIndex: number,
+  measureNumber: number,
+): GraceNoteRow[] {
+  const graceGroups = group.gracesBefore ?? [];
+  const rows: GraceNoteRow[] = [];
+  graceGroups.forEach((graceGroup, groupIndex) => {
+    graceGroup.notes.forEach((note, voiceIndex) => {
+      if (!note.source) {
+        return;
+      }
+      rows.push({
+        id: `p${partIndex}-m${measureNumber}-n${graceGroup.noteIndex}-v${voiceIndex}`,
+        handle: note.source,
+        pitch: note.pitch,
+        groupIndex,
+        groupCount: graceGroups.length,
+        slash: graceGroup.slash,
+      });
+    });
+  });
+  return rows;
 }
 
 // Enumerate every slot (chord and rest) in onset order across all measures.
@@ -443,6 +485,7 @@ function pickableSlots(score: ParsedScore): SlotInfo[] {
             type: event.type,
             notes: [],
             handles: [],
+            graces: [],
           });
           beatCursor += event.duration / divisions;
           continue;
@@ -467,6 +510,7 @@ function pickableSlots(score: ParsedScore): SlotInfo[] {
           type: group.type,
           notes,
           handles: notes.map((note) => note.handle),
+          graces: graceRowsForGroup(group, partIndex, measure.number),
         });
         beatCursor += group.duration / divisions;
       }
