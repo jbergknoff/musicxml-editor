@@ -7,9 +7,14 @@
 // — dynamics, slurs, lyrics, voices, layout hints — survives a round-trip by
 // construction.
 //
-// Scope (step 1): single part / single treble staff, no voices / `<backup>` /
-// chords / grace notes. A "beat" throughout is one quarter note (matching
-// `computeMeasureStartBeats`), so divisions-per-beat == divisions-per-quarter.
+// Scope: a single part, one voice per staff — single-staff, or a grand staff
+// with one `<backup>` per measure (see `isEditableDocument`). Within that scope
+// the rewrite preserves chords (including members of unequal duration), grace
+// notes (re-emitted with their host, never folded into its chord), any
+// `<divisions>` value, and irregular bar lengths (pickup/over-full bars are
+// rebuilt to their own length, not the time signature's). A "beat" throughout is
+// one quarter note (matching `computeMeasureStartBeats`), so divisions-per-beat
+// == divisions-per-quarter.
 
 import type { NoteType, Pitch } from "./sheet-music/index";
 
@@ -24,41 +29,72 @@ export interface NoteHandle {
   noteElementIndex: number;
 }
 
-// Standard note/rest durations in divisions (1 division = a 16th note),
-// largest first. The dotted values (12, 6, 3) let a single glyph cover dotted
-// spans; `decompose` and `largestFit` both walk this list.
-const STANDARD_DURATIONS = [16, 12, 8, 6, 4, 3, 2, 1];
+// Standard note values as [MusicXML type, dotted, span-in-quarter-notes],
+// largest first. The dotted values (1.5, 0.75) let a single glyph cover dotted
+// spans. These are expressed in quarter notes — not raw divisions — so the same
+// table works for any document `<divisions>` value: a span in divisions is the
+// quarter-fraction times the document's divisions-per-quarter. The editor's
+// blank document uses DIVISIONS (4) per quarter, but imported/OMR/MIDI scores
+// commonly use 8, 12, or 24, and hardcoding 4 mis-scaled every rest/type those
+// produced (a quarter became a "half", gaps filled with wrong-length rests).
+const NOTE_VALUES: Array<[NoteType, boolean, number]> = [
+  ["whole", false, 4],
+  ["half", true, 3],
+  ["half", false, 2],
+  ["quarter", true, 1.5],
+  ["quarter", false, 1],
+  ["eighth", true, 0.75],
+  ["eighth", false, 0.5],
+  ["16th", false, 0.25],
+];
 
-// Division span → [MusicXML type, dotted]. Mirrors the table in
-// midi-to-musicxml so notation reads identically.
-const DURATION_TYPE = new Map<number, [NoteType, boolean]>([
-  [16, ["whole", false]],
-  [12, ["half", true]],
-  [8, ["half", false]],
-  [6, ["quarter", true]],
-  [4, ["quarter", false]],
-  [3, ["eighth", true]],
-  [2, ["eighth", false]],
-  [1, ["16th", false]],
-]);
+// The standard division spans (largest first) representable at this
+// divisions-per-quarter — those whose quarter-fraction lands on a whole number
+// of divisions. (At divisions=2 a 16th is half a division, so it drops out.)
+function standardDurations(divisionsPerQuarter: number): number[] {
+  const spans: number[] = [];
+  for (const [, , quarters] of NOTE_VALUES) {
+    const span = quarters * divisionsPerQuarter;
+    if (Number.isInteger(span)) {
+      spans.push(span);
+    }
+  }
+  return spans;
+}
 
-function typeDotForDivisions(divisions: number): [NoteType, boolean] {
-  return DURATION_TYPE.get(divisions) ?? ["quarter", false];
+// Division span → [MusicXML type, dotted] at this divisions-per-quarter. Mirrors
+// the table in midi-to-musicxml so notation reads identically.
+function typeDotForDivisions(
+  divisions: number,
+  divisionsPerQuarter: number,
+): [NoteType, boolean] {
+  for (const [type, dot, quarters] of NOTE_VALUES) {
+    if (quarters * divisionsPerQuarter === divisions) {
+      return [type, dot];
+    }
+  }
+  return ["quarter", false];
 }
 
 // Greatest standard duration not exceeding `maxDivisions` (never below 1).
-function largestFit(maxDivisions: number): number {
-  return STANDARD_DURATIONS.find((d) => d <= maxDivisions) ?? 1;
+function largestFit(maxDivisions: number, divisionsPerQuarter: number): number {
+  return (
+    standardDurations(divisionsPerQuarter).find((d) => d <= maxDivisions) ?? 1
+  );
 }
 
 // Split an arbitrary division span into a sum of standard durations (used to
-// fill rest gaps). Ported from midi-to-musicxml's `decompose`.
-function decompose(divisions: number): number[] {
+// fill rest gaps). Ported from midi-to-musicxml's `decompose`. A span that no
+// standard value can subdivide (e.g. an odd remainder at a coarse divisions
+// value) is emitted whole as a final non-standard span so total time stays exact.
+function decompose(divisions: number, divisionsPerQuarter: number): number[] {
+  const spans = standardDurations(divisionsPerQuarter);
   const result: number[] = [];
   let remaining = divisions;
   while (remaining > 0) {
-    const value = STANDARD_DURATIONS.find((d) => d <= remaining);
+    const value = spans.find((d) => d <= remaining);
     if (value === undefined) {
+      result.push(remaining);
       break;
     }
     result.push(value);
@@ -200,42 +236,108 @@ function measureMetrics(doc: Document): {
   return { divisions, divisionsPerMeasure: divisions * beats * (4 / beatType) };
 }
 
+// A measure's *actual* notated length in divisions: the furthest the MusicXML
+// time cursor reaches across all voices/staves (notes and rests advance it,
+// `<backup>` rewinds it, `<forward>` advances it; grace notes and chord members
+// don't advance it). This is the bar's own length, which can differ from the
+// time signature's nominal `divisionsPerMeasure` — pickup/anacrusis bars are
+// shorter, cadenza/over-full bars are longer, and irregular bars are whatever
+// they are. `writeMeasure` rebuilds to *this* length (not the nominal one) so it
+// never stretches or truncates a bar that the time signature doesn't describe,
+// and sizes the inter-staff `<backup>` to match so the staves stay aligned.
+function measureContentDivisions(measureEl: Element): number {
+  let cursor = 0;
+  let lastOnset = 0;
+  let maxExtent = 0;
+  for (const child of Array.from(measureEl.children)) {
+    const tag = child.tagName.toLowerCase();
+    if (tag === "note") {
+      if (child.querySelector("grace") !== null) {
+        continue;
+      }
+      const isChord = child.querySelector("chord") !== null;
+      const duration = Number.parseInt(
+        child.querySelector("duration")?.textContent ?? "0",
+        10,
+      );
+      const onset = isChord ? lastOnset : cursor;
+      maxExtent = Math.max(maxExtent, onset + duration);
+      if (!isChord) {
+        lastOnset = cursor;
+        cursor += duration;
+      }
+    } else if (tag === "backup") {
+      cursor -= Number.parseInt(
+        child.querySelector("duration")?.textContent ?? "0",
+        10,
+      );
+    } else if (tag === "forward") {
+      cursor += Number.parseInt(
+        child.querySelector("duration")?.textContent ?? "0",
+        10,
+      );
+      maxExtent = Math.max(maxExtent, cursor);
+    }
+  }
+  return maxExtent;
+}
+
 // A real (pitched) note in a measure, with its element and timing in divisions.
 interface RealNote {
   element: Element;
   onsetDivisions: number;
   durationDivisions: number;
+  // Grace `<note>` elements that immediately precede this note in document order.
+  // Grace notes carry no rhythmic duration, so they must ride *with* their host
+  // note — re-emitted verbatim just before it — rather than being treated as
+  // zero-duration notes at the host's onset. Folding them into the host's onset
+  // (the old behaviour) made `setChordFlag` stamp `<chord/>` onto the host, after
+  // which the parser's time cursor stopped advancing and the whole measure's
+  // rhythm collapsed leftward. The same trap springs on any zero-duration note
+  // (e.g. a malformed import missing `<duration>`), which is also captured here.
+  graces: Element[];
 }
 
 // Walk a measure's children tracking the MusicXML time cursor (same logic as
 // the parser's `collectStaffItems`), returning only the real notes — rests are
-// dropped because `writeMeasure` regenerates them. Single voice, so the result
-// is already onset-ordered and non-overlapping.
+// dropped because `writeMeasure` regenerates them, and grace notes are attached
+// to the real note they precede (their host) rather than emitted standalone.
+// Single voice, so the result is already onset-ordered and non-overlapping.
 function readRealNotes(measureEl: Element, _divisions: number): RealNote[] {
   const notes: RealNote[] = [];
   let cursor = 0;
   let lastOnset = 0;
+  // Grace notes seen since the last real note, awaiting their host.
+  let pendingGraces: Element[] = [];
   for (const child of Array.from(measureEl.children)) {
     const tag = child.tagName.toLowerCase();
     if (tag === "note") {
       const isRest = child.querySelector("rest") !== null;
       const isGrace = child.querySelector("grace") !== null;
       const isChord = child.querySelector("chord") !== null;
-      const durationDivisions = isGrace
-        ? 0
-        : Number.parseInt(
-            child.querySelector("duration")?.textContent ?? "0",
-            10,
-          );
+      if (isGrace) {
+        // Buffer (non-rest) grace notes until the next real note hosts them;
+        // they advance neither the cursor nor `lastOnset`.
+        if (!isRest) {
+          pendingGraces.push(child);
+        }
+        continue;
+      }
+      const durationDivisions = Number.parseInt(
+        child.querySelector("duration")?.textContent ?? "0",
+        10,
+      );
       const onset = isChord ? lastOnset : cursor;
       if (!isRest) {
         notes.push({
           element: child,
           onsetDivisions: onset,
           durationDivisions,
+          graces: pendingGraces,
         });
+        pendingGraces = [];
       }
-      if (!isChord && !isGrace) {
+      if (!isChord) {
         lastOnset = cursor;
         cursor += durationDivisions;
       }
@@ -305,8 +407,7 @@ function readPitch(noteEl: Element): Pitch | null {
 
 // Ensure a note carries (or drops) the `<chord/>` flag. The first note of a beat
 // is plain; every later note sharing that onset is a chord member. The flag goes
-// before `<pitch>` (after `<grace>` when present, though the editable scope has
-// no grace notes).
+// before `<pitch>` (grace notes are emitted separately and never passed here).
 function setChordFlag(doc: Document, noteEl: Element, isChord: boolean): void {
   const existing = Array.from(noteEl.children).find(
     (childEl) => childEl.tagName.toLowerCase() === "chord",
@@ -324,23 +425,27 @@ function setChordFlag(doc: Document, noteEl: Element, isChord: boolean): void {
 
 // Emit one staff's note/rest run into `measureEl`. Called by `writeMeasure` for
 // each staff in turn. `staff` is the staff number to tag freshly created rests
-// with (0 = single-staff document, omit the <staff> element).
+// with (0 = single-staff document, omit the <staff> element). `measureLength` is
+// the bar's actual length in divisions (`measureContentDivisions`), the target
+// every staff's run is padded out to.
 function writeStaffNotes(
   doc: Document,
   measureEl: Element,
   notes: RealNote[],
-  divisionsPerMeasure: number,
+  measureLength: number,
   staff: number,
+  divisionsPerQuarter: number,
 ): void {
   const makeRest = (durationDivisions: number, fullMeasure = false) =>
     createRestElement(doc, {
       durationDivisions,
       fullMeasure,
       staff: staff > 0 ? staff : undefined,
+      divisionsPerQuarter,
     });
 
   if (notes.length === 0) {
-    measureEl.appendChild(makeRest(divisionsPerMeasure, true));
+    measureEl.appendChild(makeRest(measureLength, true));
     return;
   }
 
@@ -359,16 +464,40 @@ function writeStaffNotes(
   let cursor = 0;
   for (const onset of onsets) {
     if (onset > cursor) {
-      for (const span of decompose(onset - cursor)) {
+      for (const span of decompose(onset - cursor, divisionsPerQuarter)) {
         measureEl.appendChild(makeRest(span));
       }
     }
     // appendChild moves each element here (from its old slot, or another
-    // measure on a cross-measure relocation). Members are ordered low-to-high
-    // and re-flagged so the chord's first note is plain.
-    const members = (byOnset.get(onset) as RealNote[])
+    // measure on a cross-measure relocation). Members are ordered low-to-high.
+    const byPitch = (byOnset.get(onset) as RealNote[])
       .slice()
       .sort((a, b) => pitchHeight(a.element) - pitchHeight(b.element));
+    // The first (plain, un-`<chord/>`-flagged) member must carry the chord's full
+    // rhythmic span: the parser advances the time cursor by the first note's
+    // duration. Normal chords share one duration so any member works, but some
+    // engravers stack members of unequal length — making a *shorter* member plain
+    // would under-advance the cursor and collapse the rest of the bar, so the
+    // longest member leads (ties broken by the existing low-to-high order).
+    const leadIndex = byPitch.reduce(
+      (best, member, index) =>
+        member.durationDivisions > byPitch[best].durationDivisions
+          ? index
+          : best,
+      0,
+    );
+    const members = [
+      byPitch[leadIndex],
+      ...byPitch.filter((_, index) => index !== leadIndex),
+    ];
+    // Grace notes belonging to this onset are emitted first — verbatim, ahead of
+    // the chord, and never re-flagged as chord members — so they keep their
+    // grace-ness and their pitches survive the rewrite.
+    for (const member of members) {
+      for (const grace of member.graces) {
+        measureEl.appendChild(grace);
+      }
+    }
     members.forEach((member, index) => {
       setChordFlag(doc, member.element, index > 0);
       measureEl.appendChild(member.element);
@@ -377,8 +506,8 @@ function writeStaffNotes(
     cursor =
       onset + Math.max(...members.map((member) => member.durationDivisions));
   }
-  if (cursor < divisionsPerMeasure) {
-    for (const span of decompose(divisionsPerMeasure - cursor)) {
+  if (cursor < measureLength) {
+    for (const span of decompose(measureLength - cursor, divisionsPerQuarter)) {
       measureEl.appendChild(makeRest(span));
     }
   }
@@ -400,7 +529,8 @@ function writeMeasure(
   doc: Document,
   measureEl: Element,
   notes: RealNote[],
-  divisionsPerMeasure: number,
+  measureLength: number,
+  divisionsPerQuarter: number,
   staffCount = 1,
 ): void {
   for (const noteEl of Array.from(measureEl.querySelectorAll("note"))) {
@@ -408,7 +538,14 @@ function writeMeasure(
   }
 
   if (staffCount <= 1) {
-    writeStaffNotes(doc, measureEl, notes, divisionsPerMeasure, 0);
+    writeStaffNotes(
+      doc,
+      measureEl,
+      notes,
+      measureLength,
+      0,
+      divisionsPerQuarter,
+    );
     return;
   }
 
@@ -421,12 +558,22 @@ function writeMeasure(
   }
 
   // Emit each staff's notes followed by a <backup> block (except after the last).
+  // The backup rewinds by the bar's actual length so every staff starts from the
+  // same point — using the nominal time-signature length here desyncs the staves
+  // whenever the bar is shorter or longer than the meter says.
   for (let s = 1; s <= staffCount; s++) {
     const staffNotes = notes.filter((n) => staffOf(n.element) === s);
-    writeStaffNotes(doc, measureEl, staffNotes, divisionsPerMeasure, s);
+    writeStaffNotes(
+      doc,
+      measureEl,
+      staffNotes,
+      measureLength,
+      s,
+      divisionsPerQuarter,
+    );
     if (s < staffCount) {
       const backupEl = doc.createElement("backup");
-      backupEl.appendChild(child(doc, "duration", String(divisionsPerMeasure)));
+      backupEl.appendChild(child(doc, "duration", String(measureLength)));
       measureEl.appendChild(backupEl);
     }
   }
@@ -474,10 +621,13 @@ export function createNoteElement(
     dot?: boolean;
     /** Grand-staff only: which staff this note belongs to. Omit for single-staff. */
     staff?: number;
+    /** Document divisions-per-quarter (for type/dot inference). Defaults to 4. */
+    divisionsPerQuarter?: number;
   },
 ): Element {
   const [defaultType, defaultDot] = typeDotForDivisions(
     options.durationDivisions,
+    options.divisionsPerQuarter ?? DIVISIONS,
   );
   const type = options.type ?? defaultType;
   const dot = options.dot ?? defaultDot;
@@ -505,6 +655,8 @@ export function createRestElement(
     fullMeasure?: boolean;
     /** Grand-staff only: which staff this rest belongs to. Omit for single-staff. */
     staff?: number;
+    /** Document divisions-per-quarter (for type/dot inference). Defaults to 4. */
+    divisionsPerQuarter?: number;
   },
 ): Element {
   const noteEl = doc.createElement("note");
@@ -517,7 +669,10 @@ export function createRestElement(
   // A full-measure rest is drawn as a whole rest regardless of meter; the
   // parser infers `type: "whole"` from `measure="yes"` when no <type> is given.
   if (!options.fullMeasure) {
-    const [type, dot] = typeDotForDivisions(options.durationDivisions);
+    const [type, dot] = typeDotForDivisions(
+      options.durationDivisions,
+      options.divisionsPerQuarter ?? DIVISIONS,
+    );
     noteEl.appendChild(child(doc, "type", type));
     if (dot) {
       noteEl.appendChild(doc.createElement("dot"));
@@ -553,8 +708,12 @@ function setDuration(
   doc: Document,
   noteEl: Element,
   durationDivisions: number,
+  divisionsPerQuarter: number,
 ): void {
-  const [type, dot] = typeDotForDivisions(durationDivisions);
+  const [type, dot] = typeDotForDivisions(
+    durationDivisions,
+    divisionsPerQuarter,
+  );
   const durEl = noteEl.querySelector("duration");
   if (durEl) {
     durEl.textContent = String(durationDivisions);
@@ -649,11 +808,13 @@ export function addNote(
     return null;
   }
   const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+  const measureLength =
+    measureContentDivisions(measureEl) || divisionsPerMeasure;
   const onsetDivisions = Math.max(
     0,
     Math.min(
       Math.round(options.onsetBeatInMeasure * divisions),
-      divisionsPerMeasure - 1,
+      measureLength - 1,
     ),
   );
   const requested = Math.max(1, Math.round(options.durationBeats * divisions));
@@ -672,9 +833,12 @@ export function addNote(
       note.onsetDivisions > onsetDivisions
         ? Math.min(min, note.onsetDivisions)
         : min,
-    divisionsPerMeasure,
+    measureLength,
   );
-  const fit = largestFit(Math.min(requested, nextOnset - onsetDivisions));
+  const fit = largestFit(
+    Math.min(requested, nextOnset - onsetDivisions),
+    divisions,
+  );
 
   const element = createNoteElement(doc, {
     step: options.pitch.step,
@@ -682,9 +846,10 @@ export function addNote(
     octave: options.pitch.octave,
     durationDivisions: fit,
     staff: targetStaff > 0 ? targetStaff : undefined,
+    divisionsPerQuarter: divisions,
   });
-  notes.push({ element, onsetDivisions, durationDivisions: fit });
-  writeMeasure(doc, measureEl, notes, divisionsPerMeasure, sc);
+  notes.push({ element, onsetDivisions, durationDivisions: fit, graces: [] });
+  writeMeasure(doc, measureEl, notes, measureLength, divisions, sc);
   return handleFor(measuresOf(doc), options.measureIndex, element);
 }
 
@@ -721,10 +886,12 @@ export function removeNotes(doc: Document, handles: NoteHandle[]): void {
     }
   }
   for (const measureEl of measureEls) {
+    const measureLength =
+      measureContentDivisions(measureEl) || divisionsPerMeasure;
     const notes = readRealNotes(measureEl, divisions).filter(
       (note) => !removeSet.has(note.element),
     );
-    writeMeasure(doc, measureEl, notes, divisionsPerMeasure, sc);
+    writeMeasure(doc, measureEl, notes, measureLength, divisions, sc);
   }
 }
 
@@ -736,6 +903,8 @@ export function removeNote(doc: Document, handle: NoteHandle): void {
     return;
   }
   const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+  const measureLength =
+    measureContentDivisions(measureEl) || divisionsPerMeasure;
   const sc = staffCountOf(doc);
   const target = elementForHandle(doc, handle);
   if (!target) {
@@ -744,7 +913,7 @@ export function removeNote(doc: Document, handle: NoteHandle): void {
   const notes = readRealNotes(measureEl, divisions).filter(
     (note) => note.element !== target,
   );
-  writeMeasure(doc, measureEl, notes, divisionsPerMeasure, sc);
+  writeMeasure(doc, measureEl, notes, measureLength, divisions, sc);
 }
 
 // Move a note to a new pitch and/or onset (possibly a different measure). The
@@ -767,16 +936,24 @@ export function moveNote(
     return null;
   }
   const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+  const sc = staffCountOf(doc);
+  const movingStaff = staffOf(element);
+  const destLength =
+    measureContentDivisions(destMeasureEl) || divisionsPerMeasure;
+
+  // Grace notes attached to the moving note (read before any rewrite, while the
+  // element is still in its source measure) so they travel with it.
+  const movingGraces =
+    readRealNotes(sourceMeasureEl, divisions).find(
+      (note) => note.element === element,
+    )?.graces ?? [];
 
   // Pitch change is always a faithful in-place mutation.
   setPitch(doc, element, target.pitch);
 
   const onsetDivisions = Math.max(
     0,
-    Math.min(
-      Math.round(target.onsetBeatInMeasure * divisions),
-      divisionsPerMeasure - 1,
-    ),
+    Math.min(Math.round(target.onsetBeatInMeasure * divisions), destLength - 1),
   );
 
   // Destination notes (excluding the moving element, in case the move is within
@@ -784,29 +961,48 @@ export function moveNote(
   const destNotes = readRealNotes(destMeasureEl, divisions).filter(
     (note) => note.element !== element,
   );
+  // Gap detection looks only at notes in the moving note's own staff — a busier
+  // staff alongside it (grand staff) must not shorten this note's duration.
   const nextOnset = destNotes.reduce(
     (min, note) =>
+      staffOf(note.element) === movingStaff &&
       note.onsetDivisions > onsetDivisions
         ? Math.min(min, note.onsetDivisions)
         : min,
-    divisionsPerMeasure,
+    destLength,
   );
   const currentDuration = Number.parseInt(
     element.querySelector("duration")?.textContent ?? "4",
     10,
   );
-  const fit = largestFit(Math.min(currentDuration, nextOnset - onsetDivisions));
+  const fit = largestFit(
+    Math.min(currentDuration, nextOnset - onsetDivisions),
+    divisions,
+  );
   if (fit !== currentDuration) {
-    setDuration(doc, element, fit);
+    setDuration(doc, element, fit, divisions);
   }
 
-  const sc = staffCountOf(doc);
-  destNotes.push({ element, onsetDivisions, durationDivisions: fit });
-  writeMeasure(doc, destMeasureEl, destNotes, divisionsPerMeasure, sc);
+  destNotes.push({
+    element,
+    onsetDivisions,
+    durationDivisions: fit,
+    graces: movingGraces,
+  });
+  writeMeasure(doc, destMeasureEl, destNotes, destLength, divisions, sc);
   // A cross-measure move leaves a hole in the source measure to backfill.
   if (sourceMeasureEl !== destMeasureEl) {
+    const sourceLength =
+      measureContentDivisions(sourceMeasureEl) || divisionsPerMeasure;
     const sourceNotes = readRealNotes(sourceMeasureEl, divisions);
-    writeMeasure(doc, sourceMeasureEl, sourceNotes, divisionsPerMeasure, sc);
+    writeMeasure(
+      doc,
+      sourceMeasureEl,
+      sourceNotes,
+      sourceLength,
+      divisions,
+      sc,
+    );
   }
   return handleFor(measuresOf(doc), target.measureIndex, element);
 }
@@ -872,6 +1068,8 @@ export function addNoteToChord(
     return null;
   }
   const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+  const measureLength =
+    measureContentDivisions(measureEl) || divisionsPerMeasure;
   const notes = readRealNotes(measureEl, divisions);
   const anchor = notes.find((note) => note.element === target);
   if (!anchor) {
@@ -899,13 +1097,15 @@ export function addNoteToChord(
     octave: newPitch.octave,
     durationDivisions: anchor.durationDivisions,
     staff: anchorStaff,
+    divisionsPerQuarter: divisions,
   });
   notes.push({
     element,
     onsetDivisions: anchor.onsetDivisions,
     durationDivisions: anchor.durationDivisions,
+    graces: [],
   });
-  writeMeasure(doc, measureEl, notes, divisionsPerMeasure, sc);
+  writeMeasure(doc, measureEl, notes, measureLength, divisions, sc);
   return handleFor(measuresOf(doc), handle.measureIndex, element);
 }
 
