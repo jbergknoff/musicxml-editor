@@ -45,7 +45,7 @@ typecheck: node_modules
 # `bun test` does not pick up the Playwright integration specs (editor/tests/
 # and lib/import-image/tests/), which only run under Playwright.
 unit-test: node_modules
-	$(bun) test editor/src lib/import-image/lib lib/import-image/src
+	$(bun) test editor/src lib/midi-to-musicxml.test.ts lib/import-image/lib lib/import-image/src
 
 # Build the editor SPA (+ the bundled OMR worker and its ORT/pdf.js assets) into
 # editor/dist. This is the Netlify build target (see netlify.toml).
