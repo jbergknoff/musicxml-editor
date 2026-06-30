@@ -25,7 +25,19 @@ export interface EditorGesture {
   pitch: Pitch;
   /** The note the pointer is over, if any (id for highlight, handle for edits). */
   hit: { id: string; handle: NoteHandle } | null;
+  /** The parsed part (staff) nearest the click — 0 for a single staff, or the
+   *  treble (0) / bass (1) staff of a grand staff. Lets a tap select/add on the
+   *  staff the user actually clicked rather than always the top one. */
+  partIndex: number;
+  /** True when the click landed well clear of every staff (vertically) — a tap
+   *  in the empty margin, which clears the selection rather than selecting. */
+  offStaff: boolean;
 }
+
+// How far (in staff-spaces) beyond a staff's own extent a click still counts as
+// "on" that staff. Generous enough to cover ledger-line notes a few spaces out;
+// past it a click reads as the empty margin and clears the selection.
+const OFF_STAFF_MARGIN_SPACES = 4;
 
 /** A right-click / long-press request: a beat (and 1-indexed measure) plus the
  *  viewport coordinates to anchor a context menu at. */
@@ -71,7 +83,14 @@ function resolveGesture(info: StagePointerInfo): EditorGesture {
     info.layout.staffSpace,
     clef,
   );
-  return { beat, pitch, hit: pickNote(info.score, beat, pitch) };
+  const offStaff = minDist > OFF_STAFF_MARGIN_SPACES * info.layout.staffSpace;
+  return {
+    beat,
+    pitch,
+    hit: pickNote(info.score, beat, pitch),
+    partIndex,
+    offStaff,
+  };
 }
 
 export function EditableSheetMusic({

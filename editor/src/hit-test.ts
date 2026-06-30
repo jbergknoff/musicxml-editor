@@ -213,6 +213,9 @@ function sameHandle(a: NoteHandle, b: NoteHandle): boolean {
 // handles of all its real notes (chord members included). The selection model
 // builds on these so a click can select the whole beat before narrowing.
 export interface ChordSelection {
+  /** Which parsed part (staff) the chord lives on — 0 for a single staff, or the
+   *  treble/bass staff of a grand staff. Lets selection target the right staff. */
+  partIndex: number;
   measureIndex: number;
   onsetBeat: number;
   handles: NoteHandle[];
@@ -224,7 +227,7 @@ export interface ChordSelection {
 function pickableChords(score: ParsedScore): ChordSelection[] {
   const measureStartBeats = computeMeasureStartBeats(score);
   const result: ChordSelection[] = [];
-  for (const part of score.parts) {
+  score.parts.forEach((part, partIndex) => {
     part.measures.forEach((measure, measureIndex) => {
       let beatCursor = measureStartBeats[measureIndex] ?? 0;
       const divisions = measure.divisions || 4;
@@ -238,12 +241,17 @@ function pickableChords(score: ParsedScore): ChordSelection[] {
           .map((note) => note.source)
           .filter((source): source is NoteHandle => source !== undefined);
         if (handles.length > 0) {
-          result.push({ measureIndex, onsetBeat: beatCursor, handles });
+          result.push({
+            partIndex,
+            measureIndex,
+            onsetBeat: beatCursor,
+            handles,
+          });
         }
         beatCursor += group.duration / divisions;
       }
     });
-  }
+  });
   return result;
 }
 
@@ -307,6 +315,7 @@ export interface ChordNote {
 // model. Mirrors `pickableChords` but carries per-note id/pitch and the chord's
 // `NoteType`.
 export interface ChordInfo {
+  partIndex: number;
   measureIndex: number;
   onsetBeat: number;
   type: NoteType;
@@ -339,6 +348,7 @@ function pickableChordInfos(score: ParsedScore): ChordInfo[] {
         });
         if (notes.length > 0) {
           result.push({
+            partIndex,
             measureIndex,
             onsetBeat: beatCursor,
             type: group.type,
@@ -400,6 +410,9 @@ export function topFirstNotes(info: { notes: ChordNote[] }): ChordNote[] {
 // sounds there, so rests are selectable and an empty measure has one slot. A
 // rest slot carries no notes/handles; its `type` is the rest's duration value.
 export interface SlotInfo {
+  /** Which parsed part (staff) this slot belongs to — 0 for a single staff, or
+   *  the treble (0) / bass (1) staff of a grand staff. */
+  partIndex: number;
   measureIndex: number;
   onsetBeat: number;
   isRest: boolean;
@@ -423,6 +436,7 @@ function pickableSlots(score: ParsedScore): SlotInfo[] {
       for (const event of measure.events) {
         if (isRest(event)) {
           result.push({
+            partIndex,
             measureIndex,
             onsetBeat: beatCursor,
             isRest: true,
@@ -446,6 +460,7 @@ function pickableSlots(score: ParsedScore): SlotInfo[] {
           });
         });
         result.push({
+          partIndex,
           measureIndex,
           onsetBeat: beatCursor,
           isRest: false,
@@ -461,23 +476,30 @@ function pickableSlots(score: ParsedScore): SlotInfo[] {
 }
 
 // Every slot in onset order — drives ←/→ navigation, including rests and empty
-// measures (not just note onsets).
-export function slots(score: ParsedScore): SlotInfo[] {
-  return pickableSlots(score);
+// measures (not just note onsets). Pass `partIndex` to walk one staff of a grand
+// staff (so ←/→ stays on the staff the user is editing).
+export function slots(score: ParsedScore, partIndex?: number): SlotInfo[] {
+  const all = pickableSlots(score);
+  return partIndex === undefined
+    ? all
+    : all.filter((slot) => slot.partIndex === partIndex);
 }
 
 // Re-resolve a selected slot (a position) to fresh data after an edit. Matched
 // by measure + onset beat so it survives rebuilds — including rests, which carry
-// no handle.
+// no handle. `partIndex` disambiguates the two staves of a grand staff (without
+// it, the first matching staff wins — back-compatible for single-staff scores).
 export function slotAt(
   score: ParsedScore,
   measureIndex: number,
   onsetBeat: number,
+  partIndex?: number,
 ): SlotInfo | null {
   for (const slot of pickableSlots(score)) {
     if (
       slot.measureIndex === measureIndex &&
-      Math.abs(slot.onsetBeat - onsetBeat) < 1e-6
+      Math.abs(slot.onsetBeat - onsetBeat) < 1e-6 &&
+      (partIndex === undefined || slot.partIndex === partIndex)
     ) {
       return slot;
     }
@@ -487,15 +509,20 @@ export function slotAt(
 
 // The slot whose onset is nearest `beat`, within `tolerance` quarter-note beats.
 // The rest-aware counterpart of `chordInfoAtBeat`: a click snapped by `beatFromX`
-// to a spine onset lands exactly on its slot.
+// to a spine onset lands exactly on its slot. `partIndex` restricts the search to
+// one staff of a grand staff so a click on the bass staff resolves a bass slot.
 export function slotAtBeat(
   score: ParsedScore,
   beat: number,
   tolerance = 1.5,
+  partIndex?: number,
 ): SlotInfo | null {
   let best: SlotInfo | null = null;
   let bestDistance = Number.POSITIVE_INFINITY;
   for (const slot of pickableSlots(score)) {
+    if (partIndex !== undefined && slot.partIndex !== partIndex) {
+      continue;
+    }
     const distance = Math.abs(slot.onsetBeat - beat);
     if (distance < bestDistance) {
       bestDistance = distance;
