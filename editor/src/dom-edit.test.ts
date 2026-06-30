@@ -644,6 +644,238 @@ describe("grand-staff editing", () => {
   });
 });
 
+// The total length, in quarter-note beats, of a part's measure `m` — the sum of
+// its event durations. Used to assert an edit preserves a bar's length.
+function measureBeats(
+  score: ParsedScore,
+  partIndex: number,
+  m: number,
+): number {
+  const measure = score.parts[partIndex]?.measures[m];
+  if (!measure) {
+    return 0;
+  }
+  const divisions = measure.divisions || 4;
+  return measure.events.reduce((t, e) => t + e.duration / divisions, 0);
+}
+
+// A flat list of "step+octave" strings for the chord at event index over a
+// part's measure 0, top-first (descending pitch) like the inspector.
+function chordPitches(
+  score: ParsedScore,
+  partIndex: number,
+  onsetBeat: number,
+): string[] {
+  const stepOrder: Record<string, number> = {
+    C: 0,
+    D: 1,
+    E: 2,
+    F: 3,
+    G: 4,
+    A: 5,
+    B: 6,
+  };
+  const diatonic = (p: { step: string; octave: number }) =>
+    p.octave * 7 + (stepOrder[p.step] ?? 0);
+  let beat = 0;
+  const measure = score.parts[partIndex]?.measures[0];
+  const divisions = measure?.divisions || 4;
+  for (const event of measure?.events ?? []) {
+    if (!isRest(event) && Math.abs(beat - onsetBeat) < 1e-6) {
+      return [...(event as ChordGroup).notes]
+        .sort((a, b) => diatonic(b.pitch) - diatonic(a.pitch))
+        .map((n) => `${n.pitch.step || "<EMPTY>"}${n.pitch.octave}`);
+    }
+    beat += event.duration / divisions;
+  }
+  return [];
+}
+
+// These guard the family of corruptions seen when stepping a chord member in an
+// imported grand-staff score (Chrono Trigger fixture): the bar restructured, the
+// other staff shifted, and a phantom "<step>-less" note appeared. The triggers —
+// distinct from #30's single-staff/single-note coverage — are bars whose true
+// length differs from the time signature, and chords whose members have unequal
+// durations.
+describe("irregular bars and mismatched-duration chords (regression)", () => {
+  // 4/4 nominal (16 divisions) but the bar actually holds 5 quarters (20) in both
+  // staves — an over-full bar, as real engraved scores contain. The treble has a
+  // chord C5+A4 at beat 1; the bass is independent.
+  const OVERFULL = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1"><measure number="1">
+    <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type>
+      <staves>2</staves><clef number="1"><sign>G</sign><line>2</line></clef>
+      <clef number="2"><sign>F</sign><line>4</line></clef></attributes>
+    <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type><staff>1</staff></note>
+    <note><chord/><pitch><step>A</step><octave>4</octave></pitch><duration>4</duration><type>quarter</type><staff>1</staff></note>
+    <note><pitch><step>D</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type><staff>1</staff></note>
+    <note><pitch><step>E</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type><staff>1</staff></note>
+    <note><pitch><step>F</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type><staff>1</staff></note>
+    <note><pitch><step>G</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type><staff>1</staff></note>
+    <backup><duration>20</duration></backup>
+    <note><pitch><step>C</step><octave>3</octave></pitch><duration>8</duration><type>half</type><staff>2</staff></note>
+    <note><pitch><step>G</step><octave>2</octave></pitch><duration>8</duration><type>half</type><staff>2</staff></note>
+    <note><pitch><step>C</step><octave>3</octave></pitch><duration>4</duration><type>quarter</type><staff>2</staff></note>
+  </measure></part></score-partwise>`;
+
+  test("stepping a treble chord member keeps both staves' length and the bass intact", () => {
+    const doc = parseDocument(OVERFULL);
+    // C5 is note element index 0 (staff 1, the chord's first member).
+    moveNote(
+      doc,
+      { measureIndex: 0, noteElementIndex: 0 },
+      {
+        measureIndex: 0,
+        onsetBeatInMeasure: 0,
+        pitch: { step: "D", alter: 0, octave: 5 },
+      },
+    );
+    const score = parseScore(serializeDocument(doc));
+    // Both staves keep their true 5-beat length (not truncated to the 4/4 nominal).
+    expect(measureBeats(score, 0, 0)).toBe(5);
+    expect(measureBeats(score, 1, 0)).toBe(5);
+    // The stepped chord is exactly D5 over A4 — no phantom, no duplicate.
+    expect(chordPitches(score, 0, 0)).toEqual(["D5", "A4"]);
+    // The bass is untouched: C3, G2, C3 at beats 0, 2, 4.
+    expect(chordPitches(score, 1, 0)).toEqual(["C3"]);
+    expect(chordPitches(score, 1, 2)).toEqual(["G2"]);
+    expect(chordPitches(score, 1, 4)).toEqual(["C3"]);
+  });
+
+  // A grand-staff bar (the Chrono Trigger shape) whose treble beat-2 chord stacks
+  // members of unequal length: C5/A4 quarters with a lower E4 *eighth*. Stepping
+  // the unrelated beat-1 note must not let the rewrite make the short, low E4 the
+  // cursor-advancing (plain) note — which would under-advance the time cursor and
+  // swallow the rest of the bar (and desync the bass).
+  const MISMATCHED = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>P</part-name></score-part></part-list>
+  <part id="P1"><measure number="1">
+    <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type>
+      <staves>2</staves><clef number="1"><sign>G</sign><line>2</line></clef>
+      <clef number="2"><sign>F</sign><line>4</line></clef></attributes>
+    <note><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration><type>quarter</type><staff>1</staff></note>
+    <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type><staff>1</staff></note>
+    <note><chord/><pitch><step>A</step><octave>4</octave></pitch><duration>4</duration><type>quarter</type><staff>1</staff></note>
+    <note><chord/><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration><type>eighth</type><staff>1</staff></note>
+    <note><pitch><step>D</step><octave>5</octave></pitch><duration>8</duration><type>half</type><staff>1</staff></note>
+    <backup><duration>16</duration></backup>
+    <note><pitch><step>C</step><octave>3</octave></pitch><duration>16</duration><type>whole</type><staff>2</staff></note>
+  </measure></part></score-partwise>`;
+
+  test("stepping near a mismatched-duration chord keeps the bar's length", () => {
+    const doc = parseDocument(MISMATCHED);
+    // Step the beat-1 G4 (treble index 0) up a step; the beat-2 chord is untouched.
+    moveNote(
+      doc,
+      { measureIndex: 0, noteElementIndex: 0 },
+      {
+        measureIndex: 0,
+        onsetBeatInMeasure: 0,
+        pitch: { step: "A", alter: 0, octave: 4 },
+      },
+    );
+    const score = parseScore(serializeDocument(doc));
+    // The treble is still a full 4 beats — the short E4 didn't collapse it.
+    expect(measureBeats(score, 0, 0)).toBe(4);
+    // The bass whole note is untouched (no desync).
+    expect(measureBeats(score, 1, 0)).toBe(4);
+    expect(chordPitches(score, 1, 0)).toEqual(["C3"]);
+    // The mismatched chord still sounds all three pitches at beat 1.
+    expect(chordPitches(score, 0, 1)).toEqual(["C5", "A4", "E4"]);
+    // The half note at beat 2 survives.
+    expect(chordPitches(score, 0, 2)).toEqual(["D5"]);
+  });
+});
+
+describe("grace notes survive edits", () => {
+  // A single grace note (D5) ornaments the beat-2 chord E5+G5.
+  const GRACE = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>M</part-name></score-part></part-list>
+  <part id="P1"><measure number="1">
+    <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type>
+      <clef><sign>G</sign><line>2</line></clef></attributes>
+    <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type></note>
+    <note><grace/><pitch><step>D</step><octave>5</octave></pitch><type>eighth</type></note>
+    <note><pitch><step>E</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type></note>
+    <note><chord/><pitch><step>G</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type></note>
+    <note><pitch><step>F</step><octave>5</octave></pitch><duration>8</duration><type>half</type></note>
+  </measure></part></score-partwise>`;
+
+  test("stepping the grace's host chord keeps the grace and the bar", () => {
+    const doc = parseDocument(GRACE);
+    // G5 (top of the beat-2 chord) is note element index 3; step it up to A5.
+    moveNote(
+      doc,
+      { measureIndex: 0, noteElementIndex: 3 },
+      {
+        measureIndex: 0,
+        onsetBeatInMeasure: 1,
+        pitch: { step: "A", alter: 0, octave: 5 },
+      },
+    );
+    const score = parseScore(serializeDocument(doc));
+    // Bar length preserved (no collapse from folding the grace into the chord).
+    expect(measureBeats(score, 0, 0)).toBe(4);
+    // The chord stepped to E5 + A5 (no phantom, no swallowed notes).
+    expect(chordPitches(score, 0, 1)).toEqual(["A5", "E5"]);
+    // The grace note D5 still precedes the beat-2 chord.
+    const beat2 = score.parts[0].measures[0].events.find(
+      (e) => !isRest(e) && (e as ChordGroup).gracesBefore !== undefined,
+    ) as ChordGroup | undefined;
+    expect(beat2?.gracesBefore?.[0].notes[0].pitch.step).toBe("D");
+    // No note lost its <step>.
+    expect(serializeDocument(doc)).not.toContain("<step></step>");
+  });
+});
+
+describe("non-quarter divisions", () => {
+  // divisions=8 (quarter = 8): a quarter note must still be typed "quarter", and
+  // a gap must fill with correctly-scaled rests — not the 4-per-quarter the
+  // editor's blank document uses.
+  const DIV8 = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>M</part-name></score-part></part-list>
+  <part id="P1"><measure number="1">
+    <attributes><divisions>8</divisions><time><beats>4</beats><beat-type>4</beat-type>
+      <clef><sign>G</sign><line>2</line></clef></attributes>
+    <note><pitch><step>C</step><octave>5</octave></pitch><duration>8</duration><type>quarter</type></note>
+    <note><pitch><step>E</step><octave>5</octave></pitch><duration>8</duration><type>quarter</type></note>
+    <note><rest/><duration>16</duration><type>half</type></note>
+  </measure></part></score-partwise>`;
+
+  test("addNote types a quarter as a quarter (not a half)", () => {
+    const doc = parseDocument(DIV8);
+    // Add a quarter (durationBeats 1 = 8 divisions) into the rest at beat 3.
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 2,
+      durationBeats: 1,
+      pitch: { step: "G", alter: 0, octave: 5 },
+    });
+    const score = parseScore(serializeDocument(doc));
+    const placed = chords(score);
+    const added = placed.find((p) => p.onsetBeat === 2);
+    expect(added?.chord.type).toBe("quarter");
+    // The bar still totals four quarter beats.
+    expect(measureBeats(score, 0, 0)).toBe(4);
+  });
+
+  test("removing a note fills the gap with a correctly-typed rest", () => {
+    const doc = parseDocument(DIV8);
+    // Remove the beat-1 C5 (index 0); the gap becomes a quarter rest, not a half.
+    removeNote(doc, { measureIndex: 0, noteElementIndex: 0 });
+    const score = parseScore(serializeDocument(doc));
+    const firstRest = score.parts[0].measures[0].events[0];
+    expect(isRest(firstRest)).toBe(true);
+    expect((firstRest as { type: string }).type).toBe("quarter");
+    expect(measureBeats(score, 0, 0)).toBe(4);
+  });
+});
+
 // Extract the enclosing `<tag>…</tag>` substring (first occurrence).
 function sliceTag(xml: string, tag: string): string {
   const open = xml.indexOf(`<${tag}`);
