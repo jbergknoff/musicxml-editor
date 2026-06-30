@@ -27,6 +27,12 @@ export interface EditableMetadata {
   rights: string;
   /** `<identification>/<source>` — a description of the music's source. */
   source: string;
+  /**
+   * Playback tempo in quarter-note beats per minute, stored in the standard
+   * `<sound tempo="…">` hint (with a `<metronome>` display). `null` means "not
+   * set" — playback falls back to a default. This is the tempo "Listen" plays at.
+   */
+  tempo: number | null;
 }
 
 // The `<encoding>` block — who/what/when produced this file. Read-only in the
@@ -93,6 +99,14 @@ const WORK_ORDER = ["work-number", "work-title", "opus"];
 export const SOFTWARE_NAME = "musicxml-editor";
 
 // ── Element plumbing ──────────────────────────────────────────────────────────
+
+function makeChild(doc: Document, tag: string, text?: string): Element {
+  const el = doc.createElement(tag);
+  if (text !== undefined) {
+    el.textContent = text;
+  }
+  return el;
+}
 
 function directChildren(parent: Element, tag: string): Element[] {
   return Array.from(parent.children).filter(
@@ -231,6 +245,111 @@ function pruneIfEmpty(el: Element | null): void {
   }
 }
 
+// ── Tempo (playback BPM) ──────────────────────────────────────────────────────
+
+// MusicXML's machine-readable tempo is the `<sound tempo="…">` playback hint;
+// notation apps additionally show a `<metronome>` marking inside a `<direction>`.
+// We read the first `<sound tempo>` anywhere in the score and, on write, keep a
+// single tempo direction in measure 1 with both representations in sync.
+
+function readTempo(doc: Document): number | null {
+  const sound = doc.querySelector("sound[tempo]");
+  if (!sound) {
+    return null;
+  }
+  const value = Number.parseFloat(sound.getAttribute("tempo") ?? "");
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+// Whether a `<direction>` exists only to carry a tempo (a `<metronome>` display
+// and/or the `<sound tempo>` hint) — so clearing the tempo can remove the whole
+// wrapper rather than leaving an empty direction behind. A direction holding any
+// other content (dynamics, words, a non-metronome direction-type) is kept.
+function isTempoOnlyDirection(direction: Element): boolean {
+  for (const node of Array.from(direction.children)) {
+    const tag = node.tagName.toLowerCase();
+    if (tag === "sound") {
+      continue;
+    }
+    if (tag === "direction-type") {
+      const types = Array.from(node.children);
+      if (
+        types.length === 0 ||
+        !types.every((t) => t.tagName.toLowerCase() === "metronome")
+      ) {
+        return false;
+      }
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+function writeTempo(doc: Document, tempo: number | null): void {
+  const existing = doc.querySelector("sound[tempo]");
+
+  // A `<sound>` lives as a direct child of its `<direction>` (per the schema),
+  // so the parent is the wrapper to update/prune — no need for `closest`.
+  const directionOf = (sound: Element): Element | null => {
+    const parent = sound.parentElement;
+    return parent && parent.tagName.toLowerCase() === "direction"
+      ? parent
+      : null;
+  };
+
+  if (tempo === null || !Number.isFinite(tempo) || tempo <= 0) {
+    if (existing) {
+      const direction = directionOf(existing);
+      existing.remove();
+      if (direction && isTempoOnlyDirection(direction)) {
+        direction.remove();
+      }
+    }
+    return;
+  }
+
+  const rounded = String(Math.round(tempo));
+  if (existing) {
+    existing.setAttribute("tempo", rounded);
+    const perMinute = directionOf(existing)?.querySelector(
+      "metronome > per-minute",
+    );
+    if (perMinute) {
+      perMinute.textContent = rounded;
+    }
+    return;
+  }
+
+  const measure = doc.querySelector("part > measure");
+  if (!measure) {
+    return;
+  }
+  const direction = doc.createElement("direction");
+  direction.setAttribute("placement", "above");
+  const directionType = doc.createElement("direction-type");
+  const metronome = doc.createElement("metronome");
+  metronome.appendChild(makeChild(doc, "beat-unit", "quarter"));
+  metronome.appendChild(makeChild(doc, "per-minute", rounded));
+  directionType.appendChild(metronome);
+  direction.appendChild(directionType);
+  const sound = doc.createElement("sound");
+  sound.setAttribute("tempo", rounded);
+  direction.appendChild(sound);
+
+  // Sit the marking at the bar's start: right after <attributes> if present.
+  const attributes = directChildren(measure, "attributes")[0];
+  if (attributes) {
+    if (attributes.nextSibling) {
+      measure.insertBefore(direction, attributes.nextSibling);
+    } else {
+      measure.appendChild(direction);
+    }
+  } else {
+    measure.insertBefore(direction, measure.firstChild);
+  }
+}
+
 // ── Read ──────────────────────────────────────────────────────────────────────
 
 export function readMetadata(doc: Document): ScoreMetadata {
@@ -252,6 +371,7 @@ export function readMetadata(doc: Document): ScoreMetadata {
     arranger: creatorText(identification, "arranger"),
     rights: textOf(identification, "rights"),
     source: textOf(identification, "source"),
+    tempo: readTempo(doc),
     encoding: {
       software: encoding
         ? directChildren(encoding, "software").map(
@@ -284,6 +404,9 @@ export function readMetadata(doc: Document): ScoreMetadata {
 // standard elements as needed and pruning containers that end up empty.
 export function writeMetadata(doc: Document, meta: EditableMetadata): void {
   const root = doc.documentElement;
+
+  // Playback tempo (independent of the <identification> block).
+  writeTempo(doc, meta.tempo);
 
   // <work>/<work-title>
   if (meta.workTitle.trim()) {

@@ -93,7 +93,7 @@ const CHORD_TINT = "#84a9e8";
 // slot is identified by its position (measure + onset beat) so it survives edits
 // even when it holds no note (a rest carries no handle).
 type Selection =
-  | { kind: "slot"; measureIndex: number; onsetBeat: number }
+  | { kind: "slot"; partIndex: number; measureIndex: number; onsetBeat: number }
   | { kind: "note"; handle: NoteHandle }
   | null;
 
@@ -106,10 +106,11 @@ function sameHandle(a: NoteHandle, b: NoteHandle): boolean {
 
 function sameSlot(
   selection: Selection,
-  slot: { measureIndex: number; onsetBeat: number },
+  slot: { partIndex: number; measureIndex: number; onsetBeat: number },
 ): boolean {
   return (
     selection?.kind === "slot" &&
+    selection.partIndex === slot.partIndex &&
     selection.measureIndex === slot.measureIndex &&
     Math.abs(selection.onsetBeat - slot.onsetBeat) < 1e-6
   );
@@ -242,7 +243,9 @@ export function Editor() {
     [documentRef, commit],
   );
 
-  const listen = useListen(score);
+  // The tempo "Listen" plays at — the score's configured BPM, or a default.
+  const bpm = metadata.tempo ?? 100;
+  const listen = useListen(score, bpm);
 
   // The slot (chord or rest) for the current selection. A slot selection
   // resolves by position; a drilled note resolves via its chord's onset.
@@ -251,10 +254,17 @@ export function Editor() {
       return null;
     }
     if (selection.kind === "slot") {
-      return slotAt(score, selection.measureIndex, selection.onsetBeat);
+      return slotAt(
+        score,
+        selection.measureIndex,
+        selection.onsetBeat,
+        selection.partIndex,
+      );
     }
     const info = chordInfoForHandle(score, selection.handle);
-    return info ? slotAt(score, info.measureIndex, info.onsetBeat) : null;
+    return info
+      ? slotAt(score, info.measureIndex, info.onsetBeat, info.partIndex)
+      : null;
   }, [selection, score]);
 
   // The single-note target for nudges/accidentals (null on a rest slot).
@@ -345,7 +355,11 @@ export function Editor() {
       if (!editable) {
         return;
       }
-      const slot = slotAtBeat(score, gesture.beat);
+      // A tap clear of the staves (in the empty margin) clears the selection;
+      // it never selects or inserts.
+      const slot = gesture.offStaff
+        ? null
+        : slotAtBeat(score, gesture.beat, 1.5, gesture.partIndex);
       if (!slot) {
         setSelection(null);
         return;
@@ -361,6 +375,7 @@ export function Editor() {
         }
         return {
           kind: "slot",
+          partIndex: slot.partIndex,
           measureIndex: slot.measureIndex,
           onsetBeat: slot.onsetBeat,
         };
@@ -388,6 +403,7 @@ export function Editor() {
         }
         return {
           kind: "slot",
+          partIndex: slot.partIndex,
           measureIndex: slot.measureIndex,
           onsetBeat: slot.onsetBeat,
         };
@@ -413,7 +429,8 @@ export function Editor() {
       }
       const measureStart = measureStartBeats[chord.measureIndex] ?? 0;
       const activeFifths =
-        score.parts[0]?.measures[chord.measureIndex]?.activeFifths ?? 0;
+        score.parts[chord.partIndex]?.measures[chord.measureIndex]
+          ?.activeFifths ?? 0;
       const moved = moveNote(documentRef.current, handle, {
         measureIndex: chord.measureIndex,
         onsetBeatInMeasure: chord.onsetBeat - measureStart,
@@ -447,17 +464,18 @@ export function Editor() {
   // removal so the position stays selected (it becomes a rest, or the remaining
   // chord).
   const reselectSlotAt = useCallback(
-    (onsetBeat: number | null) => {
+    (onsetBeat: number | null, partIndex: number) => {
       if (onsetBeat === null) {
         setSelection(null);
         return;
       }
       const freshScore = parseScore(serializeDocument(documentRef.current));
-      const slot = slotAtBeat(freshScore, onsetBeat, 0.1);
+      const slot = slotAtBeat(freshScore, onsetBeat, 0.1, partIndex);
       setSelection(
         slot
           ? {
               kind: "slot",
+              partIndex: slot.partIndex,
               measureIndex: slot.measureIndex,
               onsetBeat: slot.onsetBeat,
             }
@@ -477,7 +495,7 @@ export function Editor() {
       removeNotes(documentRef.current, [handle]);
       setMenu(null);
       commit();
-      reselectSlotAt(onsetBeat);
+      reselectSlotAt(onsetBeat, info?.partIndex ?? 0);
     },
     [editable, score, documentRef, commit, reselectSlotAt],
   );
@@ -493,13 +511,15 @@ export function Editor() {
         return;
       }
       if (slotInfo.isRest) {
-        const clef = score.parts[0]?.clef;
+        const clef = score.parts[slotInfo.partIndex]?.clef;
         const measureStart = measureStartBeats[slotInfo.measureIndex] ?? 0;
         const added = addNote(documentRef.current, {
           measureIndex: slotInfo.measureIndex,
           onsetBeatInMeasure: slotInfo.onsetBeat - measureStart,
           durationBeats: 1,
           pitch: pitch ?? staffReferencePitch(clef),
+          // 1-based staff; addNote ignores it for single-staff documents.
+          staff: slotInfo.partIndex + 1,
         });
         if (added) {
           setSelection({ kind: "note", handle: added });
@@ -526,7 +546,9 @@ export function Editor() {
         return;
       }
       if (slotInfo.isRest) {
-        addNoteAtSlot(placeLetterNearStaff(step, score.parts[0]?.clef));
+        addNoteAtSlot(
+          placeLetterNearStaff(step, score.parts[slotInfo.partIndex]?.clef),
+        );
       } else {
         const top = topFirstNotes(slotInfo)[0].pitch;
         addNoteAtSlot({ step, alter: 0, octave: top.octave });
@@ -559,7 +581,7 @@ export function Editor() {
     removeNotes(documentRef.current, handles);
     setMenu(null);
     commit();
-    reselectSlotAt(onsetBeat);
+    reselectSlotAt(onsetBeat, slotInfo.partIndex);
   }, [commit, documentRef, selection, slotInfo, reselectSlotAt]);
 
   // ── Selection navigation (keyboard) ─────────────────────────────────────────
@@ -569,7 +591,12 @@ export function Editor() {
       if (prev?.kind !== "slot") {
         return prev;
       }
-      const slot = slotAt(score, prev.measureIndex, prev.onsetBeat);
+      const slot = slotAt(
+        score,
+        prev.measureIndex,
+        prev.onsetBeat,
+        prev.partIndex,
+      );
       // A rest slot has no note to drill into.
       if (!slot || slot.isRest || slot.notes.length === 0) {
         return prev;
@@ -588,6 +615,7 @@ export function Editor() {
       return info
         ? {
             kind: "slot",
+            partIndex: info.partIndex,
             measureIndex: info.measureIndex,
             onsetBeat: info.onsetBeat,
           }
@@ -625,7 +653,9 @@ export function Editor() {
   // behavior. Clamps at the piece ends.
   const navBeat = useCallback(
     (dir: number) => {
-      const list = slots(score);
+      // Walk one staff at a time so ←/→ stays on the staff being edited.
+      const partIndex = slotInfo?.partIndex ?? 0;
+      const list = slots(score, partIndex);
       if (list.length === 0) {
         return;
       }
@@ -654,12 +684,13 @@ export function Editor() {
         }
         return {
           kind: "slot",
+          partIndex: next.partIndex,
           measureIndex: next.measureIndex,
           onsetBeat: next.onsetBeat,
         };
       });
     },
-    [score],
+    [score, slotInfo],
   );
 
   // ↑/↓: at Level 2 step the note (Shift = octave); at Level <2 drill in.
@@ -1144,7 +1175,19 @@ export function Editor() {
             metadata={metadata}
             onEdit={() => setMetadataOpen(true)}
           />
-          <div style={{ flex: 1, minHeight: 0, padding: 8 }}>
+          {/* A pointer-down that lands off the staff SVG (the empty canvas
+              around/below the staves) clears the selection. Taps that reach the
+              SVG keep their svg ancestor and are handled by handleTap instead. */}
+          <div
+            style={{ flex: 1, minHeight: 0, padding: 8 }}
+            onPointerDown={(event) => {
+              const target = event.target as Element | null;
+              if (target && !target.closest("svg")) {
+                setSelection(null);
+                setMenu(null);
+              }
+            }}
+          >
             <EditableSheetMusic
               musicxml={musicxml}
               noteHighlights={noteHighlights}
@@ -1219,7 +1262,7 @@ export function Editor() {
         >
           {listen.playing ? "⏸" : "▶"}
         </button>
-        <span>♩ = 100</span>
+        <span>♩ = {bpm}</span>
         <span style={{ flex: 1 }} />
         <span>{selectionReadout}</span>
       </div>

@@ -15,6 +15,7 @@ const EMPTY_EDITABLE: EditableMetadata = {
   arranger: "",
   rights: "",
   source: "",
+  tempo: null,
 };
 
 // The order of `<score-partwise>` direct children, used to assert the DTD-valid
@@ -114,6 +115,41 @@ describe("writeMetadata", () => {
     const creators = doc.querySelectorAll("creator");
     expect(creators.length).toBe(1);
     expect(readMetadata(doc).composer).toBe("Second");
+  });
+
+  test("writes, reads, and clears the playback tempo", () => {
+    const doc = createBlankDocument();
+    expect(readMetadata(doc).tempo).toBeNull();
+
+    writeMetadata(doc, { ...EMPTY_EDITABLE, tempo: 132 });
+    expect(doc.querySelector("sound[tempo]")?.getAttribute("tempo")).toBe(
+      "132",
+    );
+    expect(doc.querySelector("metronome > per-minute")?.textContent).toBe(
+      "132",
+    );
+    expect(readMetadata(doc).tempo).toBe(132);
+
+    // Updating in place does not duplicate the direction.
+    writeMetadata(doc, { ...EMPTY_EDITABLE, tempo: 90 });
+    expect(doc.querySelectorAll("sound[tempo]").length).toBe(1);
+    expect(readMetadata(doc).tempo).toBe(90);
+
+    // Clearing removes the tempo-only direction entirely.
+    writeMetadata(doc, { ...EMPTY_EDITABLE, tempo: null });
+    expect(doc.querySelector("sound[tempo]")).toBeNull();
+    expect(doc.querySelector("direction")).toBeNull();
+    expect(readMetadata(doc).tempo).toBeNull();
+  });
+
+  test("tempo survives serialize + reparse", () => {
+    const doc = createBlankDocument();
+    writeMetadata(doc, { ...EMPTY_EDITABLE, tempo: 144 });
+    const reparsed = new DOMParser().parseFromString(
+      serializeDocument(doc),
+      "text/xml",
+    );
+    expect(readMetadata(reparsed).tempo).toBe(144);
   });
 
   test("round-trips through serialize + reparse", () => {

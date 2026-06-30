@@ -49,6 +49,7 @@ function pickEditable(meta: ScoreMetadata): EditableMetadata {
     arranger: meta.arranger,
     rights: meta.rights,
     source: meta.source,
+    tempo: meta.tempo,
   };
 }
 
@@ -216,7 +217,7 @@ export function MetadataDialog({
               <span style={labelStyle}>{field.label}</span>
               <input
                 type="text"
-                value={values[field.key]}
+                value={values[field.key] as string}
                 placeholder={field.placeholder}
                 disabled={!editable}
                 onInput={(event) =>
@@ -229,6 +230,31 @@ export function MetadataDialog({
               />
             </label>
           ))}
+
+          {/* Playback tempo — a number (quarter-note BPM); blank clears it. */}
+          <label>
+            <span style={labelStyle}>Tempo (BPM)</span>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={values.tempo ?? ""}
+              placeholder="e.g. 120"
+              disabled={!editable}
+              onInput={(event) => {
+                const raw = (event.currentTarget as HTMLInputElement).value;
+                const parsed = Number.parseInt(raw, 10);
+                setValues((prev) => ({
+                  ...prev,
+                  tempo:
+                    raw.trim() === "" || !Number.isFinite(parsed) || parsed <= 0
+                      ? null
+                      : parsed,
+                }));
+              }}
+              style={inputStyle}
+            />
+          </label>
 
           {/* Read-only encoding / provenance */}
           {provenance.length > 0 ? (

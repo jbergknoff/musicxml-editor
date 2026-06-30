@@ -13,8 +13,8 @@ import {
   type Pitch,
 } from "./sheet-music/index";
 
-// ~100 BPM, matching the prototype (600 ms per quarter note).
-const QUARTER_MS = 600;
+// Fallback tempo (quarter-note BPM) when the score carries no `<sound tempo>`.
+const DEFAULT_BPM = 100;
 
 interface BeatStep {
   /** Absolute quarter-note beat of this onset. */
@@ -96,11 +96,18 @@ export interface Listen {
   stop: () => void;
 }
 
-export function useListen(score: ParsedScore | null): Listen {
+export function useListen(
+  score: ParsedScore | null,
+  bpm: number = DEFAULT_BPM,
+): Listen {
   const [playing, setPlaying] = useState(false);
   const liveBeatRef = useRef<number | null>(null);
   const audioRef = useRef<AudioContext | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Read inside the playback loop so a tempo change mid-session takes effect on
+  // the next step without restarting playback.
+  const quarterMsRef = useRef(60000 / bpm);
+  quarterMsRef.current = 60000 / (bpm > 0 ? bpm : DEFAULT_BPM);
 
   const getLiveBeat = useCallback(() => liveBeatRef.current, []);
 
@@ -149,7 +156,7 @@ export function useListen(score: ParsedScore | null): Listen {
         }
         const step = steps[index];
         liveBeatRef.current = step.beat;
-        const ms = step.durationBeats * QUARTER_MS;
+        const ms = step.durationBeats * quarterMsRef.current;
         for (const pitch of step.pitches) {
           beep(ac, pitchFrequency(pitch), ms);
         }
