@@ -1172,48 +1172,50 @@ export function removeGraceNote(doc: Document, handle: NoteHandle): boolean {
   return true;
 }
 
-// Swap a grace note's group (the simultaneous grace notes at its position)
-// with the temporally adjacent group — the only way to reorder grace notes
-// relative to each other, since their pitch alone carries no rhythmic
-// position. `direction` is relative to playback order: "earlier" swaps with
-// the group that sounds before this one, "later" with the group after.
-// Returns false on a bad handle, a non-grace handle, or no neighbor to swap
-// with (already first/last).
-export function reorderGrace(
+const isGraceNoteElement = (el: Element): boolean =>
+  el.tagName.toLowerCase() === "note" && el.querySelector("grace") !== null;
+
+// The onset group (the simultaneous grace notes at `handle`'s temporal
+// position) that `handle` belongs to, plus the groups around it — the shared
+// lookup `reorderGrace` and `setGraceSlash` both need. A group is a plain
+// grace note plus any following `<chord/>`-flagged notes (they sound
+// together); groups are in playback order. Returns null on a bad handle, a
+// non-grace handle, or a grace run with no following host note.
+function graceGroupsForHandle(
   doc: Document,
   handle: NoteHandle,
-  direction: "earlier" | "later",
-): boolean {
+): { measureEl: Element; groups: Element[][]; groupIndex: number } | null {
   const measureEl = measuresOf(doc)[handle.measureIndex];
   if (!measureEl) {
-    return false;
+    return null;
   }
   const element = elementForHandle(doc, handle);
   if (!element || !element.querySelector("grace")) {
-    return false;
+    return null;
   }
   const children = Array.from(measureEl.children);
   const elementIndex = children.indexOf(element);
   if (elementIndex === -1) {
-    return false;
+    return null;
   }
-  const isGraceNote = (el: Element) =>
-    el.tagName.toLowerCase() === "note" && el.querySelector("grace") !== null;
 
   // The host is the next non-grace `<note>` after this run of grace notes.
   let hostIndex = elementIndex + 1;
-  while (hostIndex < children.length && isGraceNote(children[hostIndex])) {
+  while (
+    hostIndex < children.length &&
+    isGraceNoteElement(children[hostIndex])
+  ) {
     hostIndex++;
   }
   if (hostIndex >= children.length) {
-    return false;
+    return null;
   }
 
   // The contiguous run of grace notes immediately before the host, split into
   // onset groups: a plain note plus any following `<chord/>`-flagged notes
   // sound together as one group.
   let runStart = hostIndex;
-  while (runStart > 0 && isGraceNote(children[runStart - 1])) {
+  while (runStart > 0 && isGraceNoteElement(children[runStart - 1])) {
     runStart--;
   }
   const groups: Element[][] = [];
@@ -1226,13 +1228,29 @@ export function reorderGrace(
   }
 
   const groupIndex = groups.findIndex((group) => group.includes(element));
+  return groupIndex === -1 ? null : { measureEl, groups, groupIndex };
+}
+
+// Swap a grace note's group (the simultaneous grace notes at its position)
+// with the temporally adjacent group — the only way to reorder grace notes
+// relative to each other, since their pitch alone carries no rhythmic
+// position. `direction` is relative to playback order: "earlier" swaps with
+// the group that sounds before this one, "later" with the group after.
+// Returns false on a bad handle, a non-grace handle, or no neighbor to swap
+// with (already first/last).
+export function reorderGrace(
+  doc: Document,
+  handle: NoteHandle,
+  direction: "earlier" | "later",
+): boolean {
+  const found = graceGroupsForHandle(doc, handle);
+  if (!found) {
+    return false;
+  }
+  const { measureEl, groups, groupIndex } = found;
   const neighborIndex =
     direction === "earlier" ? groupIndex - 1 : groupIndex + 1;
-  if (
-    groupIndex === -1 ||
-    neighborIndex < 0 ||
-    neighborIndex >= groups.length
-  ) {
+  if (neighborIndex < 0 || neighborIndex >= groups.length) {
     return false;
   }
 
@@ -1243,6 +1261,28 @@ export function reorderGrace(
   const anchor = earlierGroup[0];
   for (const note of laterGroup) {
     measureEl.insertBefore(note, anchor);
+  }
+  return true;
+}
+
+// Toggle a grace note between acciaccatura (slashed) and appoggiatura
+// (unslashed). The slash is one visual mark per group of simultaneous grace
+// notes, so it's set on every note in `handle`'s group — matching how the
+// parser reads it (the group's slash comes from its first note's `<grace>`
+// element) and how the renderer draws it (one slash per `GraceGroup`).
+// Returns false on a bad handle or a handle that isn't actually a grace note.
+export function setGraceSlash(
+  doc: Document,
+  handle: NoteHandle,
+  slash: boolean,
+): boolean {
+  const found = graceGroupsForHandle(doc, handle);
+  if (!found) {
+    return false;
+  }
+  const group = found.groups[found.groupIndex];
+  for (const note of group) {
+    note.querySelector("grace")?.setAttribute("slash", slash ? "yes" : "no");
   }
   return true;
 }

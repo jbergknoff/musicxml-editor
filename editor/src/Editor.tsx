@@ -46,6 +46,7 @@ import {
   serializeDocument,
   setAccidental,
   setGracePitch,
+  setGraceSlash,
   setNoteDuration,
 } from "./dom-edit";
 import {
@@ -303,6 +304,7 @@ export function Editor() {
     handles: NoteHandle[];
     graceHandles: NoteHandle[];
     gracePitches: Pitch[];
+    graceSlashes: boolean[];
     allSlots: SlotInfo[];
   } | null>(() => {
     if (!slotInfo) {
@@ -317,6 +319,7 @@ export function Editor() {
     const flatHandles: NoteHandle[] = [];
     const flatGraceHandles: NoteHandle[] = [];
     const flatGracePitches: Pitch[] = [];
+    const flatGraceSlashes: boolean[] = [];
     const noteGroups: InspectorNoteGroup[] = beatStaffSlots.map((staffSlot) => {
       const rows = topFirstNotes(staffSlot);
       const offset = flatHandles.length;
@@ -327,6 +330,7 @@ export function Editor() {
       for (const grace of staffSlot.graces) {
         flatGraceHandles.push(grace.handle);
         flatGracePitches.push(grace.pitch);
+        flatGraceSlashes.push(grace.slash);
       }
       return {
         partIndex: staffSlot.partIndex,
@@ -371,6 +375,7 @@ export function Editor() {
       handles: flatHandles,
       graceHandles: flatGraceHandles,
       gracePitches: flatGracePitches,
+      graceSlashes: flatGraceSlashes,
       allSlots: beatStaffSlots,
     };
   }, [slotInfo, focused, selection, score, measureStartBeats]);
@@ -599,6 +604,18 @@ export function Editor() {
         return;
       }
       if (reorderGrace(documentRef.current, handle, direction)) {
+        commit();
+      }
+    },
+    [editable, documentRef, commit],
+  );
+
+  const toggleGraceSlash = useCallback(
+    (handle: NoteHandle, slash: boolean) => {
+      if (!editable) {
+        return;
+      }
+      if (setGraceSlash(documentRef.current, handle, !slash)) {
         commit();
       }
     },
@@ -1417,6 +1434,13 @@ export function Editor() {
             const handle = inspector?.graceHandles[index];
             if (handle) {
               reorderGraceHandle(handle, direction);
+            }
+          }}
+          onGraceToggleSlash={(index) => {
+            const handle = inspector?.graceHandles[index];
+            const slash = inspector?.graceSlashes[index];
+            if (handle && slash !== undefined) {
+              toggleGraceSlash(handle, slash);
             }
           }}
         />

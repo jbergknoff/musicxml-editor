@@ -248,25 +248,29 @@ export interface InspectorProps {
   onGraceRemove: (index: number) => void;
   /** Move the grace note's group earlier/later relative to its siblings. */
   onGraceReorder: (index: number, direction: "earlier" | "later") => void;
+  /** Toggle acciaccatura (slashed) vs. appoggiatura (unslashed). */
+  onGraceToggleSlash: (index: number) => void;
   /** When false the panel renders a view-only notice instead of controls. */
   editable: boolean;
 }
 
-// One grace note row: its label, a "grace" indicator (slashed for an
-// acciaccatura), reorder arrows (earlier/later among its siblings), the
-// shared accidental/stepper controls, and a remove button.
+// One grace note row: its label, a "grace" indicator (clickable to toggle
+// acciaccatura/appoggiatura), reorder arrows (earlier/later among its
+// siblings), the shared accidental/stepper controls, and a remove button.
 function GraceNoteRowEl({
   grace,
   onAccidental,
   onStep,
   onRemove,
   onReorder,
+  onToggleSlash,
 }: {
   grace: InspectorGraceRow;
   onAccidental: (alter: number) => void;
   onStep: (delta: number) => void;
   onRemove: () => void;
   onReorder: (direction: "earlier" | "later") => void;
+  onToggleSlash: () => void;
 }) {
   return (
     <div
@@ -281,22 +285,30 @@ function GraceNoteRowEl({
         marginLeft: 14,
       }}
     >
-      <span
-        title={grace.slash ? "Acciaccatura (slashed grace note)" : "Grace note"}
+      <button
+        type="button"
+        title={
+          grace.slash
+            ? "Acciaccatura (slashed) — click for appoggiatura"
+            : "Appoggiatura — click for acciaccatura (slashed)"
+        }
+        onClick={onToggleSlash}
         style={{
           fontFamily: FONTS.mono,
           fontSize: 9.5,
           letterSpacing: ".05em",
           textTransform: "uppercase",
-          color: COLORS.textFaint,
-          border: `1px solid ${COLORS.borderLight}`,
+          color: grace.slash ? COLORS.accent : COLORS.textFaint,
+          background: "transparent",
+          border: `1px solid ${grace.slash ? COLORS.accent : COLORS.borderLight}`,
           borderRadius: 4,
           padding: "1px 5px",
           flex: "none",
+          cursor: "pointer",
         }}
       >
         {grace.slash ? "Grace ╱" : "Grace"}
-      </span>
+      </button>
       <span
         style={{
           flex: 1,
@@ -384,6 +396,7 @@ function NoteGroupSection({
   onGraceStep,
   onGraceRemove,
   onGraceReorder,
+  onGraceToggleSlash,
 }: {
   group: InspectorNoteGroup;
   showLabel: boolean;
@@ -397,6 +410,7 @@ function NoteGroupSection({
   onGraceStep: (flatIndex: number, delta: number) => void;
   onGraceRemove: (flatIndex: number) => void;
   onGraceReorder: (flatIndex: number, direction: "earlier" | "later") => void;
+  onGraceToggleSlash: (flatIndex: number) => void;
 }) {
   return (
     <div style={{ marginBottom: showLabel ? 12 : 0 }}>
@@ -454,6 +468,7 @@ function NoteGroupSection({
                 onStep={(delta) => onGraceStep(flatIndex, delta)}
                 onRemove={() => onGraceRemove(flatIndex)}
                 onReorder={(direction) => onGraceReorder(flatIndex, direction)}
+                onToggleSlash={() => onGraceToggleSlash(flatIndex)}
               />
             );
           })}
@@ -601,6 +616,7 @@ export function Inspector({
   onGraceStep,
   onGraceRemove,
   onGraceReorder,
+  onGraceToggleSlash,
   editable,
 }: InspectorProps) {
   const multiStaff = model ? model.noteGroups.length > 1 : false;
@@ -700,6 +716,7 @@ export function Inspector({
                 onGraceStep={onGraceStep}
                 onGraceRemove={onGraceRemove}
                 onGraceReorder={onGraceReorder}
+                onGraceToggleSlash={onGraceToggleSlash}
               />
             ))}
           </div>
