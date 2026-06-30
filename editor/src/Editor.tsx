@@ -32,6 +32,7 @@ import {
   writeMetadata,
 } from "./metadata";
 import {
+  addGraceNote,
   addNote,
   addNoteToChord,
   createBlankDocument,
@@ -612,6 +613,20 @@ export function Editor() {
         return;
       }
       if (setGraceSlash(documentRef.current, handle, slash)) {
+        commit();
+      }
+    },
+    [editable, documentRef, commit],
+  );
+
+  // Adds the new grace note immediately before `handle`'s chord; the active
+  // slot selection (the beat) stays valid, same as the other grace edits.
+  const addGraceHandle = useCallback(
+    (handle: NoteHandle) => {
+      if (!editable) {
+        return;
+      }
+      if (addGraceNote(documentRef.current, handle)) {
         commit();
       }
     },
@@ -1436,6 +1451,12 @@ export function Editor() {
             const handle = inspector?.graceHandles[index];
             if (handle) {
               setGraceSlashOn(handle, slash);
+            }
+          }}
+          onAddGrace={(index) => {
+            const handle = inspector?.handles[index];
+            if (handle) {
+              addGraceHandle(handle);
             }
           }}
         />

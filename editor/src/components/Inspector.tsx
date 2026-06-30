@@ -346,6 +346,9 @@ export interface InspectorProps {
   onGraceReorder: (index: number, direction: "earlier" | "later") => void;
   /** Set acciaccatura (slashed) vs. appoggiatura (unslashed). */
   onGraceSlash: (index: number, slash: boolean) => void;
+  /** Add a new grace note immediately before the chord whose top note is at
+   *  this flat note index. */
+  onAddGrace: (noteIndex: number) => void;
   /** When false the panel renders a view-only notice instead of controls. */
   editable: boolean;
 }
@@ -470,6 +473,7 @@ function NoteGroupSection({
   onGraceRemove,
   onGraceReorder,
   onGraceSlash,
+  onAddGrace,
 }: {
   group: InspectorNoteGroup;
   showLabel: boolean;
@@ -484,6 +488,9 @@ function NoteGroupSection({
   onGraceRemove: (flatIndex: number) => void;
   onGraceReorder: (flatIndex: number, direction: "earlier" | "later") => void;
   onGraceSlash: (flatIndex: number, slash: boolean) => void;
+  /** Add a new grace note immediately before the chord whose top note is at
+   *  this flat note index. */
+  onAddGrace: (noteIndex: number) => void;
 }) {
   return (
     <div style={{ marginBottom: showLabel ? 12 : 0 }}>
@@ -546,6 +553,31 @@ function NoteGroupSection({
             );
           })}
         </div>
+      )}
+      {!group.isRest && group.notes.length > 0 && (
+        <button
+          type="button"
+          onClick={() => onAddGrace(group.noteOffset)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6,
+            width: "100%",
+            border: `1px dashed ${COLORS.borderLight}`,
+            color: COLORS.textFaint,
+            background: "transparent",
+            borderRadius: RADIUS.row,
+            padding: "5px 8px",
+            marginBottom: 8,
+            fontSize: 11.5,
+            fontFamily: FONTS.mono,
+            cursor: "pointer",
+          }}
+        >
+          <GraceGlyph slash={false} />
+          Add grace note
+        </button>
       )}
       {group.notes.length > 0 && (
         <div
@@ -690,6 +722,7 @@ export function Inspector({
   onGraceRemove,
   onGraceReorder,
   onGraceSlash,
+  onAddGrace,
   editable,
 }: InspectorProps) {
   const multiStaff = model ? model.noteGroups.length > 1 : false;
@@ -790,6 +823,7 @@ export function Inspector({
                 onGraceRemove={onGraceRemove}
                 onGraceReorder={onGraceReorder}
                 onGraceSlash={onGraceSlash}
+                onAddGrace={onAddGrace}
               />
             ))}
           </div>

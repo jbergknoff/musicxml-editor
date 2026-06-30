@@ -1362,6 +1362,84 @@ export function addNoteToChord(
   return handleFor(measuresOf(doc), handle.measureIndex, element);
 }
 
+// The first ("lead") `<note>` element of the onset group `element` belongs
+// to. Chord members are laid out in document order as
+// [grace notes…, lead (no `<chord/>`), member2 (`<chord/>`), …] — existing
+// grace notes always sit immediately before the lead, regardless of which
+// member a handle happens to point at. Walking back over `<chord/>`-flagged
+// siblings (stopping at any `<grace>` sibling, which belongs to a different,
+// earlier group) finds it from any member.
+function leadElementOfChord(measureEl: Element, element: Element): Element {
+  const children = Array.from(measureEl.children);
+  let index = children.indexOf(element);
+  if (index === -1) {
+    return element;
+  }
+  while (
+    index > 0 &&
+    children[index].querySelector("chord") !== null &&
+    children[index].querySelector("grace") === null
+  ) {
+    index--;
+  }
+  return children[index];
+}
+
+// Add a new grace note immediately before the chord at `handle`'s onset — it
+// becomes the temporally-last grace group (closest to the chord); any
+// existing grace groups keep their order ahead of it (`reorderGrace` can move
+// it earlier). `pitch` defaults to a diatonic step above the chord's current
+// top note. Returns the new grace note's handle, or null on a bad handle.
+export function addGraceNote(
+  doc: Document,
+  handle: NoteHandle,
+  pitch?: Pitch,
+): NoteHandle | null {
+  const measureEl = measuresOf(doc)[handle.measureIndex];
+  if (!measureEl) {
+    return null;
+  }
+  const target = elementForHandle(doc, handle);
+  if (!target) {
+    return null;
+  }
+  const lead = leadElementOfChord(measureEl, target);
+  const { divisions } = measureMetrics(doc);
+  const notes = readRealNotes(measureEl, divisions);
+  const anchor = notes.find((note) => note.element === lead);
+  if (!anchor) {
+    return null;
+  }
+  // The notes already sounding at this beat, to seed the default pitch above.
+  const members = notes.filter(
+    (note) => note.onsetDivisions === anchor.onsetDivisions,
+  );
+  const topDiatonic = members.reduce((max, member) => {
+    const memberPitch = readPitch(member.element);
+    return memberPitch ? Math.max(max, diatonicOf(memberPitch)) : max;
+  }, Number.NEGATIVE_INFINITY);
+  const newPitch =
+    pitch ??
+    (topDiatonic === Number.NEGATIVE_INFINITY
+      ? { step: "C", alter: 0, octave: 5 }
+      : pitchFromDiatonic(topDiatonic + 1));
+
+  const sc = staffCountOf(doc);
+  const leadStaff = sc > 1 ? staffOf(lead) : undefined;
+  const graceEl = doc.createElement("note");
+  graceEl.appendChild(doc.createElement("grace"));
+  appendPitch(doc, graceEl, newPitch);
+  if (anchor.voice > 1) {
+    graceEl.appendChild(child(doc, "voice", String(anchor.voice)));
+  }
+  graceEl.appendChild(child(doc, "type", "16th"));
+  if (leadStaff !== undefined) {
+    graceEl.appendChild(child(doc, "staff", String(leadStaff)));
+  }
+  measureEl.insertBefore(graceEl, lead);
+  return handleFor(measuresOf(doc), handle.measureIndex, graceEl);
+}
+
 // Insert a blank (full-measure-rest) measure after `afterIndex` (default: the
 // end), then renumber every measure sequentially. Returns the new measure's
 // index, or null when the part has no measures to anchor against.
