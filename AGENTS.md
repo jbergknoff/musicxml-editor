@@ -124,3 +124,42 @@ serves the same `/models/<file>` URLs from `lib/import-image/public/models/`.
 Carried from the sibling piano-practice repo: full words in names, braces around
 every conditional/loop body, `PascalCase` components and `kebab-case` everything
 else, `lib/` runtime-agnostic. Run `make pr-ready` before committing.
+
+## Editor architecture notes
+
+**Grand staff internals (non-obvious):**
+A MusicXML `<part>` with `<staves>2</staves>` is split into TWO entries in
+`score.parts[]`: `parts[0]` = treble, `parts[1]` = bass. `SlotInfo`, `ChordInfo`,
+and `ChordSelection` all carry a `partIndex` field that maps directly to this array.
+When editing grand-staff scores, propagate `partIndex` through selection state and
+pass `slotInfo.partIndex + 1` (1-based) as the MusicXML `<staff>` number to
+`addNote`. The editability gate is `isEditableDocument()` in `dom-edit.ts` — a
+grand staff with ≤1 `<backup>` per measure is editable; more than one `<backup>`
+per measure → view-only.
+
+**Tempo storage in MusicXML:**
+Playback BPM is stored as `<sound tempo="N">` inside a `<direction>` in measure 1,
+paired with `<metronome>` for display. `readMetadata()` finds it via
+`doc.querySelector("sound[tempo]")`; `writeMetadata()` upserts a single tempo
+direction and prunes it when cleared. `useListen(score, bpm)` takes BPM explicitly;
+the editor reads `metadata.tempo ?? 100`.
+
+**`linkedom` limitation in unit tests:**
+`bun test` uses `linkedom` as the DOM shim (loaded via `editor/src/test-setup.ts`).
+`linkedom` does **not** implement `Element.closest()`. Use `element.parentElement`
+with a tag check instead when traversing up the DOM in any code that also runs
+under `bun test`.
+
+**Editor Playwright tests:**
+`make editor-integration-test` runs `editor/tests/*.spec.ts`. Narrow the run with
+`ARGS="filename.spec.ts"` or `ARGS="filename.spec.ts:lineNumber"`.
+`spine-selection.spec.ts` has a pre-existing occasional timing flake in parallel
+runs — rerun once before treating it as a regression.
+
+**Selection / gesture types:**
+`EditorGesture` carries `partIndex` (which parsed staff the tap landed on) and
+`offStaff` (true if the tap is >4 staff-spaces from every staff, used to clear
+selection). The `slot` variant of the `Selection` union also carries `partIndex`.
+`sameSlot()` compares `partIndex`. The `slots()`, `slotAt()`, and `slotAtBeat()`
+functions in `hit-test.ts` accept an optional `partIndex` to restrict results to
+one staff.
