@@ -135,6 +135,8 @@ function parseMeasure(el: Element, measureIndex = 0): ParsedMeasure {
   const events = groupEvents(rawItems);
   assignNoteIndices(events);
 
+  const { repeatStart, repeatEnd } = parseBarlines(el);
+
   // activeFifths is a placeholder here; parseScore resolves the running key
   // across measures and overwrites it.
   return {
@@ -145,7 +147,36 @@ function parseMeasure(el: Element, measureIndex = 0): ParsedMeasure {
     events,
     divisions,
     activeFifths: keySig?.fifths ?? 0,
+    repeatStart,
+    repeatEnd,
   };
+}
+
+// Read a measure's <barline> children for repeat markings. A repeat forward
+// (start of a repeated section) is conventionally location="left"; a repeat
+// backward (end of a repeated section) is conventionally location="right" —
+// MusicXML's default location when omitted is "right", so an unlocated
+// backward repeat is still treated as the measure's end.
+function parseBarlines(measureEl: Element): {
+  repeatStart?: boolean;
+  repeatEnd?: { times: number };
+} {
+  let repeatStart: boolean | undefined;
+  let repeatEnd: { times: number } | undefined;
+  for (const barlineEl of Array.from(measureEl.querySelectorAll("barline"))) {
+    const repeatEl = barlineEl.querySelector("repeat");
+    const direction = repeatEl?.getAttribute("direction");
+    if (direction === "forward") {
+      repeatStart = true;
+    } else if (direction === "backward") {
+      const timesAttr = Number.parseInt(
+        repeatEl?.getAttribute("times") ?? "2",
+        10,
+      );
+      repeatEnd = { times: Number.isFinite(timesAttr) ? timesAttr : 2 };
+    }
+  }
+  return { repeatStart, repeatEnd };
 }
 
 // Assign noteIndex sequentially to grace groups and ChordGroups (rests don't
@@ -443,6 +474,7 @@ function parseMultiStaffPart(partEl: Element, id: string): ParsedPart[] {
     const number = Number.parseInt(measureEl.getAttribute("number") ?? "1", 10);
     const timeSig = attrEl ? parseTimeSig(attrEl) : undefined;
     const keySig = attrEl ? parseKeySig(attrEl) : undefined;
+    const { repeatStart, repeatEnd } = parseBarlines(measureEl);
 
     const items = collectStaffItems(measureEl, mi);
     const scale = NORMALIZED_DIVISIONS / runningDivisions;
@@ -472,6 +504,8 @@ function parseMultiStaffPart(partEl: Element, id: string): ParsedPart[] {
         events,
         divisions: NORMALIZED_DIVISIONS,
         activeFifths: keySig?.fifths ?? 0,
+        repeatStart,
+        repeatEnd,
       });
     }
   }

@@ -168,6 +168,14 @@ export interface ScoreAttributes {
   time?: { beats: number; beatType: number };
 }
 
+/** Repeat barline markings recovered for one measure boundary. */
+export interface RepeatBarline {
+  /** This measure opens a repeated section (`<barline location="left"><repeat direction="forward"/>`). */
+  repeatStart?: boolean;
+  /** This measure closes a repeated section (`<barline location="right"><repeat direction="backward"/>`). TrOMR has no repeat-count token, so `times` is always 2. */
+  repeatEnd?: { times: number };
+}
+
 /**
  * The fully decoded transcription of one staff: all note events in order,
  * segmented by the barline tokens TrOMR emitted. `rawRhythm` holds the
@@ -179,6 +187,8 @@ export interface Transcription {
   rawRhythm: string[];
   /** Leading clef/key/time recovered from this staff's tokens. */
   attributes: ScoreAttributes;
+  /** Measure index (this staff's own numbering) -> repeat barline info. Absent/empty when no repeats were recovered. */
+  barlines?: Map<number, RepeatBarline>;
 }
 
 /**

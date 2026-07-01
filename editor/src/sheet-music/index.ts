@@ -8,6 +8,11 @@ export type {
 } from "./highlights";
 export { computeMeasureStartBeats } from "./measure-beats";
 export {
+  computePlaybackStartBeats,
+  expandPlaybackOrder,
+  type PlaybackStartBeats,
+} from "./repeat-expansion";
+export {
   diatonicIndex,
   isRest,
   keyAlterForStep,

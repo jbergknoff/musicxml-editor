@@ -1841,6 +1841,10 @@ const Staff = memo(function Staff({
           layout={layout}
           inkColor={inkColor}
           textFontFamily={textFontFamily}
+          leadingBarlineStyle={boundaryBarlineStyle(
+            part.measures[m - 1],
+            measure,
+          )}
         />
       ))}
       {/* Final barline at right edge of last measure */}
@@ -1853,6 +1857,10 @@ const Staff = memo(function Staff({
           staffBottomY={staffBottomY}
           staffSpace={staffSpace}
           inkColor={inkColor}
+          style={boundaryBarlineStyle(
+            part.measures[part.measures.length - 1],
+            undefined,
+          )}
         />
       )}
     </g>
@@ -1895,23 +1903,118 @@ function StaffLines({
 
 // ── Barline ───────────────────────────────────────────────────────────────────
 
+/**
+ * The barline glyph at one measure boundary. `"plain"` is a single thin line
+ * (the default, unchanged from before repeat support). The repeat variants
+ * keep the thick line at `x` — the same position a plain barline would occupy
+ * — and add a thin line + two dots to the side(s) facing the repeated
+ * material: `"repeatEnd"` (only to the left, closing a repeated section),
+ * `"repeatStart"` (only to the right, opening one), or `"repeatBoth"` (both
+ * sides, for a repeat that ends one section and starts another at the same
+ * boundary).
+ */
+export type BarlineStyle = "plain" | "repeatEnd" | "repeatStart" | "repeatBoth";
+
 function Barline({
   x,
   staffBottomY,
   staffSpace,
   inkColor,
-}: { x: number; staffBottomY: number; staffSpace: number; inkColor: string }) {
+  style = "plain",
+}: {
+  x: number;
+  staffBottomY: number;
+  staffSpace: number;
+  inkColor: string;
+  style?: BarlineStyle;
+}) {
+  if (style === "plain") {
+    return (
+      <line
+        x1={x}
+        x2={x}
+        y1={staffBottomY - 4 * staffSpace}
+        y2={staffBottomY}
+        stroke={inkColor}
+        stroke-width="0.9"
+        stroke-opacity="0.55"
+      />
+    );
+  }
+
+  const top = staffBottomY - 4 * staffSpace;
+  const thinGap = staffSpace * 0.45;
+  const dotGap = staffSpace * 0.4;
+  const dotRadius = staffSpace * 0.16;
+  const dotYs = [
+    staffBottomY - 1.5 * staffSpace,
+    staffBottomY - 2.5 * staffSpace,
+  ];
+
+  const sides: Array<-1 | 1> = [];
+  if (style === "repeatEnd" || style === "repeatBoth") {
+    sides.push(-1);
+  }
+  if (style === "repeatStart" || style === "repeatBoth") {
+    sides.push(1);
+  }
+
   return (
-    <line
-      x1={x}
-      x2={x}
-      y1={staffBottomY - 4 * staffSpace}
-      y2={staffBottomY}
-      stroke={inkColor}
-      stroke-width="0.9"
-      stroke-opacity="0.55"
-    />
+    <g>
+      <line
+        x1={x}
+        x2={x}
+        y1={top}
+        y2={staffBottomY}
+        stroke={inkColor}
+        stroke-width={staffSpace * 0.3}
+        stroke-opacity="0.55"
+      />
+      {sides.map((side) => (
+        <g key={side}>
+          <line
+            x1={x + side * thinGap}
+            x2={x + side * thinGap}
+            y1={top}
+            y2={staffBottomY}
+            stroke={inkColor}
+            stroke-width="0.9"
+            stroke-opacity="0.55"
+          />
+          {dotYs.map((dotY) => (
+            <circle
+              key={dotY}
+              cx={x + side * (thinGap + dotGap)}
+              cy={dotY}
+              r={dotRadius}
+              fill={inkColor}
+              fill-opacity="0.55"
+            />
+          ))}
+        </g>
+      ))}
+    </g>
   );
+}
+
+/** The repeat glyph at the boundary between two adjacent measures (either may
+ *  be absent, for the start/end of the staff). */
+function boundaryBarlineStyle(
+  before: ParsedMeasure | undefined,
+  after: ParsedMeasure | undefined,
+): BarlineStyle {
+  const end = before?.repeatEnd !== undefined;
+  const start = after?.repeatStart === true;
+  if (end && start) {
+    return "repeatBoth";
+  }
+  if (end) {
+    return "repeatEnd";
+  }
+  if (start) {
+    return "repeatStart";
+  }
+  return "plain";
 }
 
 // ── Measure ───────────────────────────────────────────────────────────────────
@@ -1928,6 +2031,7 @@ interface MeasureProps {
   layout: ResolvedLayout;
   inkColor: string;
   textFontFamily: string;
+  leadingBarlineStyle?: BarlineStyle;
 }
 
 function Measure({
@@ -1942,6 +2046,7 @@ function Measure({
   layout,
   inkColor,
   textFontFamily,
+  leadingBarlineStyle,
 }: MeasureProps) {
   const { staffSpace } = layout;
   const spine = layout.measureSpines[measureIndex];
@@ -1974,6 +2079,7 @@ function Measure({
         staffBottomY={staffBottomY}
         staffSpace={staffSpace}
         inkColor={inkColor}
+        style={leadingBarlineStyle}
       />
       {partIndex === 0 && (
         <text

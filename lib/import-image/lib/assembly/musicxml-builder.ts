@@ -8,9 +8,14 @@
  * Durations are expressed in divisions where one quarter note = 4 divisions,
  * giving clean integer values for all standard subdivisions down to 32nd notes.
  */
-import type { NoteEvent, ScoreAttributes, ScoreSystem } from "../types";
+import type {
+  NoteEvent,
+  RepeatBarline,
+  ScoreAttributes,
+  ScoreSystem,
+} from "../types";
 import { type BeamElement, computeBeams } from "./beams";
-import { combinePages } from "./combine-pages";
+import { combineBarlines, combinePages } from "./combine-pages";
 import { DIVISIONS, DURATION_DIVISIONS, noteDivisions } from "./durations";
 import { inferMeterFromStaves } from "./meter";
 
@@ -251,6 +256,25 @@ function wrapMeasure(measureNumber: number, children: string[]): string {
   return `  <measure number="${measureNumber}">\n${indent}\n  </measure>`;
 }
 
+/** `<barline>` XML for a measure's left (repeat forward) edge, if any. */
+function leftBarlineXml(barline: RepeatBarline | undefined): string | null {
+  if (!barline?.repeatStart) {
+    return null;
+  }
+  return '<barline location="left"><repeat direction="forward"/></barline>';
+}
+
+/** `<barline>` XML for a measure's right (repeat backward) edge, if any. */
+function rightBarlineXml(barline: RepeatBarline | undefined): string | null {
+  if (!barline?.repeatEnd) {
+    return null;
+  }
+  return (
+    '<barline location="right"><bar-style>light-heavy</bar-style>' +
+    `<repeat direction="backward" times="${barline.repeatEnd.times}"/></barline>`
+  );
+}
+
 function measureXml(
   notes: NoteEvent[],
   measureNumber: number,
@@ -258,11 +282,16 @@ function measureXml(
   attributes: ScoreAttributes,
   beats: number,
   beatType: number,
+  barline?: RepeatBarline,
 ): string {
   const children: string[] = [];
 
   if (isFirstMeasure) {
     children.push(attributesXml(attributes));
+  }
+  const left = leftBarlineXml(barline);
+  if (left !== null) {
+    children.push(left);
   }
 
   // If the measure is empty, emit a whole-measure rest to keep MusicXML valid.
@@ -286,6 +315,11 @@ function measureXml(
     }
   }
 
+  const right = rightBarlineXml(barline);
+  if (right !== null) {
+    children.push(right);
+  }
+
   return wrapMeasure(measureNumber, children);
 }
 
@@ -294,6 +328,8 @@ export interface BuildOptions {
   attributes?: ScoreAttributes;
   /** `<part-name>` for the single part. */
   partName?: string;
+  /** Measure index -> repeat barline info, recovered from the source. */
+  barlines?: Map<number, RepeatBarline>;
 }
 
 /**
@@ -309,17 +345,26 @@ export function buildMusicXML(
   // Resolve TrOMR's slur spans into ties before splitting into measures — a
   // tie can cross a barline, so this needs the whole staff's note order.
   pairTies(notes);
+  const barlines = options.barlines;
   // Group notes by measure. Use the maximum measureIndex rather than the last
   // note's: when notes are concatenated across staves (each staff numbering its
   // own measures from 0), an earlier staff can hold a higher measureIndex than
-  // the final note, so the last note alone would undercount the measures.
+  // the final note, so the last note alone would undercount the measures. Also
+  // consider barline-only measures (e.g. a trailing measure whose only content
+  // is a repeat end).
   let maxMeasureIndex = 0;
   for (const note of notes) {
     if (note.measureIndex > maxMeasureIndex) {
       maxMeasureIndex = note.measureIndex;
     }
   }
-  const measureCount = notes.length === 0 ? 1 : maxMeasureIndex + 1;
+  for (const measureIndex of barlines?.keys() ?? []) {
+    if (measureIndex > maxMeasureIndex) {
+      maxMeasureIndex = measureIndex;
+    }
+  }
+  const measureCount =
+    notes.length === 0 && (barlines?.size ?? 0) === 0 ? 1 : maxMeasureIndex + 1;
   const byMeasure: NoteEvent[][] = Array.from(
     { length: measureCount },
     () => [],
@@ -342,6 +387,7 @@ export function buildMusicXML(
       attributes,
       beats,
       beatType,
+      barlines?.get(index),
     );
     for (const note of notesInMeasure) {
       if (note.attributeChange?.time !== undefined) {
@@ -440,10 +486,15 @@ function grandStaffMeasureXml(
   openingAttributes: string | null,
   beats: number,
   beatType: number,
+  barline?: RepeatBarline,
 ): string {
   const children: string[] = [];
   if (openingAttributes !== null) {
     children.push(openingAttributes);
+  }
+  const left = leftBarlineXml(barline);
+  if (left !== null) {
+    children.push(left);
   }
   const length = measureLength(beats, beatType);
   let previousDuration = 0;
@@ -474,6 +525,10 @@ function grandStaffMeasureXml(
       }
     }
     previousDuration = duration;
+  }
+  const right = rightBarlineXml(barline);
+  if (right !== null) {
+    children.push(right);
   }
   return wrapMeasure(measureNumber, children);
 }
@@ -512,6 +567,12 @@ export function buildScore(
     // 0) and reuse the single-staff builder unchanged.
     const staffStreams = systems.map((system) => system.staves[0]?.notes ?? []);
     const notes = combinePages(staffStreams);
+    const barlines = combineBarlines(
+      systems.map((system) => ({
+        notes: system.staves[0]?.notes ?? [],
+        barlines: system.staves[0]?.barlines,
+      })),
+    );
     // When TrOMR recovered no time signature, infer it from the rhythms rather
     // than letting buildMusicXML fall back to a blind 4/4 (per-system streams so
     // each system's own measures are tallied, not the concatenated indices).
@@ -522,13 +583,15 @@ export function buildScore(
         attributes = { ...attributes, time: inferred };
       }
     }
-    return buildMusicXML(notes, { attributes, partName });
+    return buildMusicXML(notes, { attributes, partName, barlines });
   }
 
   // Place every system's staves onto a shared measure grid. Each system numbers
   // its measures from 0; offset by the running total so systems run in sequence.
   const staffAttributes: (ScoreAttributes | undefined)[] = new Array(staffCount);
   const measureStaffNotes: NoteEvent[][][] = [];
+  // Repeats are a whole-system property; only the top staff's barlines are used.
+  const measureBarlines = new Map<number, RepeatBarline>();
   const ensureMeasure = (measure: number): void => {
     while (measureStaffNotes.length <= measure) {
       measureStaffNotes.push(
@@ -551,6 +614,11 @@ export function buildScore(
         ensureMeasure(measure);
         measureStaffNotes[measure][staffIndex].push(note);
       }
+    }
+    for (const [measureIndex, barline] of system.staves[0]?.barlines ?? []) {
+      const measure = offset + measureIndex;
+      ensureMeasure(measure);
+      measureBarlines.set(measure, barline);
     }
     offset += span;
   }
@@ -591,6 +659,7 @@ export function buildScore(
       index === 0 ? openingAttributes : null,
       beats,
       beatType,
+      measureBarlines.get(index),
     );
     for (const note of staffNotes[0]) {
       if (note.attributeChange?.time !== undefined) {

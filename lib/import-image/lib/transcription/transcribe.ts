@@ -5,7 +5,7 @@
  */
 import type { ScoreAttributes, RgbaImage, Staff, Transcription } from "../types";
 import { decodeAttributes } from "./decode-attributes";
-import { decodeTokens } from "./decode-tokens";
+import { decodeBarlines, decodeTokens } from "./decode-tokens";
 import type { TrOMRSessions } from "./tromr-session";
 import { runTrOMR } from "./tromr-session";
 import { LIFT_VOCAB, PITCH_VOCAB, RHYTHM_VOCAB } from "./vocabulary";
@@ -54,6 +54,7 @@ export async function transcribeStaves(
       tokens.lift,
       tokens.slur,
     );
+    const barlines = decodeBarlines(tokens.rhythm);
     const attributes = decodeAttributes(tokens.rhythm);
     const measureCount =
       notes.length === 0 ? 0 : notes[notes.length - 1].measureIndex + 1;
@@ -74,7 +75,7 @@ export async function transcribeStaves(
         `notes=${notes.length} measures=${measureCount}`,
     );
 
-    results.push({ notes, measureCount, rawRhythm, attributes });
+    results.push({ notes, measureCount, rawRhythm, attributes, barlines });
     options.onProgress?.(index + 1, staves.length);
   }
   return results;

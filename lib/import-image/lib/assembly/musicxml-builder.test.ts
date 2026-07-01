@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { NoteEvent } from "../types";
+import type { NoteEvent, RepeatBarline } from "../types";
 import { buildMusicXML } from "./musicxml-builder";
 
 function note(
@@ -299,5 +299,47 @@ describe("buildMusicXML", () => {
   it("leaves an unresolved slurStart with no matching slurStop untied", () => {
     const xml = buildMusicXML([note("C4", "quarter", 0, { slurStart: true })]);
     expect(xml).not.toContain("<tie ");
+  });
+});
+
+describe("buildMusicXML repeat barlines", () => {
+  it("emits a forward repeat before the measure's notes", () => {
+    const barlines = new Map<number, RepeatBarline>([[0, { repeatStart: true }]]);
+    const xml = buildMusicXML([note("C4", "quarter")], { barlines });
+    expect(xml).toContain(
+      '<barline location="left"><repeat direction="forward"/></barline>',
+    );
+  });
+
+  it("emits a backward repeat with times after the measure's notes", () => {
+    const barlines = new Map<number, RepeatBarline>([
+      [0, { repeatEnd: { times: 3 } }],
+    ]);
+    const xml = buildMusicXML([note("C4", "quarter")], { barlines });
+    expect(xml).toContain('<repeat direction="backward" times="3"/>');
+    expect(xml).toContain('location="right"');
+  });
+
+  it("emits both a forward and a backward repeat on the same measure", () => {
+    const barlines = new Map<number, RepeatBarline>([
+      [0, { repeatStart: true, repeatEnd: { times: 2 } }],
+    ]);
+    const xml = buildMusicXML([note("C4", "quarter")], { barlines });
+    expect(xml).toContain('<repeat direction="forward"/>');
+    expect(xml).toContain('<repeat direction="backward" times="2"/>');
+  });
+
+  it("counts a trailing barline-only measure that has no notes", () => {
+    const barlines = new Map<number, RepeatBarline>([
+      [1, { repeatEnd: { times: 2 } }],
+    ]);
+    const xml = buildMusicXML([note("C4", "quarter", 0)], { barlines });
+    expect((xml.match(/<measure /g) ?? []).length).toBe(2);
+    expect(xml).toContain('<repeat direction="backward" times="2"/>');
+  });
+
+  it("emits no barline elements when no repeats were recovered", () => {
+    const xml = buildMusicXML([note("C4", "quarter")]);
+    expect(xml).not.toContain("<barline");
   });
 });
