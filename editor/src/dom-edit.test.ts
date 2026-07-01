@@ -15,6 +15,7 @@ import {
   serializeDocument,
   setAccidental,
   setNoteDuration,
+  toggleTie,
 } from "./dom-edit";
 import {
   type ChordGroup,
@@ -420,6 +421,91 @@ describe("setAccidental", () => {
     note = chords(reparse(doc))[0].chord.notes[0];
     expect(note.pitch.alter).toBe(0);
     expect(note.accidental).toBe("none");
+  });
+});
+
+describe("toggleTie", () => {
+  test("ties a note to the matching pitch in the next chord, then removes it", () => {
+    const doc = createBlankDocument();
+    const first = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    // A non-matching pitch at the same onset as the second C — proves the
+    // tie targets the matching pitch, not just "the next note".
+    const second = chords(reparse(doc))[1];
+    expect(second.chord.notes[0].pitch).toEqual({
+      step: "C",
+      alter: 0,
+      octave: 5,
+    });
+
+    expect(toggleTie(doc, first)).toBe(true);
+    let score = reparse(doc);
+    let placed = chords(score);
+    expect(placed[0].chord.notes[0].tieStart).toBe(true);
+    expect(placed[1].chord.notes[0].tieStop).toBe(true);
+
+    // Toggling again (from either endpoint) clears the tie on both notes.
+    expect(toggleTie(doc, first)).toBe(true);
+    score = reparse(doc);
+    placed = chords(score);
+    expect(placed[0].chord.notes[0].tieStart).toBe(false);
+    expect(placed[1].chord.notes[0].tieStop).toBe(false);
+  });
+
+  test("ties every matching pitch of a chord independently", () => {
+    const doc = createBlankDocument();
+    const c1 = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    const e1 = addNoteToChord(doc, c1, {
+      step: "E",
+      alter: 0,
+      octave: 5,
+    }) as NoteHandle;
+    const c2 = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    addNoteToChord(doc, c2, { step: "G", alter: 0, octave: 5 });
+
+    expect(toggleTie(doc, c1)).toBe(true);
+    // E5 has no matching pitch in the next chord (which has C5/G5).
+    expect(toggleTie(doc, e1)).toBe(false);
+
+    const placed = chords(reparse(doc));
+    expect(
+      placed[0].chord.notes.find((n) => n.pitch.step === "C")?.tieStart,
+    ).toBe(true);
+    expect(
+      placed[0].chord.notes.find((n) => n.pitch.step === "E")?.tieStart,
+    ).toBe(false);
+  });
+
+  test("returns false for a rest handle or a note with no eligible partner", () => {
+    const doc = createBlankDocument();
+    const only = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    // No next note of matching pitch anywhere in the (otherwise empty) score.
+    expect(toggleTie(doc, only)).toBe(false);
   });
 });
 

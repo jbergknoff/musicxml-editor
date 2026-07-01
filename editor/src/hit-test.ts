@@ -309,6 +309,9 @@ export interface ChordNote {
   id: string;
   handle: NoteHandle;
   pitch: Pitch;
+  /** True when this note ties forward into the next chord (drawn as a tie
+   *  arc by `TieLayer`; see `ParsedNote.tieStart`). */
+  tieStart: boolean;
 }
 
 // A selectable beat with its note rows and duration type — the inspector's data
@@ -344,6 +347,7 @@ function pickableChordInfos(score: ParsedScore): ChordInfo[] {
             id: `p${partIndex}-m${measure.number}-n${group.noteIndex}-v${voiceIndex}`,
             handle: note.source,
             pitch: note.pitch,
+            tieStart: note.tieStart,
           });
         });
         if (notes.length > 0) {
@@ -500,6 +504,7 @@ function pickableSlots(score: ParsedScore): SlotInfo[] {
             id: `p${partIndex}-m${measure.number}-n${group.noteIndex}-v${voiceIndex}`,
             handle: note.source,
             pitch: note.pitch,
+            tieStart: note.tieStart,
           });
         });
         result.push({

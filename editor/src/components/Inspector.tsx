@@ -19,6 +19,8 @@ export interface InspectorNoteRow {
   alter: number;
   /** Whether this row is the drilled (Level 2) note. */
   focused: boolean;
+  /** True when this note ties forward into the next chord's matching pitch. */
+  tied: boolean;
 }
 
 export interface InspectorGraceRow {
@@ -294,6 +296,40 @@ function GraceStyleControl({
   );
 }
 
+// Toggle button for tying this note into the next chord's matching pitch —
+// same look as the accidental/grace-style segmented controls, but a single
+// toggle rather than a set of mutually exclusive options.
+function TieToggle({
+  tied,
+  onToggle,
+}: {
+  tied: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={tied ? "Remove tie" : "Tie to next note of the same pitch"}
+      onClick={onToggle}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        border: `1px solid ${COLORS.borderLight}`,
+        borderRadius: 5,
+        padding: "2px 7px",
+        background: tied ? COLORS.accent : "transparent",
+        color: tied ? "#fff" : COLORS.textPlaceholder,
+        cursor: "pointer",
+        fontSize: 13,
+        lineHeight: 1.4,
+      }}
+    >
+      ⌣
+    </button>
+  );
+}
+
 function Stepper({ onStep }: { onStep: (delta: number) => void }) {
   const arrowStyle = {
     border: "none",
@@ -334,6 +370,9 @@ export interface InspectorProps {
   /** Staff-step the note: delta +1 up, -1 down. */
   onStep: (index: number, delta: number) => void;
   onRemove: (index: number) => void;
+  /** Toggle a tie from the note at `index` into the next chord's matching
+   *  pitch (or remove the tie touching this note, if any). */
+  onToggleTie: (index: number) => void;
   onAddNote: (partIndex: number) => void;
   /** Set the duration (in quarter-note beats) of the chord at `index`'s onset —
    *  every chord member is resized together. */
@@ -466,6 +505,7 @@ function NoteGroupSection({
   onAccidental,
   onStep,
   onRemove,
+  onToggleTie,
   onAddNote,
   onSetDuration,
   onGraceAccidental,
@@ -481,6 +521,7 @@ function NoteGroupSection({
   onAccidental: (flatIndex: number, alter: number) => void;
   onStep: (flatIndex: number, delta: number) => void;
   onRemove: (flatIndex: number) => void;
+  onToggleTie: (flatIndex: number) => void;
   onAddNote: (partIndex: number) => void;
   onSetDuration: (flatIndex: number, durationBeats: number) => void;
   onGraceAccidental: (flatIndex: number, alter: number) => void;
@@ -664,6 +705,10 @@ function NoteGroupSection({
                   onSet={(alter) => onAccidental(flatIndex, alter)}
                 />
                 <Stepper onStep={(delta) => onStep(flatIndex, delta)} />
+                <TieToggle
+                  tied={note.tied}
+                  onToggle={() => onToggleTie(flatIndex)}
+                />
                 <button
                   type="button"
                   title="Remove note"
@@ -715,6 +760,7 @@ export function Inspector({
   onAccidental,
   onStep,
   onRemove,
+  onToggleTie,
   onAddNote,
   onSetDuration,
   onGraceAccidental,
@@ -816,6 +862,7 @@ export function Inspector({
                 onAccidental={onAccidental}
                 onStep={onStep}
                 onRemove={onRemove}
+                onToggleTie={onToggleTie}
                 onAddNote={onAddNote}
                 onSetDuration={onSetDuration}
                 onGraceAccidental={onGraceAccidental}
