@@ -50,6 +50,7 @@ import {
   setGracePitch,
   setGraceSlash,
   setNoteDuration,
+  toggleTie,
 } from "./dom-edit";
 import {
   allSlotsAtBeat,
@@ -345,6 +346,7 @@ export function Editor() {
           label: pitchLabel(row.pitch),
           alter: row.pitch.alter,
           focused: focused ? sameHandle(row.handle, focused) : false,
+          tied: row.tieStart,
         })),
         graceOffset,
         graces: staffSlot.graces.map((grace) => ({
@@ -528,6 +530,19 @@ export function Editor() {
         return;
       }
       if (setAccidental(documentRef.current, handle, alter)) {
+        setSelection({ kind: "note", handle });
+        commit();
+      }
+    },
+    [editable, documentRef, commit],
+  );
+
+  const toggleTieOn = useCallback(
+    (handle: NoteHandle) => {
+      if (!editable) {
+        return;
+      }
+      if (toggleTie(documentRef.current, handle)) {
         setSelection({ kind: "note", handle });
         commit();
       }
@@ -1412,6 +1427,12 @@ export function Editor() {
             const handle = inspector?.handles[index];
             if (handle) {
               removeHandle(handle);
+            }
+          }}
+          onToggleTie={(index) => {
+            const handle = inspector?.handles[index];
+            if (handle) {
+              toggleTieOn(handle);
             }
           }}
           onSetDuration={(index, durationBeats) => {

@@ -15,6 +15,11 @@ const SINGLE_STAFF = fileURLToPath(
 const MULTI_VOICE = fileURLToPath(
   new URL("./fixtures/multi-voice.musicxml", import.meta.url),
 );
+// Two half notes, both C5, back to back — the minimal case for tying one
+// chord to the next.
+const TIE_CANDIDATE = fileURLToPath(
+  new URL("./fixtures/tie-candidate.musicxml", import.meta.url),
+);
 
 // Export the current document and return the serialized MusicXML.
 async function exportXml(page: Page): Promise<string> {
@@ -140,6 +145,34 @@ test("stepping a note's pitch up keeps its onset (no rest inserted to its left)"
   expect(noteSequence(after)).toEqual(["C5", "F5", "G5", "REST"]);
   expect(restCount(after)).toBe(1);
   expect(pitchCount(after)).toBe(3);
+});
+
+test("toggling a note's tie control draws and clears a tie arc, and persists on export", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.locator("svg").first()).toBeVisible();
+  await page.locator('input[type="file"]').setInputFiles(TIE_CANDIDATE);
+  await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
+
+  await page.locator("#p0-m1-n0-v0").click();
+  const tieButton = page.getByTitle("Tie to next note of the same pitch");
+  await expect(tieButton).toBeVisible();
+  await expect(page.locator("svg path[data-tie]")).toHaveCount(0);
+
+  await tieButton.click();
+  await expect(page.getByTitle("Remove tie")).toBeVisible();
+  await expect(page.locator("svg path[data-tie]")).toHaveCount(1);
+  const xml = await exportXml(page);
+  expect(xml).toContain('<tie type="start"/>');
+  expect(xml).toContain('<tie type="stop"/>');
+
+  await page.getByTitle("Remove tie").click();
+  await expect(
+    page.getByTitle("Tie to next note of the same pitch"),
+  ).toBeVisible();
+  await expect(page.locator("svg path[data-tie]")).toHaveCount(0);
+  expect(await exportXml(page)).not.toContain("<tie ");
 });
 
 test("tapping empty space clears the selection", async ({ page }) => {

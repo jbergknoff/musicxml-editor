@@ -1142,6 +1142,187 @@ export function setAccidental(
   return true;
 }
 
+// ── Ties ────────────────────────────────────────────────────────────────────
+
+function pitchesEqual(a: Pitch, b: Pitch): boolean {
+  return a.step === b.step && a.alter === b.alter && a.octave === b.octave;
+}
+
+// A real note's position for tie-partner search: which measure/onset it
+// sounds at and which staff it belongs to, alongside the element and pitch.
+interface TieCandidate {
+  element: Element;
+  measureIndex: number;
+  onsetDivisions: number;
+  staff: number;
+  pitch: Pitch;
+}
+
+// Every pitched (non-rest, non-grace) note across the whole document, in
+// document order, tagged with its measure/onset/staff/pitch — the sequence a
+// tie's start/stop partner search walks.
+function tieCandidates(doc: Document): TieCandidate[] {
+  const result: TieCandidate[] = [];
+  measuresOf(doc).forEach((measureEl, measureIndex) => {
+    for (const note of readRealNotes(measureEl, 0)) {
+      const pitch = readPitch(note.element);
+      if (!pitch) {
+        continue;
+      }
+      result.push({
+        element: note.element,
+        measureIndex,
+        onsetDivisions: note.onsetDivisions,
+        staff: staffOf(note.element),
+        pitch,
+      });
+    }
+  });
+  return result;
+}
+
+// The note element a tie from/to `source` would connect to: the first note of
+// the same staff, at the next (or previous) distinct onset in document order,
+// whose pitch matches exactly. Ties only ever join immediately adjacent
+// onsets, so a same-staff onset boundary with no matching pitch means no
+// partner. Returns null if `source` isn't found or has no partner.
+function findTiePartner(
+  doc: Document,
+  source: Element,
+  direction: "forward" | "backward",
+): Element | null {
+  const candidates = tieCandidates(doc);
+  const sourceIndex = candidates.findIndex((c) => c.element === source);
+  if (sourceIndex === -1) {
+    return null;
+  }
+  const src = candidates[sourceIndex];
+  const sameStaff = candidates.filter((c) => c.staff === src.staff);
+  const srcStaffIndex = sameStaff.findIndex((c) => c.element === source);
+  const sequence =
+    direction === "forward"
+      ? sameStaff.slice(srcStaffIndex + 1)
+      : sameStaff.slice(0, srcStaffIndex).reverse();
+  const boundary = sequence.find(
+    (c) =>
+      c.measureIndex !== src.measureIndex ||
+      c.onsetDivisions !== src.onsetDivisions,
+  );
+  if (!boundary) {
+    return null;
+  }
+  const atBoundary = sequence.filter(
+    (c) =>
+      c.measureIndex === boundary.measureIndex &&
+      c.onsetDivisions === boundary.onsetDivisions,
+  );
+  const match = atBoundary.find((c) => pitchesEqual(c.pitch, src.pitch));
+  return match ? match.element : null;
+}
+
+function hasTieMark(noteEl: Element, type: "start" | "stop"): boolean {
+  return Array.from(noteEl.children).some(
+    (c) => c.tagName.toLowerCase() === "tie" && c.getAttribute("type") === type,
+  );
+}
+
+// Add or remove the paired sound (`<tie>`) and notation (`<notations><tied>`)
+// marks for one endpoint of a tie. `<tie>` is inserted right after the last
+// existing `<tie>` (or after `<duration>`), matching MusicXML's required child
+// order; `<notations><tied>` is appended (reusing an existing `<notations>` if
+// the note already carries one, e.g. from articulations).
+function setTieMark(
+  doc: Document,
+  noteEl: Element,
+  type: "start" | "stop",
+  present: boolean,
+): void {
+  const existingTie = Array.from(noteEl.children).find(
+    (c) => c.tagName.toLowerCase() === "tie" && c.getAttribute("type") === type,
+  );
+  if (present && !existingTie) {
+    const tieEl = doc.createElement("tie");
+    tieEl.setAttribute("type", type);
+    const ties = Array.from(noteEl.children).filter(
+      (c) => c.tagName.toLowerCase() === "tie",
+    );
+    const anchor = ties[ties.length - 1] ?? noteEl.querySelector("duration");
+    if (anchor?.nextSibling) {
+      noteEl.insertBefore(tieEl, anchor.nextSibling);
+    } else if (anchor) {
+      noteEl.appendChild(tieEl);
+    } else {
+      noteEl.appendChild(tieEl);
+    }
+  } else if (!present && existingTie) {
+    existingTie.remove();
+  }
+
+  let notationsEl = Array.from(noteEl.children).find(
+    (c) => c.tagName.toLowerCase() === "notations",
+  );
+  const existingTied =
+    notationsEl &&
+    Array.from(notationsEl.children).find(
+      (c) =>
+        c.tagName.toLowerCase() === "tied" && c.getAttribute("type") === type,
+    );
+  if (present && !existingTied) {
+    if (!notationsEl) {
+      notationsEl = doc.createElement("notations");
+      const lyric = noteEl.querySelector("lyric");
+      noteEl.insertBefore(notationsEl, lyric);
+    }
+    const tiedEl = doc.createElement("tied");
+    tiedEl.setAttribute("type", type);
+    notationsEl.insertBefore(tiedEl, notationsEl.firstChild);
+  } else if (!present && existingTied) {
+    existingTied.remove();
+    if (notationsEl && notationsEl.children.length === 0) {
+      notationsEl.remove();
+    }
+  }
+}
+
+// Toggle a tie on `handle`'s note: if it already ties to its neighbor (in
+// either direction — the handle may be the tie's start or stop endpoint),
+// remove the tie from both notes; otherwise tie it forward to the next
+// same-pitch note on its staff, if one exists at the immediately following
+// onset. Mutated in place (no measure rewrite) so every other child survives.
+// Returns false on a bad handle, a rest, or a forward tie with no eligible
+// partner.
+export function toggleTie(doc: Document, handle: NoteHandle): boolean {
+  const element = elementForHandle(doc, handle);
+  if (!element || !readPitch(element)) {
+    return false;
+  }
+
+  if (hasTieMark(element, "start")) {
+    const partner = findTiePartner(doc, element, "forward");
+    setTieMark(doc, element, "start", false);
+    if (partner) {
+      setTieMark(doc, partner, "stop", false);
+    }
+    return true;
+  }
+  if (hasTieMark(element, "stop")) {
+    const partner = findTiePartner(doc, element, "backward");
+    setTieMark(doc, element, "stop", false);
+    if (partner) {
+      setTieMark(doc, partner, "start", false);
+    }
+    return true;
+  }
+
+  const partner = findTiePartner(doc, element, "forward");
+  if (!partner) {
+    return false;
+  }
+  setTieMark(doc, element, "start", true);
+  setTieMark(doc, partner, "stop", true);
+  return true;
+}
+
 // Mutate a grace note's pitch in place. Grace notes carry no rhythmic span, so
 // — unlike `moveNote` — there is no onset/duration to rebalance; a direct
 // pitch swap (mirroring `setPitch`) is sufficient. Returns false on a bad
