@@ -11,7 +11,8 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import {
   type ChordGroup,
-  computeMeasureStartBeats,
+  computePlaybackStartBeats,
+  expandPlaybackOrder,
   isRest,
   type ParsedScore,
   type Pitch,
@@ -28,8 +29,18 @@ const DEFAULT_VELOCITY = 80;
 const RELEASE_TIME = 0.35;
 
 interface BeatStep {
-  /** Absolute quarter-note beat of this onset. */
-  beat: number;
+  /**
+   * Cumulative quarter-note beat of this onset across the whole playback
+   * timeline (repeats expanded) — strictly increasing, drives scheduling
+   * order and gap timing. Not a position on the page.
+   */
+  playbackBeat: number;
+  /**
+   * Document-order quarter-note beat this onset corresponds to on the page —
+   * a repeated measure's second pass reports the same `displayBeat` as its
+   * first, so the on-screen cursor snaps back rather than running off the end.
+   */
+  displayBeat: number;
   pitches: Pitch[];
   /** Beats until the next onset (how long this step holds). */
   durationBeats: number;
@@ -52,34 +63,52 @@ function pitchFrequency(pitch: Pitch): number {
 }
 
 // Flatten the score into the distinct onsets that sound, merging every part's
-// pitches at each beat. Rests advance the cursor but produce no step.
+// pitches at each beat, expanding any backward repeat barlines so a repeated
+// measure's notes are scheduled once per pass. Rests advance the cursor but
+// produce no step.
 function flattenBeats(score: ParsedScore): BeatStep[] {
-  const measureStartBeats = computeMeasureStartBeats(score);
-  const byBeat = new Map<number, Pitch[]>();
+  const order = expandPlaybackOrder(score.parts[0]?.measures ?? []);
+  const byBeat = new Map<number, { displayBeat: number; pitches: Pitch[] }>();
   for (const part of score.parts) {
-    part.measures.forEach((measure, measureIndex) => {
-      let beatCursor = measureStartBeats[measureIndex] ?? 0;
+    const { playbackStart, displayStart } = computePlaybackStartBeats(
+      part.measures,
+      order,
+    );
+    order.forEach((measureIndex, position) => {
+      const measure = part.measures[measureIndex];
+      if (!measure) {
+        return;
+      }
+      let playbackCursor = playbackStart[position];
+      let displayCursor = displayStart[position];
       const divisions = measure.divisions || 4;
       for (const event of measure.events) {
         if (isRest(event)) {
-          beatCursor += event.duration / divisions;
+          playbackCursor += event.duration / divisions;
+          displayCursor += event.duration / divisions;
           continue;
         }
         const group = event as ChordGroup;
-        const pitches = byBeat.get(beatCursor) ?? [];
+        const entry = byBeat.get(playbackCursor) ?? {
+          displayBeat: displayCursor,
+          pitches: [],
+        };
         for (const note of group.notes) {
-          pitches.push(note.pitch);
+          entry.pitches.push(note.pitch);
         }
-        byBeat.set(beatCursor, pitches);
-        beatCursor += group.duration / divisions;
+        byBeat.set(playbackCursor, entry);
+        playbackCursor += group.duration / divisions;
+        displayCursor += group.duration / divisions;
       }
     });
   }
-  const beats = Array.from(byBeat.keys()).sort((a, b) => a - b);
-  return beats.map((beat, i) => ({
-    beat,
-    pitches: byBeat.get(beat) as Pitch[],
-    durationBeats: (beats[i + 1] ?? beat + 1) - beat,
+  const playbackBeats = Array.from(byBeat.keys()).sort((a, b) => a - b);
+  return playbackBeats.map((playbackBeat, i) => ({
+    playbackBeat,
+    displayBeat: (byBeat.get(playbackBeat) as { displayBeat: number })
+      .displayBeat,
+    pitches: (byBeat.get(playbackBeat) as { pitches: Pitch[] }).pitches,
+    durationBeats: (playbackBeats[i + 1] ?? playbackBeat + 1) - playbackBeat,
   }));
 }
 
@@ -177,7 +206,11 @@ export function useListen(
       }
       let index = 0;
       if (fromBeat !== undefined) {
-        const found = steps.findIndex((step) => step.beat >= fromBeat - 1e-6);
+        // fromBeat is a document (on-screen) position; if it recurs across
+        // repeat passes, start at the first pass through it.
+        const found = steps.findIndex(
+          (step) => step.displayBeat >= fromBeat - 1e-6,
+        );
         if (found >= 0) {
           index = found;
         }
@@ -201,7 +234,7 @@ export function useListen(
           return;
         }
         const step = steps[index];
-        liveBeatRef.current = step.beat;
+        liveBeatRef.current = step.displayBeat;
         const ms = step.durationBeats * quarterMsRef.current;
         for (const pitch of step.pitches) {
           beep(ac, pitchFrequency(pitch), ms);

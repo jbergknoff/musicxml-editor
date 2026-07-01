@@ -7,7 +7,7 @@
  * page 1's measure 0. To stitch them into a single timeline we shift each page's
  * `measureIndex` past the measures already consumed by earlier pages.
  */
-import type { NoteEvent } from "../types";
+import type { NoteEvent, RepeatBarline } from "../types";
 
 /**
  * The number of measures a page's notes span: one past its maximum
@@ -39,6 +39,27 @@ export function combinePages(pages: NoteEvent[][]): NoteEvent[] {
         ...note,
         measureIndex: note.measureIndex + measureOffset,
       });
+    }
+    measureOffset += measureSpan(notes);
+  }
+  return combined;
+}
+
+/**
+ * Offset each page's repeat-barline map by the same per-page measure span
+ * `combinePages` uses for its notes, so a barline recorded against a page's
+ * own measure 0 lands on the right measure in the combined timeline.
+ * `notes` must be each page's *own* (un-offset) note list, matching what was
+ * passed to `combinePages` for the corresponding page.
+ */
+export function combineBarlines(
+  pages: { notes: NoteEvent[]; barlines?: Map<number, RepeatBarline> }[],
+): Map<number, RepeatBarline> {
+  const combined = new Map<number, RepeatBarline>();
+  let measureOffset = 0;
+  for (const { notes, barlines } of pages) {
+    for (const [measureIndex, barline] of barlines ?? []) {
+      combined.set(measureIndex + measureOffset, barline);
     }
     measureOffset += measureSpan(notes);
   }

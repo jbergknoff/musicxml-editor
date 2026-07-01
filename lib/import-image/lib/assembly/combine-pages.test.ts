@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import type { NoteEvent } from "../types";
-import { combinePages } from "./combine-pages";
+import type { NoteEvent, RepeatBarline } from "../types";
+import { combineBarlines, combinePages } from "./combine-pages";
 
 function note(pitch: string, measureIndex: number): NoteEvent {
   return {
@@ -56,5 +56,32 @@ describe("combinePages", () => {
 
   it("returns an empty list for no pages", () => {
     expect(combinePages([])).toEqual([]);
+  });
+});
+
+describe("combineBarlines", () => {
+  it("offsets a later page's barline keys by the earlier page's measure span", () => {
+    const page1Barlines = new Map<number, RepeatBarline>([
+      [0, { repeatStart: true }],
+      [1, { repeatEnd: { times: 2 } }],
+    ]);
+    const page2Barlines = new Map<number, RepeatBarline>([
+      [0, { repeatStart: true }],
+    ]);
+    const result = combineBarlines([
+      { notes: [note("C4", 0), note("D4", 1)], barlines: page1Barlines },
+      { notes: [note("E4", 0)], barlines: page2Barlines },
+    ]);
+    expect(result.get(0)).toEqual({ repeatStart: true });
+    expect(result.get(1)).toEqual({ repeatEnd: { times: 2 } });
+    expect(result.get(2)).toEqual({ repeatStart: true });
+  });
+
+  it("returns an empty map when no page carries barlines", () => {
+    const result = combineBarlines([
+      { notes: [note("C4", 0)] },
+      { notes: [note("D4", 0)] },
+    ]);
+    expect(result.size).toBe(0);
   });
 });

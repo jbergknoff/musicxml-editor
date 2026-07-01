@@ -100,6 +100,12 @@ export interface ParsedMeasure {
    *  the running one (and it isn't the first measure, which uses the header).
    *  Drives the mid-staff key-change rendering (cancel naturals + new accidentals). */
   keyChange?: { fifths: number; prevFifths: number };
+  /** `<barline location="left"><repeat direction="forward"/></barline>`: this
+   *  measure is the start of a repeated section. */
+  repeatStart?: boolean;
+  /** `<barline location="right"><repeat direction="backward" times="N"/></barline>`:
+   *  this measure is the end of a repeated section, played `times` times total. */
+  repeatEnd?: { times: number };
 }
 
 export interface ParsedPart {

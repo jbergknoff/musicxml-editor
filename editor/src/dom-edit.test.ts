@@ -291,6 +291,51 @@ describe("fidelity", () => {
     expect(firstChord.notes[0].pitch.step).toBe("C");
     expect(firstChord.notes[0].staccato).toBe(true);
   });
+
+  const REPEAT_FIXTURE = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>4</divisions>
+        <key><fifths>0</fifths><mode>major</mode></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <barline location="left"><repeat direction="forward"/></barline>
+      <note>
+        <pitch><step>C</step><octave>5</octave></pitch>
+        <duration>4</duration>
+        <type>quarter</type>
+      </note>
+      <note><rest/><duration>12</duration><type>half</type></note>
+      <barline location="right">
+        <bar-style>light-heavy</bar-style>
+        <repeat direction="backward"/>
+      </barline>
+    </measure>
+  </part>
+</score-partwise>`;
+
+  test("a note edit in a repeat-barline measure leaves the barlines intact", () => {
+    const doc = parseDocument(REPEAT_FIXTURE);
+    moveNote(
+      doc,
+      { measureIndex: 0, noteElementIndex: 0 },
+      {
+        measureIndex: 0,
+        onsetBeatInMeasure: 0,
+        pitch: { step: "D", alter: 0, octave: 5 },
+      },
+    );
+    const serialized = serializeDocument(doc);
+    expect(serialized).toContain('<repeat direction="forward"');
+    expect(serialized).toContain('<repeat direction="backward"');
+    const score = parseScore(serialized);
+    expect(score.parts[0].measures[0].repeatStart).toBe(true);
+    expect(score.parts[0].measures[0].repeatEnd).toEqual({ times: 2 });
+  });
 });
 
 describe("round-trip", () => {

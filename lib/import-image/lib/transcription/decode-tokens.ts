@@ -22,7 +22,7 @@
  * note as `slurStart`/`slurStop` (see musicxml-builder.ts's `pairTies` for how
  * that becomes a `<tie>`).
  */
-import type { NoteEvent, ScoreAttributes } from "../types";
+import type { NoteEvent, RepeatBarline, ScoreAttributes } from "../types";
 import {
   parseClefToken,
   parseKeyToken,
@@ -279,4 +279,50 @@ export function decodeTokens(
   }
 
   return notes;
+}
+
+/**
+ * Recover repeat barlines from the same rhythm token sequence `decodeTokens`
+ * consumes: `repeatStart`/`repeatEnd`/`repeatEndStart` (kept distinct from the
+ * plain `barline`/`doublebarline`/`bolddoublebarline` tokens `decodeTokens`
+ * collapses to a measure increment). `repeatStart` marks the *new* measure it
+ * opens; `repeatEnd` marks the measure it closes (before the increment).
+ * TrOMR has no repeat-count token, so a closed section is always `times: 2`.
+ */
+export function decodeBarlines(
+  rhythmIds: ArrayLike<number>,
+): Map<number, RepeatBarline> {
+  const barlines = new Map<number, RepeatBarline>();
+  let measureIndex = 0;
+
+  const setStart = () => {
+    barlines.set(measureIndex, {
+      ...barlines.get(measureIndex),
+      repeatStart: true,
+    });
+  };
+  const setEnd = () => {
+    barlines.set(measureIndex, {
+      ...barlines.get(measureIndex),
+      repeatEnd: { times: 2 },
+    });
+  };
+
+  for (let i = 0; i < rhythmIds.length; i++) {
+    const rhythmToken = RHYTHM_VOCAB[rhythmIds[i]] ?? "";
+    if (rhythmToken === "EOS" || rhythmToken === "PAD") {
+      break;
+    }
+    if (rhythmToken === "repeatEnd" || rhythmToken === "repeatEndStart") {
+      setEnd();
+    }
+    if (BARLINE_TOKENS.has(rhythmToken)) {
+      measureIndex++;
+    }
+    if (rhythmToken === "repeatStart" || rhythmToken === "repeatEndStart") {
+      setStart();
+    }
+  }
+
+  return barlines;
 }

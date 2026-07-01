@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { decodeTokens } from "./decode-tokens";
+import { decodeBarlines, decodeTokens } from "./decode-tokens";
 import {
   BOS,
   EOS,
@@ -451,5 +451,46 @@ describe("decodeTokens — slur tokens", () => {
     const result = decodeTokens([note4, EOS], [pitchC4, EOS], [noAcc, EOS]);
     expect(result[0].slurStart).toBeUndefined();
     expect(result[0].slurStop).toBeUndefined();
+  });
+});
+
+describe("decodeBarlines", () => {
+  it("returns an empty map when there are no repeat tokens", () => {
+    const barline = indexOf(RHYTHM_VOCAB, "barline");
+    expect(decodeBarlines([barline, EOS])).toEqual(new Map());
+  });
+
+  it("marks the measure a forward repeat opens", () => {
+    const repeatStart = indexOf(RHYTHM_VOCAB, "repeatStart");
+    // repeatStart increments the measure counter (like any barline token) and
+    // then marks the *new* measure (index 1) as the repeat's start.
+    const result = decodeBarlines([repeatStart, EOS]);
+    expect(result.get(1)).toEqual({ repeatStart: true });
+    expect(result.has(0)).toBe(false);
+  });
+
+  it("marks the measure a backward repeat closes, defaulting times to 2", () => {
+    const repeatEnd = indexOf(RHYTHM_VOCAB, "repeatEnd");
+    // repeatEnd marks the measure it closes (index 0, before the increment).
+    const result = decodeBarlines([repeatEnd, EOS]);
+    expect(result.get(0)).toEqual({ repeatEnd: { times: 2 } });
+  });
+
+  it("marks both sides of a combined end-and-start repeat barline", () => {
+    const repeatEndStart = indexOf(RHYTHM_VOCAB, "repeatEndStart");
+    const result = decodeBarlines([repeatEndStart, EOS]);
+    expect(result.get(0)).toEqual({ repeatEnd: { times: 2 } });
+    expect(result.get(1)).toEqual({ repeatStart: true });
+  });
+
+  it("recovers a full ||: ... :|| section across several barlines", () => {
+    const barline = indexOf(RHYTHM_VOCAB, "barline");
+    const repeatStart = indexOf(RHYTHM_VOCAB, "repeatStart");
+    const repeatEnd = indexOf(RHYTHM_VOCAB, "repeatEnd");
+    // measure 0 | repeatStart -> measure 1 | barline -> measure 2 | repeatEnd (closes measure 2)
+    const result = decodeBarlines([repeatStart, barline, repeatEnd, EOS]);
+    expect(result.get(1)).toEqual({ repeatStart: true });
+    expect(result.get(2)).toEqual({ repeatEnd: { times: 2 } });
+    expect(result.size).toBe(2);
   });
 });
