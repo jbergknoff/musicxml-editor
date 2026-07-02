@@ -186,3 +186,64 @@ describe("buildScore — three-stave piano", () => {
     ).toThrow(/clef/i);
   });
 });
+
+describe("buildScore — onNoteEmitted", () => {
+  type Emitted = [string, number, number]; // pitch, measureIndex, noteElementIndex
+
+  function collect(systems: ScoreSystem[]): Emitted[] {
+    const emitted: Emitted[] = [];
+    buildScore(systems, {
+      onNoteEmitted: (note, measureIndex, noteElementIndex) => {
+        emitted.push([note.pitch, measureIndex, noteElementIndex]);
+      },
+    });
+    return emitted;
+  }
+
+  it("reports single-staff notes with per-measure element indices", () => {
+    const emitted = collect([
+      system(staff([note("C4", 0), note("D4", 0), note("E4", 1)], TREBLE)),
+      system(staff([note("F4", 0)], TREBLE)),
+    ]);
+    expect(emitted).toEqual([
+      ["C4", 0, 0],
+      ["D4", 0, 1],
+      ["E4", 1, 0],
+      // The second system's measure 0 lands at global measure 2.
+      ["F4", 2, 0],
+    ]);
+  });
+
+  it("offsets the lower staff's indices past the upper staff's notes", () => {
+    const emitted = collect([
+      system(
+        staff([note("C5", 0), note("D5", 0)], TREBLE),
+        staff([note("C3", 0)], BASS),
+      ),
+    ]);
+    // The bass note is the measure's third <note> element (after both treble
+    // notes), matching the editor's document-order noteElementIndex.
+    expect(emitted).toEqual([
+      ["C5", 0, 0],
+      ["D5", 0, 1],
+      ["C3", 0, 2],
+    ]);
+  });
+
+  it("counts a synthesized whole-measure rest as a note element", () => {
+    const emitted = collect([
+      system(
+        // Treble is empty in measure 0 (its first note is in measure 1), so the
+        // builder synthesizes a whole-measure rest there — a <note> element that
+        // shifts the bass note to index 1.
+        staff([note("C5", 1)], TREBLE),
+        staff([note("C3", 0), note("D3", 1)], BASS),
+      ),
+    ]);
+    expect(emitted).toEqual([
+      ["C3", 0, 1],
+      ["C5", 1, 0],
+      ["D3", 1, 1],
+    ]);
+  });
+});

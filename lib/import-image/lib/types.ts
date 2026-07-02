@@ -149,6 +149,13 @@ export interface NoteEvent {
    */
   tieStart?: boolean;
   tieStop?: boolean;
+  /**
+   * TrOMR decoder confidence for this note, in (0, 1]: the softmax probability
+   * of the weakest of the chosen rhythm/pitch/lift tokens at its position (see
+   * `tromr-session.ts`). Low values mark notes worth double-checking against
+   * the source image; absent when the decoder path did not report it.
+   */
+  confidence?: number;
 }
 
 /**

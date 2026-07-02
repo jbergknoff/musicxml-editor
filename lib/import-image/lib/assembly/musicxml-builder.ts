@@ -283,6 +283,7 @@ function measureXml(
   beats: number,
   beatType: number,
   barline?: RepeatBarline,
+  onNoteEmitted?: NoteEmittedSink,
 ): string {
   const children: string[] = [];
 
@@ -295,6 +296,8 @@ function measureXml(
   }
 
   // If the measure is empty, emit a whole-measure rest to keep MusicXML valid.
+  // (A synthesized rest is still a `<note>` element, so it would occupy element
+  // index 0 — but an empty measure emits nothing else, so no counter needed.)
   if (notes.length === 0) {
     children.push(
       "<note>",
@@ -311,6 +314,9 @@ function measureXml(
       if (note.attributeChange !== undefined) {
         children.push(attributeChangeXml(note.attributeChange));
       }
+      // Recognized notes are this measure's only `<note>` elements, so the
+      // loop index IS the element's document-order index within the measure.
+      onNoteEmitted?.(note, index);
       children.push(noteXml(note, beams.get(index) ?? []));
     }
   }
@@ -323,6 +329,17 @@ function measureXml(
   return wrapMeasure(measureNumber, children);
 }
 
+/**
+ * Reports each recognized note as it is written into a measure:
+ * `noteElementIndex` is the 0-based document-order index of the note's
+ * `<note>` element among ALL of its measure's `<note>` elements (rests and,
+ * on multi-staff parts, other staves' notes and synthesized whole-measure
+ * rests included) — exactly the editor's `NoteHandle.noteElementIndex`, so a
+ * consumer can address the emitted note in the parsed document (the import
+ * review's low-confidence flags).
+ */
+type NoteEmittedSink = (note: NoteEvent, noteElementIndex: number) => void;
+
 export interface BuildOptions {
   /** Opening clef/key/time for the part; each field defaults when omitted. */
   attributes?: ScoreAttributes;
@@ -330,6 +347,17 @@ export interface BuildOptions {
   partName?: string;
   /** Measure index -> repeat barline info, recovered from the source. */
   barlines?: Map<number, RepeatBarline>;
+  /**
+   * Called for every recognized note as it is emitted, with the 0-based
+   * measure index and its `<note>` element's document-order index within that
+   * measure (see {@link NoteEmittedSink}). Synthesized whole-measure rests are
+   * counted but not reported.
+   */
+  onNoteEmitted?: (
+    note: NoteEvent,
+    measureIndex: number,
+    noteElementIndex: number,
+  ) => void;
 }
 
 /**
@@ -379,6 +407,7 @@ export function buildMusicXML(
   // measure for beaming purposes.
   let beats = attributes.time?.beats ?? DEFAULT_BEATS;
   let beatType = attributes.time?.beatType ?? DEFAULT_BEAT_TYPE;
+  const onNoteEmitted = options.onNoteEmitted;
   const measures = byMeasure.map((notesInMeasure, index) => {
     const xml = measureXml(
       notesInMeasure,
@@ -388,6 +417,10 @@ export function buildMusicXML(
       beats,
       beatType,
       barlines?.get(index),
+      onNoteEmitted === undefined
+        ? undefined
+        : (note, noteElementIndex) =>
+            onNoteEmitted(note, index, noteElementIndex),
     );
     for (const note of notesInMeasure) {
       if (note.attributeChange?.time !== undefined) {
@@ -414,6 +447,21 @@ function measureSpanOf(notes: NoteEvent[]): number {
     }
   }
   return maxIndex + 1;
+}
+
+/**
+ * Measures a system contributes to the combined timeline: the widest of its
+ * staves' spans. This is exactly the offset {@link buildScore} advances by per
+ * system (and, for single-staff systems, the span `combinePages` uses), so
+ * consumers mapping systems back to measure ranges (the import review map)
+ * stay in lockstep with the builder's numbering.
+ */
+export function systemMeasureSpan(system: ScoreSystem): number {
+  let span = 0;
+  for (const staff of system.staves) {
+    span = Math.max(span, measureSpanOf(staff.notes));
+  }
+  return span;
 }
 
 /** A full measure's worth of divisions for the given meter. */
@@ -487,6 +535,7 @@ function grandStaffMeasureXml(
   beats: number,
   beatType: number,
   barline?: RepeatBarline,
+  onNoteEmitted?: NoteEmittedSink,
 ): string {
   const children: string[] = [];
   if (openingAttributes !== null) {
@@ -497,6 +546,10 @@ function grandStaffMeasureXml(
     children.push(left);
   }
   const length = measureLength(beats, beatType);
+  // Document-order index over ALL of the measure's `<note>` elements, across
+  // staves; a synthesized whole-measure rest is a `<note>` element too, so it
+  // advances the counter (but is not a recognized note, so it is not reported).
+  let noteElementIndex = 0;
   let previousDuration = 0;
   for (let staffIndex = 0; staffIndex < staffNotes.length; staffIndex++) {
     const notes = staffNotes[staffIndex];
@@ -507,6 +560,7 @@ function grandStaffMeasureXml(
     }
     if (notes.length === 0) {
       children.push(staffMeasureRestXml(staffNumber, length));
+      noteElementIndex++;
       previousDuration = length;
       continue;
     }
@@ -517,6 +571,8 @@ function grandStaffMeasureXml(
       if (note.attributeChange !== undefined) {
         children.push(attributeChangeXml(note.attributeChange, staffNumber));
       }
+      onNoteEmitted?.(note, noteElementIndex);
+      noteElementIndex++;
       children.push(noteXml(note, beams.get(index) ?? [], staffNumber));
       // Chord tail notes share the previous note's slot; grace notes borrow time
       // from a neighbor — neither advances the measure cursor.
@@ -583,7 +639,12 @@ export function buildScore(
         attributes = { ...attributes, time: inferred };
       }
     }
-    return buildMusicXML(notes, { attributes, partName, barlines });
+    return buildMusicXML(notes, {
+      attributes,
+      partName,
+      barlines,
+      onNoteEmitted: options.onNoteEmitted,
+    });
   }
 
   // Place every system's staves onto a shared measure grid. Each system numbers
@@ -602,10 +663,7 @@ export function buildScore(
 
   let offset = 0;
   for (const system of systems) {
-    let span = 0;
-    for (const staff of system.staves) {
-      span = Math.max(span, measureSpanOf(staff.notes));
-    }
+    const span = systemMeasureSpan(system);
     for (let staffIndex = 0; staffIndex < system.staves.length; staffIndex++) {
       const staff = system.staves[staffIndex];
       staffAttributes[staffIndex] ??= staff.attributes;
@@ -652,6 +710,7 @@ export function buildScore(
     beats,
     beatType,
   );
+  const onNoteEmitted = options.onNoteEmitted;
   const measures = measureStaffNotes.map((staffNotes, index) => {
     const xml = grandStaffMeasureXml(
       staffNotes,
@@ -660,6 +719,10 @@ export function buildScore(
       beats,
       beatType,
       measureBarlines.get(index),
+      onNoteEmitted === undefined
+        ? undefined
+        : (note, noteElementIndex) =>
+            onNoteEmitted(note, index, noteElementIndex),
     );
     for (const note of staffNotes[0]) {
       if (note.attributeChange?.time !== undefined) {

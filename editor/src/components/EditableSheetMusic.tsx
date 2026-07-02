@@ -105,6 +105,9 @@ export function EditableSheetMusic({
   scrollLocked,
   selectionBeat,
   focusNoteId,
+  snapBeatRef,
+  snapGeneration,
+  fitContent = false,
 }: {
   musicxml: string;
   noteHighlights?: ReadonlyArray<NoteHighlight>;
@@ -126,6 +129,15 @@ export function EditableSheetMusic({
   selectionBeat?: number | null;
   /** Note id (from noteInfos) for the Level 2 note-ring chrome. */
   focusNoteId?: string | null;
+  /** Beat to instant-scroll to when `snapGeneration` changes (see renderer). */
+  snapBeatRef?: { current: number | null };
+  /** Bump to trigger the snap scroll (fires even for a repeated beat). */
+  snapGeneration?: number;
+  /**
+   * Size the scroll container to the staves' own height instead of filling the
+   * parent — used while the import-review panel sits directly below the music.
+   */
+  fitContent?: boolean;
 }) {
   return (
     <SheetMusicDisplay
@@ -138,10 +150,12 @@ export function EditableSheetMusic({
       scrollLocked={scrollLocked}
       selectionBeat={selectionBeat}
       focusNoteId={focusNoteId}
+      snapBeatRef={snapBeatRef}
+      snapGeneration={snapGeneration}
       // Allow horizontal pan: a plain drag scrolls rather than edits.
       containerStyle={{
         touchAction: "pan-x",
-        height: "100%",
+        height: fitContent ? "auto" : "100%",
         cursor: "default",
       }}
       // Leave the pointer uncaptured so a drag reaches the container's

@@ -53,6 +53,7 @@ export async function transcribeStaves(
       tokens.pitch,
       tokens.lift,
       tokens.slur,
+      tokens.confidence,
     );
     const barlines = decodeBarlines(tokens.rhythm);
     const attributes = decodeAttributes(tokens.rhythm);
@@ -70,9 +71,16 @@ export async function transcribeStaves(
         `  pitch:  ${tokensToText(tokens.pitch, PITCH_VOCAB)}\n` +
         `  lift:   ${tokensToText(tokens.lift, LIFT_VOCAB)}`,
     );
+    let minimumConfidence = 1;
+    for (const note of notes) {
+      if (note.confidence !== undefined && note.confidence < minimumConfidence) {
+        minimumConfidence = note.confidence;
+      }
+    }
     console.info(
       `${label} decoded: ${describeAttributes(attributes)} ` +
-        `notes=${notes.length} measures=${measureCount}`,
+        `notes=${notes.length} measures=${measureCount} ` +
+        `minConfidence=${minimumConfidence.toFixed(3)}`,
     );
 
     results.push({ notes, measureCount, rawRhythm, attributes, barlines });

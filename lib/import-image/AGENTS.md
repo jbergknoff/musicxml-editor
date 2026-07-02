@@ -228,8 +228,24 @@ Phase 3 transcription + MusicXML assembly:
   public `importFile` (`index.ts`) runs the worker once per decoded page,
   `groupSystems` each page's transcriptions (with that page's brace links, also
   returned by the worker), concatenates the systems across pages, and calls
-  `buildScore` once — returning `""` when nothing was recognized, matching the
-  worker's empty-result contract.
+  `buildScore` once — returning an empty `musicXml` when nothing was recognized,
+  matching the worker's empty-result contract.
+- `lib/assembly/review-map.ts` — `mapSystemsToRegions` ties each recognized
+  system back to its source-page region (staff geometry scaled from detection
+  space, padded, clamped) and to the measure range it produced in the assembled
+  MusicXML, advancing by `systemMeasureSpan` (exported by the builder) so the
+  numbering matches `buildScore` exactly. `importFile` returns this, plus each
+  page snapshotted as a PNG (`src/input/encode.ts` — captured *before* the
+  raster's buffer is transferred to the worker), as `ImageImportResult.review`;
+  the editor's import-review ("cleanup") panel renders it beside the notation.
+  The review also carries `flaggedNotes`: per-token decoder confidence (the
+  softmax probability of each chosen rhythm/pitch/lift token, min across heads,
+  computed in `tromr-session.ts` and threaded through `decodeTokens` onto
+  `NoteEvent.confidence`), collected during the build via
+  `BuildOptions.onNoteEmitted` — which reports every recognized note's measure
+  and `<note>`-element index (synthesized whole-measure rests counted, matching
+  the editor's `NoteHandle.noteElementIndex`) — and flagged below
+  `LOW_CONFIDENCE_THRESHOLD` so the editor can highlight them.
 - `src/components/ScoreView.tsx` — renders MusicXML via OSMD and provides a
   download button for the `.musicxml` file.
 - `src/components/TranscriptionDebug.tsx` — collapsible per-staff panel showing

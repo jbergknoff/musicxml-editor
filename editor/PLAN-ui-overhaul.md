@@ -85,9 +85,12 @@ Each is its own milestone.
    note level; cut removes measures and pulls later ones left, paste inserts before
    the selected measure. Pairs with the existing `focusRange` scrubber in
    `SheetMusicDisplay.tsx`.
-10. **Import confirm steps** — MIDI quantize / staff-split confirmation; OMR results
-    landing in a cleanup mode. (Type routing already exists in `Editor.tsx`'s
-    `onImport`.)
+10. **Import confirm steps** — MIDI quantize / staff-split confirmation. (Type
+    routing already exists in `Editor.tsx`'s `onImport`.) The OMR half landed:
+    an image import now opens the cleanup panel
+    (`components/ImportReviewPanel.tsx`) — the source page cropped to the
+    selection's system, with system stepping driven by the pipeline's
+    `ImportReview` data (`lib/import-image/lib/assembly/review-map.ts`).
 11. **Touch adaptations** — 44 px hit targets, the inspector as a bottom sheet on
     narrow screens, and tap / tap-again parity with the mouse two-click path.
 
