@@ -11,13 +11,21 @@
 // drilled note (↑/↓) or move between beats (←/→); A–G add a note; -/=/0 set
 // accidentals; Space plays/stops. A plain drag only scrolls the staff.
 
-import { useCallback, useEffect, useMemo, useState } from "preact/hooks";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "preact/hooks";
 import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
 import {
   type ContextMenuRequest,
   EditableSheetMusic,
   type EditorGesture,
 } from "./components/EditableSheetMusic";
+import { ImportReviewPanel } from "./components/ImportReviewPanel";
+import type { ImportReview } from "./import-review";
 import {
   Inspector,
   type InspectorModel,
@@ -234,6 +242,14 @@ export function Editor() {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const imageImport = useImageImport();
+  // Source-image review data from the most recent OMR import (session-only —
+  // not part of the document), and whether its cleanup panel is showing.
+  const [importReview, setImportReview] = useState<ImportReview | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  // Instant-scroll request for the sheet renderer: set the beat, bump the
+  // generation. Used when the review panel steps the selection between systems.
+  const snapBeatRef = useRef<number | null>(null);
+  const [snapGeneration, setSnapGeneration] = useState(0);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: version drives re-serialize after in-place mutations
   const musicxml = useMemo(
@@ -676,6 +692,31 @@ export function Editor() {
     [documentRef],
   );
 
+  // Jump the selection to a measure's first slot and scroll it into view —
+  // the review panel's system stepping. Selection may fail on an unusual
+  // document shape; the scroll still happens so the source and notation views
+  // stay aligned.
+  const selectMeasureStart = useCallback(
+    (measureIndex: number) => {
+      const beat = measureStartBeats[measureIndex];
+      if (beat === undefined) {
+        return;
+      }
+      const slot = slotAtBeat(score, beat, 0.5, 0);
+      if (slot) {
+        setSelection({
+          kind: "slot",
+          partIndex: slot.partIndex,
+          measureIndex: slot.measureIndex,
+          onsetBeat: slot.onsetBeat,
+        });
+      }
+      snapBeatRef.current = beat;
+      setSnapGeneration((generation) => generation + 1);
+    },
+    [measureStartBeats, score],
+  );
+
   const removeHandle = useCallback(
     (handle: NoteHandle) => {
       if (!editable) {
@@ -1064,8 +1105,12 @@ export function Editor() {
       let importMethod: "optical-music-recognition" | "midi-conversion" | null =
         null;
       let midiTempo: number | null = null;
+      // Source-image review data (OMR imports only).
+      let review: ImportReview | null = null;
       if (isImportableImage(file)) {
-        imported = await imageImport.importImage(file);
+        const result = await imageImport.importImage(file);
+        imported = result?.musicXml ?? null;
+        review = result?.review ?? null;
         importMethod = "optical-music-recognition";
       } else if (isMxl(file)) {
         const bytes = new Uint8Array(await file.arrayBuffer());
@@ -1097,6 +1142,10 @@ export function Editor() {
       history.reset(doc);
       setSelection(null);
       setMenu(null);
+      // An OMR import opens its cleanup panel; any other import clears the
+      // previous one (its regions describe a document no longer loaded).
+      setImportReview(review);
+      setReviewOpen(review !== null);
     },
     [history, imageImport],
   );
@@ -1285,6 +1334,24 @@ export function Editor() {
             Unsaved
           </span>
         ) : null}
+        {importReview !== null ? (
+          <button
+            type="button"
+            onClick={() => setReviewOpen((open) => !open)}
+            style={{
+              ...toolbarButtonStyle(true),
+              ...(reviewOpen
+                ? {
+                    background: COLORS.accentHighlight,
+                    border: `1px solid ${COLORS.accentBorder}`,
+                    color: COLORS.accent,
+                  }
+                : {}),
+            }}
+          >
+            Review
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => setMetadataOpen(true)}
@@ -1399,8 +1466,18 @@ export function Editor() {
               scrollLocked={listen.playing}
               selectionBeat={selectionBeat}
               focusNoteId={focusNoteId}
+              snapBeatRef={snapBeatRef}
+              snapGeneration={snapGeneration}
             />
           </div>
+          {reviewOpen && importReview !== null ? (
+            <ImportReviewPanel
+              review={importReview}
+              selectedMeasure={slotInfo?.measureIndex ?? null}
+              onSelectMeasure={selectMeasureStart}
+              onClose={() => setReviewOpen(false)}
+            />
+          ) : null}
         </div>
         <Inspector
           model={inspector?.model ?? null}

@@ -28,12 +28,20 @@ lib/import-image/   The OMR pipeline (the original pdf-to-musicxml app), moved
 
 `createImageImporter()` → an `ImageImporter` whose `importFile(file, onProgress)`
 decodes a PDF/image on the main thread and runs segmentation → staff detection →
-TrOMR transcription in the OMR worker, returning a MusicXML string. Multi-page
-PDFs are recognized a page at a time and stitched into one document (measure
-numbers run continuously across pages); progress updates carry `page`/`pageCount`
-for those. `imageToMusicXml(file)` is the one-shot convenience. The editor wraps
-this in `editor/src/use-image-import.ts` and calls it from `Editor.tsx`'s Import
-handler.
+TrOMR transcription in the OMR worker, returning an `ImageImportResult`: the
+recovered MusicXML string plus `review` data for the editor's cleanup mode —
+each decoded page as a PNG blob and each recognized system's page region paired
+with the measure range it produced (`lib/assembly/review-map.ts`; measure
+numbering mirrors `buildScore` exactly). Multi-page PDFs are recognized a page
+at a time and stitched into one document (measure numbers run continuously
+across pages); progress updates carry `page`/`pageCount` for those.
+`imageToMusicXml(file)` is the one-shot convenience (string only). The editor
+wraps this in `editor/src/use-image-import.ts` and calls it from `Editor.tsx`'s
+Import handler; after an OMR import the editor opens `ImportReviewPanel`
+(`editor/src/components/ImportReviewPanel.tsx`), which shows the source page
+cropped to the system containing the selection and steps system-by-system
+(TrOMR has no positional output, so the system — not the measure — is the
+finest source region).
 
 Inference runs in `lib/import-image/src/worker/omr.worker.ts`, bundled by the
 build into `editor/dist/omr.worker.js` and loaded via `new Worker("/omr.worker.js")`.

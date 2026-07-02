@@ -416,6 +416,21 @@ function measureSpanOf(notes: NoteEvent[]): number {
   return maxIndex + 1;
 }
 
+/**
+ * Measures a system contributes to the combined timeline: the widest of its
+ * staves' spans. This is exactly the offset {@link buildScore} advances by per
+ * system (and, for single-staff systems, the span `combinePages` uses), so
+ * consumers mapping systems back to measure ranges (the import review map)
+ * stay in lockstep with the builder's numbering.
+ */
+export function systemMeasureSpan(system: ScoreSystem): number {
+  let span = 0;
+  for (const staff of system.staves) {
+    span = Math.max(span, measureSpanOf(staff.notes));
+  }
+  return span;
+}
+
 /** A full measure's worth of divisions for the given meter. */
 function measureLength(beats: number, beatType: number): number {
   return (beats * DIVISIONS * 4) / beatType;
@@ -602,10 +617,7 @@ export function buildScore(
 
   let offset = 0;
   for (const system of systems) {
-    let span = 0;
-    for (const staff of system.staves) {
-      span = Math.max(span, measureSpanOf(staff.notes));
-    }
+    const span = systemMeasureSpan(system);
     for (let staffIndex = 0; staffIndex < system.staves.length; staffIndex++) {
       const staff = system.staves[staffIndex];
       staffAttributes[staffIndex] ??= staff.attributes;

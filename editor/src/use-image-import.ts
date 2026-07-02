@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import {
   createImageImporter,
   type ImageImporter,
+  type ImageImportResult,
   isPdf,
   type ProgressUpdate,
 } from "../../lib/import-image/index";
@@ -53,8 +54,11 @@ export interface ImageImportState {
   busy: boolean;
   status: string | null;
   error: string | null;
-  /** Recognize a file and return its MusicXML, or null on failure. */
-  importImage(file: File): Promise<string | null>;
+  /**
+   * Recognize a file and return its MusicXML plus the source-image review
+   * data for the cleanup panel, or null on failure.
+   */
+  importImage(file: File): Promise<ImageImportResult | null>;
 }
 
 export function useImageImport(): ImageImportState {
@@ -71,7 +75,7 @@ export function useImageImport(): ImageImportState {
   }, []);
 
   const importImage = useCallback(
-    async (file: File): Promise<string | null> => {
+    async (file: File): Promise<ImageImportResult | null> => {
       setBusy(true);
       setError(null);
       setStatus(`Decoding ${file.name}…`);
@@ -80,14 +84,14 @@ export function useImageImport(): ImageImportState {
           importerRef.current = createImageImporter();
         }
         const importer = await importerRef.current;
-        const musicxml = await importer.importFile(file, (update) => {
+        const result = await importer.importFile(file, (update) => {
           setStatus(describeProgress(update));
         });
-        if (musicxml === "") {
+        if (result.musicXml === "") {
           setError("No staves were recognized in that file.");
           return null;
         }
-        return musicxml;
+        return result;
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught));
         return null;
