@@ -14,7 +14,9 @@
  */
 import { buildScore } from "./lib/assembly/musicxml-builder";
 import {
+  LOW_CONFIDENCE_THRESHOLD,
   mapSystemsToRegions,
+  type ReviewFlaggedNote,
   type ReviewPageInput,
   type ReviewRegion,
   type ReviewSystem,
@@ -34,6 +36,7 @@ export { isPdf };
 export type {
   BackendChoice,
   ProgressUpdate,
+  ReviewFlaggedNote,
   ReviewRegion,
   ReviewSystem,
   StaffDetectionMode,
@@ -57,6 +60,12 @@ export interface ImportReviewPage {
 export interface ImportReview {
   pages: ImportReviewPage[];
   systems: ReviewSystem[];
+  /**
+   * Notes the TrOMR decoder was least sure about (confidence below
+   * `LOW_CONFIDENCE_THRESHOLD`), addressed by measure + `<note>` element index
+   * in the returned MusicXML so the editor can highlight them for checking.
+   */
+  flaggedNotes: ReviewFlaggedNote[];
 }
 
 /** The outcome of recognizing one file. */
@@ -160,11 +169,30 @@ export async function createImageImporter(
       if (recognizedNotes === 0) {
         return { musicXml: "", review: null };
       }
+      // Collect the notes the decoder was least sure about while the builder
+      // emits them — the builder reports each note's measure + element index,
+      // which is exactly how the editor addresses notes for highlighting.
+      const flaggedNotes: ReviewFlaggedNote[] = [];
+      const musicXml = buildScore(systems, {
+        onNoteEmitted: (note, measureIndex, noteElementIndex) => {
+          if (
+            note.confidence !== undefined &&
+            note.confidence < LOW_CONFIDENCE_THRESHOLD
+          ) {
+            flaggedNotes.push({
+              measureIndex,
+              noteElementIndex,
+              confidence: note.confidence,
+            });
+          }
+        },
+      });
       return {
-        musicXml: buildScore(systems),
+        musicXml,
         review: {
           pages: reviewPages,
           systems: mapSystemsToRegions(reviewInputs),
+          flaggedNotes,
         },
       };
     },

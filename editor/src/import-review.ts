@@ -4,10 +4,23 @@
 import type {
   ImportReview,
   ImportReviewPage,
+  ReviewFlaggedNote,
   ReviewSystem,
 } from "../../lib/import-image/index";
 
-export type { ImportReview, ImportReviewPage, ReviewSystem };
+export type { ImportReview, ImportReviewPage, ReviewFlaggedNote, ReviewSystem };
+
+/** The flagged (low-confidence) notes falling inside one review system's measures. */
+export function flaggedNotesInSystem(
+  flaggedNotes: readonly ReviewFlaggedNote[],
+  system: ReviewSystem,
+): ReviewFlaggedNote[] {
+  return flaggedNotes.filter(
+    (flagged) =>
+      flagged.measureIndex >= system.firstMeasure &&
+      flagged.measureIndex < system.firstMeasure + system.measureCount,
+  );
+}
 
 /**
  * The index of the review system containing `measureIndex` (0-based, matching

@@ -64,6 +64,7 @@ import {
   allSlotsAtBeat,
   chordForHandle,
   chordInfoForHandle,
+  idForGraceHandle,
   idForHandle,
   octavePitch,
   pitchForHandle,
@@ -110,6 +111,8 @@ function isMidi(file: File): boolean {
 // A focused note draws solid accent; its chord-mates draw a lighter tint.
 const FOCUS_COLOR = COLORS.accent;
 const CHORD_TINT = "#84a9e8";
+// Low-confidence OMR notes draw amber while the import-review panel is open.
+const FLAG_COLOR = COLORS.warningDot;
 
 // Undotted note-value → quarter-note beats, for the inspector's duration
 // selector (mirrors dom-edit's own standard-duration table).
@@ -397,15 +400,43 @@ export function Editor() {
     };
   }, [slotInfo, focused, selection, score, measureStartBeats]);
 
+  // Whether the import-review panel is showing (drives layout + highlights).
+  const reviewVisible = reviewOpen && importReview !== null;
+
+  // Low-confidence highlights: while reviewing an OMR import, tint the notes
+  // the decoder was least sure about so the user knows what to check against
+  // the source. Flags address notes by measure + <note> element index — the
+  // handle shape — so they survive pitch/accidental fixes in place (and detach
+  // once a structural edit reorders the measure's note elements).
+  const confidenceHighlights: NoteHighlight[] = useMemo(() => {
+    if (!reviewVisible || importReview === null) {
+      return [];
+    }
+    return importReview.flaggedNotes
+      .map((flagged) => {
+        const handle = {
+          measureIndex: flagged.measureIndex,
+          noteElementIndex: flagged.noteElementIndex,
+        };
+        // Grace notes are not pickable (no beat of their own) but still render
+        // with ids — and the dense grace runs are exactly where the recognizer
+        // is least sure, so fall back to the grace lookup.
+        return idForHandle(score, handle) ?? idForGraceHandle(score, handle);
+      })
+      .filter((id): id is string => id !== null)
+      .map((id) => ({ kind: "score" as const, id, color: FLAG_COLOR }));
+  }, [reviewVisible, importReview, score]);
+
   // Selection highlights: at Level 2 the focused note draws strong and its
   // chord-mates light; a slot selection tints all its members across every
   // staff (none for a rest — the beat-box chrome marks a rest instead).
+  // Confidence flags go first so the selection recolor draws over them.
   const noteHighlights: NoteHighlight[] = useMemo(() => {
     if (!selection || !slotInfo) {
-      return [];
+      return confidenceHighlights;
     }
     if (selection.kind === "note") {
-      const out: NoteHighlight[] = [];
+      const out: NoteHighlight[] = [...confidenceHighlights];
       for (const note of slotInfo.notes) {
         const id = idForHandle(score, note.handle);
         if (id) {
@@ -421,12 +452,15 @@ export function Editor() {
       return out;
     }
     const slots = inspector?.allSlots ?? [slotInfo];
-    return slots
-      .flatMap((slot) => slot.notes)
-      .map((note) => idForHandle(score, note.handle))
-      .filter((id): id is string => id !== null)
-      .map((id) => ({ kind: "score", id, color: CHORD_TINT }));
-  }, [selection, score, slotInfo, inspector]);
+    return [
+      ...confidenceHighlights,
+      ...slots
+        .flatMap((slot) => slot.notes)
+        .map((note) => idForHandle(score, note.handle))
+        .filter((id): id is string => id !== null)
+        .map((id) => ({ kind: "score" as const, id, color: CHORD_TINT })),
+    ];
+  }, [selection, score, slotInfo, inspector, confidenceHighlights]);
 
   const hasSelection = selection !== null;
 
@@ -691,6 +725,16 @@ export function Editor() {
     },
     [documentRef],
   );
+
+  // A pointer-down on the canvas around/below the staves (not on the staff
+  // SVG) clears the selection; taps that reach the SVG are handleTap's.
+  const clearSelectionOffStaff = useCallback((event: PointerEvent) => {
+    const target = event.target as Element | null;
+    if (target && !target.closest("svg")) {
+      setSelection(null);
+      setMenu(null);
+    }
+  }, []);
 
   // Jump the selection to a measure's first slot and scroll it into view —
   // the review panel's system stepping. Selection may fail on an unusual
@@ -1436,6 +1480,10 @@ export function Editor() {
             flexDirection: "column",
             background: COLORS.canvas,
             boxSizing: "border-box",
+            // While reviewing, the staves shrink to their content height so the
+            // source strip sits directly under them; let the column scroll if
+            // the two together outgrow it.
+            overflowY: reviewVisible ? "auto" : undefined,
           }}
         >
           <ScoreHeader
@@ -1446,14 +1494,12 @@ export function Editor() {
               around/below the staves) clears the selection. Taps that reach the
               SVG keep their svg ancestor and are handled by handleTap instead. */}
           <div
-            style={{ flex: 1, minHeight: 0, padding: 8 }}
-            onPointerDown={(event) => {
-              const target = event.target as Element | null;
-              if (target && !target.closest("svg")) {
-                setSelection(null);
-                setMenu(null);
-              }
-            }}
+            style={
+              reviewVisible
+                ? { flex: "0 0 auto", padding: 8 }
+                : { flex: 1, minHeight: 0, padding: 8 }
+            }
+            onPointerDown={clearSelectionOffStaff}
           >
             <EditableSheetMusic
               musicxml={musicxml}
@@ -1468,15 +1514,25 @@ export function Editor() {
               focusNoteId={focusNoteId}
               snapBeatRef={snapBeatRef}
               snapGeneration={snapGeneration}
+              fitContent={reviewVisible}
             />
           </div>
-          {reviewOpen && importReview !== null ? (
-            <ImportReviewPanel
-              review={importReview}
-              selectedMeasure={slotInfo?.measureIndex ?? null}
-              onSelectMeasure={selectMeasureStart}
-              onClose={() => setReviewOpen(false)}
-            />
+          {reviewVisible && importReview !== null ? (
+            <>
+              <ImportReviewPanel
+                review={importReview}
+                selectedMeasure={slotInfo?.measureIndex ?? null}
+                onSelectMeasure={selectMeasureStart}
+                onClose={() => setReviewOpen(false)}
+              />
+              {/* Fill the leftover column height so clicks below the panel
+                  still clear the selection, as they did when the staves' own
+                  container covered this space. */}
+              <div
+                style={{ flex: 1, minHeight: 0 }}
+                onPointerDown={clearSelectionOffStaff}
+              />
+            </>
           ) : null}
         </div>
         <Inspector

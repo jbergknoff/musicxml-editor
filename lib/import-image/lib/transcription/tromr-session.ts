@@ -41,6 +41,25 @@ function argmax(data: Float32Array, offset: number, size: number): number {
 }
 
 /**
+ * The softmax probability the head assigned to its chosen (argmax) token — the
+ * per-token decoder confidence surfaced to the editor's import review.
+ * Numerically stable: shift by the max logit before exponentiating.
+ */
+function chosenProbability(logits: Float32Array, chosen: number): number {
+  let max = logits[0];
+  for (let i = 1; i < logits.length; i++) {
+    if (logits[i] > max) {
+      max = logits[i];
+    }
+  }
+  let sum = 0;
+  for (let i = 0; i < logits.length; i++) {
+    sum += Math.exp(logits[i] - max);
+  }
+  return Math.exp(logits[chosen] - max) / sum;
+}
+
+/**
  * Run the TrOMR encoder on one staff image.
  * Returns the context tensor as Float32Array plus the encoder sequence length.
  */
@@ -93,6 +112,7 @@ async function runDecoder(
   pitch: number[];
   lift: number[];
   slur: number[];
+  confidence: number[];
 }> {
   const { numCacheTensors, numHeads, headDim, maxDecodingSteps } =
     TROMR_CONSTANTS;
@@ -101,6 +121,7 @@ async function runDecoder(
   const pitchOut: number[] = [];
   const liftOut: number[] = [];
   const slurOut: number[] = [];
+  const confidenceOut: number[] = [];
 
   // Start all heads with their respective "beginning" tokens.
   // Rhythm uses BOS (index 1); pitch and lift use NONOTE (index 0, the "."
@@ -224,6 +245,20 @@ async function runDecoder(
     pitchOut.push(nextPitch);
     liftOut.push(nextLift);
     slurOut.push(nextSlur);
+    // Per-position confidence: the weakest of the heads that determine what
+    // the note *is* — duration (rhythm), pitch, and accidental (lift). A head
+    // the model does not expose counts as certain.
+    let confidence = chosenProbability(rhythmLogits, nextRhythm);
+    if (pitchLogits !== undefined) {
+      confidence = Math.min(
+        confidence,
+        chosenProbability(pitchLogits, nextPitch),
+      );
+    }
+    if (liftLogits !== undefined) {
+      confidence = Math.min(confidence, chosenProbability(liftLogits, nextLift));
+    }
+    confidenceOut.push(confidence);
 
     rhythmToken = nextRhythm;
     pitchToken = nextPitch;
@@ -243,12 +278,19 @@ async function runDecoder(
     }
   }
 
-  return { rhythm: rhythmOut, pitch: pitchOut, lift: liftOut, slur: slurOut };
+  return {
+    rhythm: rhythmOut,
+    pitch: pitchOut,
+    lift: liftOut,
+    slur: slurOut,
+    confidence: confidenceOut,
+  };
 }
 
 /**
  * Run TrOMR on one detected staff: encode the image crop, then decode
- * autoregressively. Returns the four raw token-ID sequences.
+ * autoregressively. Returns the four raw token-ID sequences plus the decoder's
+ * per-position confidence (see `runDecoder`).
  */
 export async function runTrOMR(
   sessions: TrOMRSessions,
@@ -259,6 +301,7 @@ export async function runTrOMR(
   pitch: number[];
   lift: number[];
   slur: number[];
+  confidence: number[];
 }> {
   const { context, seqLen } = await runEncoder(sessions.encoder, image, staff);
   return runDecoder(sessions.decoder, context, seqLen);

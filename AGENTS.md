@@ -30,9 +30,12 @@ lib/import-image/   The OMR pipeline (the original pdf-to-musicxml app), moved
 decodes a PDF/image on the main thread and runs segmentation → staff detection →
 TrOMR transcription in the OMR worker, returning an `ImageImportResult`: the
 recovered MusicXML string plus `review` data for the editor's cleanup mode —
-each decoded page as a PNG blob and each recognized system's page region paired
+each decoded page as a PNG blob, each recognized system's page region paired
 with the measure range it produced (`lib/assembly/review-map.ts`; measure
-numbering mirrors `buildScore` exactly). Multi-page PDFs are recognized a page
+numbering mirrors `buildScore` exactly), and the notes the TrOMR decoder was
+least sure about (`flaggedNotes`: per-token softmax confidence from
+`tromr-session.ts`, addressed by measure + `<note>` element index via the
+builder's `onNoteEmitted` sink — the editor tints them amber while reviewing). Multi-page PDFs are recognized a page
 at a time and stitched into one document (measure numbers run continuously
 across pages); progress updates carry `page`/`pageCount` for those.
 `imageToMusicXml(file)` is the one-shot convenience (string only). The editor

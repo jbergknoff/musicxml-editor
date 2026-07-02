@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { ReviewSystem } from "./import-review";
-import { systemForMeasure } from "./import-review";
+import { flaggedNotesInSystem, systemForMeasure } from "./import-review";
 
 function reviewSystem(
   firstMeasure: number,
@@ -44,5 +44,21 @@ describe("systemForMeasure", () => {
 
   it("returns null when there are no systems", () => {
     expect(systemForMeasure([], 0)).toBeNull();
+  });
+});
+
+describe("flaggedNotesInSystem", () => {
+  it("keeps only flags within the system's measure range", () => {
+    const flag = (measureIndex: number) => ({
+      measureIndex,
+      noteElementIndex: 0,
+      confidence: 0.5,
+    });
+    expect(
+      flaggedNotesInSystem([flag(1), flag(2), flag(4)], reviewSystem(2, 3)),
+    ).toEqual([flag(2), flag(4)]);
+    expect(
+      flaggedNotesInSystem([flag(0), flag(5)], reviewSystem(2, 3)),
+    ).toEqual([]);
   });
 });

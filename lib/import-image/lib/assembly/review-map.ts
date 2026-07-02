@@ -13,6 +13,27 @@
 import type { ScoreSystem, Staff } from "../types";
 import { systemMeasureSpan } from "./musicxml-builder";
 
+/**
+ * Notes whose decoder confidence falls below this are flagged for the editor's
+ * import review to highlight. TrOMR's softmax is sharply peaked on confident
+ * predictions (routinely > 0.99), so a note where any head (duration, pitch,
+ * accidental) drops under this bound is genuinely uncertain and worth a look.
+ */
+export const LOW_CONFIDENCE_THRESHOLD = 0.8;
+
+/**
+ * A recognized note flagged as low-confidence, addressed the way the editor
+ * addresses notes: 0-based measure index plus the document-order index of its
+ * `<note>` element within that measure (the builder's `onNoteEmitted` ordinal,
+ * which matches the editor's `NoteHandle.noteElementIndex`).
+ */
+export interface ReviewFlaggedNote {
+  measureIndex: number;
+  noteElementIndex: number;
+  /** The decoder confidence that fell below {@link LOW_CONFIDENCE_THRESHOLD}. */
+  confidence: number;
+}
+
 /** An axis-aligned pixel region of a page image (full-resolution page space). */
 export interface ReviewRegion {
   top: number;

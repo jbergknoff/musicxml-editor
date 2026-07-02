@@ -130,13 +130,16 @@ function parseNoteRestToken(token: string): {
  * tokens (clefs, signatures, tuplets, …) are silently skipped.
  *
  * `slurIds` is optional (defaults to none, meaning no slur/tie recovery) so
- * existing three-array callers keep working unchanged.
+ * existing three-array callers keep working unchanged. `confidences` (also
+ * optional, parallel to the token arrays) carries the decoder's per-position
+ * confidence and is recorded on each emitted note.
  */
 export function decodeTokens(
   rhythmIds: ArrayLike<number>,
   pitchIds: ArrayLike<number>,
   liftIds: ArrayLike<number>,
   slurIds: ArrayLike<number> = [],
+  confidences: ArrayLike<number> = [],
 ): NoteEvent[] {
   const notes: NoteEvent[] = [];
   let measureIndex = 0;
@@ -264,6 +267,10 @@ export function decodeTokens(
     };
     if (parsed.grace) {
       note.grace = true;
+    }
+    const confidence = confidences[i];
+    if (confidence !== undefined) {
+      note.confidence = confidence;
     }
     if (slurStart) {
       note.slurStart = true;

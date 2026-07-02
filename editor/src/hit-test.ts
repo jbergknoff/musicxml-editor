@@ -208,6 +208,36 @@ function sameHandle(a: NoteHandle, b: NoteHandle): boolean {
   );
 }
 
+// Renderer id for a grace note's handle. Grace notes have no beat of their
+// own, so they are not pickable and `idForHandle` skips them — but they render
+// with ids of the same scheme, so highlights (the import review's
+// low-confidence flags) can still recolor them through this lookup.
+export function idForGraceHandle(
+  score: ParsedScore,
+  handle: NoteHandle,
+): string | null {
+  for (let partIndex = 0; partIndex < score.parts.length; partIndex++) {
+    for (const measure of score.parts[partIndex].measures) {
+      for (const event of measure.events) {
+        if (isRest(event)) {
+          continue;
+        }
+        const rows = graceRowsForGroup(
+          event as ChordGroup,
+          partIndex,
+          measure.number,
+        );
+        for (const row of rows) {
+          if (sameHandle(row.handle, handle)) {
+            return row.id;
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
 // A chord = the notes a single beat sounds together: every parsed note sharing
 // one onset (a `ChordGroup`). `onsetBeat` is absolute; `handles` are the source
 // handles of all its real notes (chord members included). The selection model

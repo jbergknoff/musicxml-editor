@@ -6,7 +6,11 @@
 // the header names the measure range that system produced.
 
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { type ImportReview, systemForMeasure } from "../import-review";
+import {
+  flaggedNotesInSystem,
+  type ImportReview,
+  systemForMeasure,
+} from "../import-review";
 import { COLORS, FONTS, RADIUS } from "../theme";
 
 // The source strip never grows past this, so the notation stays dominant.
@@ -160,6 +164,12 @@ export function ImportReviewPanel({
     review.pages.length > 1
       ? ` · page ${activeSystem.page + 1}/${review.pages.length}`
       : "";
+  // Notes the decoder was unsure about on this line — they draw amber in the
+  // notation above so the user knows what to check against this crop.
+  const flaggedCount = flaggedNotesInSystem(
+    review.flaggedNotes,
+    activeSystem,
+  ).length;
 
   return (
     <div
@@ -184,9 +194,18 @@ export function ImportReviewPanel({
           Source
         </span>
         <span>
-          measures {activeSystem.firstMeasure + 1}–{lastMeasure}
+          line {activeIndex + 1}/{review.systems.length} · measures{" "}
+          {activeSystem.firstMeasure + 1}–{lastMeasure}
           {pageLabel}
         </span>
+        {flaggedCount > 0 ? (
+          <span
+            title="Notes the recognizer was least sure about are marked amber in the score"
+            style={{ color: COLORS.warning }}
+          >
+            ⚠ {flaggedCount} to check
+          </span>
+        ) : null}
         <span style={{ flex: 1 }} />
         <button
           type="button"
@@ -194,7 +213,7 @@ export function ImportReviewPanel({
           disabled={activeIndex === 0}
           style={stepButtonStyle(activeIndex > 0)}
         >
-          ← Prev system
+          ← Prev line
         </button>
         <button
           type="button"
@@ -202,7 +221,7 @@ export function ImportReviewPanel({
           disabled={activeIndex >= review.systems.length - 1}
           style={stepButtonStyle(activeIndex < review.systems.length - 1)}
         >
-          Next system →
+          Next line →
         </button>
         <button
           type="button"
