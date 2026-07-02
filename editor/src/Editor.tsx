@@ -11,6 +11,8 @@
 // drilled note (↑/↓) or move between beats (←/→); A–G add a note; -/=/0 set
 // accidentals; Space plays/stops. A plain drag only scrolls the staff.
 
+import { parseMidi } from "midi-file";
+import type { MidiData } from "midi-file";
 import {
   useCallback,
   useEffect,
@@ -18,6 +20,14 @@ import {
   useRef,
   useState,
 } from "preact/hooks";
+import {
+  type TrackInfo,
+  convertMidiToMusicXml,
+  getMidiTempo,
+  getMidiTracks,
+  midiHasExplicitKeySignature,
+} from "../../lib/midi-to-musicxml";
+import { extractMusicXmlFromMxl } from "../../lib/mxl";
 import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
 import {
   type ContextMenuRequest,
@@ -25,22 +35,19 @@ import {
   type EditorGesture,
 } from "./components/EditableSheetMusic";
 import { ImportReviewPanel } from "./components/ImportReviewPanel";
-import type { ImportReview } from "./import-review";
 import {
   Inspector,
   type InspectorModel,
   type InspectorNoteGroup,
 } from "./components/Inspector";
 import { MetadataDialog } from "./components/MetadataDialog";
+import {
+  type MidiImportChoice,
+  MidiImportDialog,
+} from "./components/MidiImportDialog";
 import { ScoreHeader } from "./components/ScoreHeader";
 import {
-  type EditableMetadata,
-  readMetadata,
-  stampImportProvenance,
-  writeMetadata,
-  writeTempo,
-} from "./metadata";
-import {
+  type NoteHandle,
   addGraceNote,
   addNote,
   addNoteToChord,
@@ -48,7 +55,6 @@ import {
   insertMeasure,
   isEditableDocument,
   moveNote,
-  type NoteHandle,
   parseDocument,
   removeGraceNote,
   removeNotes,
@@ -61,6 +67,7 @@ import {
   toggleTie,
 } from "./dom-edit";
 import {
+  type SlotInfo,
   allSlotsAtBeat,
   chordForHandle,
   chordInfoForHandle,
@@ -68,27 +75,27 @@ import {
   idForHandle,
   octavePitch,
   pitchForHandle,
-  type SlotInfo,
   slotAt,
   slotAtBeat,
   slots,
   stepPitch,
   topFirstNotes,
 } from "./hit-test";
+import type { ImportReview } from "./import-review";
 import {
-  computeMeasureStartBeats,
+  type EditableMetadata,
+  readMetadata,
+  stampImportProvenance,
+  writeMetadata,
+  writeTempo,
+} from "./metadata";
+import {
   type NoteHighlight,
   type NoteType,
   type Pitch,
+  computeMeasureStartBeats,
   parseScore,
 } from "./sheet-music/index";
-import { parseMidi } from "midi-file";
-import { extractMusicXmlFromMxl } from "../../lib/mxl";
-import {
-  getMidiTempo,
-  getMidiTracks,
-  midiToMusicXmlWithTracks,
-} from "../../lib/midi-to-musicxml";
 import { COLORS, FONTS, LAYOUT, RADIUS } from "./theme";
 import { useHistory } from "./use-history";
 import { isImportableImage, useImageImport } from "./use-image-import";
@@ -249,6 +256,14 @@ export function Editor() {
   // not part of the document), and whether its cleanup panel is showing.
   const [importReview, setImportReview] = useState<ImportReview | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
+  // A MIDI file awaiting confirmation (track selection, quantization grid,
+  // etc.) via MidiImportDialog before it's actually converted.
+  const [pendingMidi, setPendingMidi] = useState<{
+    fileName: string;
+    midiData: MidiData;
+    tracks: TrackInfo[];
+    hasExplicitKey: boolean;
+  } | null>(null);
   // Instant-scroll request for the sheet renderer: set the beat, bump the
   // generation. Used when the review panel steps the selection between systems.
   const snapBeatRef = useRef<number | null>(null);
@@ -1141,49 +1156,22 @@ export function Editor() {
     redo,
   ]);
 
-  const onImport = useCallback(
-    async (event: Event) => {
-      const input = event.currentTarget as HTMLInputElement;
-      const file = input.files?.[0];
-      input.value = "";
-      if (!file) {
-        return;
-      }
-      let imported: string | null;
-      // Provenance method for the conversions; native MusicXML/MXL is left
-      // unstamped so a faithful file round-trips byte-for-byte.
-      let importMethod: "optical-music-recognition" | "midi-conversion" | null =
-        null;
-      let midiTempo: number | null = null;
-      // Source-image review data (OMR imports only).
-      let review: ImportReview | null = null;
-      if (isImportableImage(file)) {
-        const result = await imageImport.importImage(file);
-        imported = result?.musicXml ?? null;
-        review = result?.review ?? null;
-        importMethod = "optical-music-recognition";
-      } else if (isMxl(file)) {
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        imported = await extractMusicXmlFromMxl(bytes);
-      } else if (isMidi(file)) {
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        const parsed = parseMidi(bytes);
-        const trackIndices = getMidiTracks(parsed).map((t) => t.index);
-        imported = midiToMusicXmlWithTracks(parsed, trackIndices);
-        importMethod = "midi-conversion";
-        midiTempo = getMidiTempo(parsed);
-      } else {
-        imported = await file.text();
-      }
-      if (imported === null) {
-        return;
-      }
+  // Shared tail of every import path: parse, stamp provenance, load into
+  // history, and (for OMR) open the cleanup review panel.
+  const finishImport = useCallback(
+    (
+      imported: string,
+      importMethod: "optical-music-recognition" | "midi-conversion" | null,
+      sourceFileName: string,
+      midiTempo: number | null,
+      review: ImportReview | null,
+    ) => {
       const doc = parseDocument(imported);
       // Stamp how/when/from-what the document was imported (conversions only).
       if (importMethod) {
         stampImportProvenance(doc, {
           method: importMethod,
-          sourceFile: file.name,
+          sourceFile: sourceFileName,
         });
       }
       if (midiTempo !== null) {
@@ -1197,7 +1185,70 @@ export function Editor() {
       setImportReview(review);
       setReviewOpen(review !== null);
     },
-    [history, imageImport],
+    [history],
+  );
+
+  const onImport = useCallback(
+    async (event: Event) => {
+      const input = event.currentTarget as HTMLInputElement;
+      const file = input.files?.[0];
+      input.value = "";
+      if (!file) {
+        return;
+      }
+      if (isImportableImage(file)) {
+        const result = await imageImport.importImage(file);
+        if (result === null) {
+          return;
+        }
+        finishImport(
+          result.musicXml,
+          "optical-music-recognition",
+          file.name,
+          null,
+          result.review,
+        );
+      } else if (isMxl(file)) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const imported = await extractMusicXmlFromMxl(bytes);
+        finishImport(imported, null, file.name, null, null);
+      } else if (isMidi(file)) {
+        // MIDI conversion has choices (tracks, quantization, staff split,
+        // key inference) that the confirmation dialog collects before the
+        // actual conversion runs — see onMidiImportConfirm.
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const parsed = parseMidi(bytes);
+        setPendingMidi({
+          fileName: file.name,
+          midiData: parsed,
+          tracks: getMidiTracks(parsed),
+          hasExplicitKey: midiHasExplicitKeySignature(parsed),
+        });
+      } else {
+        const imported = await file.text();
+        finishImport(imported, null, file.name, null, null);
+      }
+    },
+    [imageImport, finishImport],
+  );
+
+  const onMidiImportConfirm = useCallback(
+    (choice: MidiImportChoice) => {
+      if (!pendingMidi) {
+        return;
+      }
+      const imported = convertMidiToMusicXml(pendingMidi.midiData, choice);
+      const midiTempo = getMidiTempo(pendingMidi.midiData);
+      finishImport(
+        imported,
+        "midi-conversion",
+        pendingMidi.fileName,
+        midiTempo,
+        null,
+      );
+      setPendingMidi(null);
+    },
+    [pendingMidi, finishImport],
   );
 
   const onExport = useCallback(() => {
@@ -1678,6 +1729,16 @@ export function Editor() {
           editable={true}
           onSave={onSaveMetadata}
           onClose={() => setMetadataOpen(false)}
+        />
+      ) : null}
+
+      {pendingMidi ? (
+        <MidiImportDialog
+          fileName={pendingMidi.fileName}
+          tracks={pendingMidi.tracks}
+          hasExplicitKey={pendingMidi.hasExplicitKey}
+          onConfirm={onMidiImportConfirm}
+          onCancel={() => setPendingMidi(null)}
         />
       ) : null}
     </div>

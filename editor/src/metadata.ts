@@ -98,6 +98,10 @@ const WORK_ORDER = ["work-number", "work-title", "opus"];
 // `<miscellaneous>` provenance fields.
 export const SOFTWARE_NAME = "musicxml-editor";
 
+// The project's home, credited in the import description so a file's
+// provenance trail points back to the tool that produced it.
+const PROJECT_URL = "https://github.com/jbergknoff/musicxml-editor";
+
 // ── Element plumbing ──────────────────────────────────────────────────────────
 
 function makeChild(doc: Document, tag: string, text?: string): Element {
@@ -489,8 +493,8 @@ export function stampImportProvenance(
   const isoDate = now.toISOString().slice(0, 10); // yyyy-mm-dd, per the DTD
   const label = METHOD_LABEL[info.method];
   const description = info.sourceFile
-    ? `Imported from "${info.sourceFile}" via ${label}`
-    : `Imported via ${label}`;
+    ? `Imported from "${info.sourceFile}" via ${label} using ${SOFTWARE_NAME} (${PROJECT_URL})`
+    : `Imported via ${label} using ${SOFTWARE_NAME} (${PROJECT_URL})`;
 
   const identification = ensureChild(doc, root, "identification", SCORE_ORDER);
 
