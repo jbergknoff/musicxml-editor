@@ -424,7 +424,13 @@ export function Editor() {
         return idForHandle(score, handle) ?? idForGraceHandle(score, handle);
       })
       .filter((id): id is string => id !== null)
-      .map((id) => ({ kind: "score" as const, id, color: FLAG_COLOR }));
+      .map((id) => ({
+        kind: "score" as const,
+        id,
+        color: FLAG_COLOR,
+        title:
+          "Low-confidence: the recognizer was least sure about this note. Check it against the source image.",
+      }));
   }, [reviewVisible, importReview, score]);
 
   // Selection highlights: at Level 2 the focused note draws strong and its

@@ -203,7 +203,8 @@ export function ImportReviewPanel({
             title="Notes the recognizer was least sure about are marked amber in the score"
             style={{ color: COLORS.warning }}
           >
-            ⚠ {flaggedCount} to check
+            ⚠ {flaggedCount} amber note{flaggedCount === 1 ? "" : "s"} on this
+            line — low confidence, check against source
           </span>
         ) : null}
         <span style={{ flex: 1 }} />

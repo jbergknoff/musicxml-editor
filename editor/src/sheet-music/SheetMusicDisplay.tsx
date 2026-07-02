@@ -872,11 +872,11 @@ const NoteColorOverlay = memo(function NoteColorOverlay({
   entries,
 }: {
   infos: Map<string, NoteRenderInfo>;
-  entries: ReadonlyArray<{ id: string; color: string }>;
+  entries: ReadonlyArray<{ id: string; color: string; title?: string }>;
 }) {
   return (
     <g style={{ pointerEvents: "none" }}>
-      {entries.map(({ id, color }) => {
+      {entries.map(({ id, color, title }) => {
         const info = infos.get(id);
         if (!info) {
           return null;
@@ -885,8 +885,16 @@ const NoteColorOverlay = memo(function NoteColorOverlay({
         return (
           // Grace noteheads carry a font-size override so the recolored glyph
           // matches the smaller ink note; regular notes inherit the document
-          // default and leave fontSize undefined.
-          <g key={id} data-color-id={id} font-size={info.fontSize}>
+          // default and leave fontSize undefined. pointerEvents is re-enabled
+          // here (the parent <g> disables it) so the <title> child can produce
+          // a native hover tooltip over the glyph.
+          <g
+            key={id}
+            data-color-id={id}
+            font-size={info.fontSize}
+            style={title ? { pointerEvents: "auto" } : undefined}
+          >
+            {title && <title>{title}</title>}
             <Notehead
               x={info.nx}
               y={info.ny}
@@ -1116,12 +1124,16 @@ export function SheetMusicDisplay({
   // referentially stable as long as `noteHighlights` is, so the memoized
   // overlays still skip work when nothing changed.
   const { scoreEntries, markerEntries } = useMemo(() => {
-    const scores: Array<{ id: string; color: string }> = [];
+    const scores: Array<{ id: string; color: string; title?: string }> = [];
     const markers: Array<{ noteNumber: number; beat: number; color: string }> =
       [];
     for (const highlight of noteHighlights ?? []) {
       if (highlight.kind === "score") {
-        scores.push({ id: highlight.id, color: highlight.color });
+        scores.push({
+          id: highlight.id,
+          color: highlight.color,
+          title: highlight.title,
+        });
       } else {
         markers.push({
           noteNumber: highlight.noteNumber,

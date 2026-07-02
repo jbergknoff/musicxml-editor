@@ -8,7 +8,13 @@
  * This is the display component's own public API; consumers build these
  * entries and pass them through the `noteHighlights` prop.
  */
-export type ScoreHighlight = { kind: "score"; id: string; color: string };
+export type ScoreHighlight = {
+  kind: "score";
+  id: string;
+  color: string;
+  /** Optional tooltip shown on hover (e.g. explaining a low-confidence flag). */
+  title?: string;
+};
 export type MarkerHighlight = {
   kind: "marker";
   noteNumber: number;
