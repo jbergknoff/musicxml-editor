@@ -339,6 +339,9 @@ export interface ChordNote {
   id: string;
   handle: NoteHandle;
   pitch: Pitch;
+  /** This note's own duration value — usually equal to the chord's `type`,
+   *  but chord members may diverge (see `setChordMemberDuration`). */
+  type: NoteType;
   /** True when this note ties forward into the next chord (drawn as a tie
    *  arc by `TieLayer`; see `ParsedNote.tieStart`). */
   tieStart: boolean;
@@ -377,6 +380,7 @@ function pickableChordInfos(score: ParsedScore): ChordInfo[] {
             id: `p${partIndex}-m${measure.number}-n${group.noteIndex}-v${voiceIndex}`,
             handle: note.source,
             pitch: note.pitch,
+            type: note.type,
             tieStart: note.tieStart,
           });
         });
@@ -534,6 +538,7 @@ function pickableSlots(score: ParsedScore): SlotInfo[] {
             id: `p${partIndex}-m${measure.number}-n${group.noteIndex}-v${voiceIndex}`,
             handle: note.source,
             pitch: note.pitch,
+            type: note.type,
             tieStart: note.tieStart,
           });
         });
