@@ -55,6 +55,7 @@ import {
   addGraceNote,
   addNote,
   addNoteToChord,
+  appendScore,
   createBlankDocument,
   insertMeasure,
   isEditableDocument,
@@ -261,17 +262,27 @@ export function Editor() {
   const [importReview, setImportReview] = useState<ImportReview | null>(null);
   const [reviewOpen, setReviewOpen] = useState(false);
   // A MIDI file awaiting confirmation (track selection, quantization grid,
-  // etc.) via MidiImportDialog before it's actually converted.
+  // etc.) via MidiImportDialog before it's actually converted. `mode` tracks
+  // whether confirming should replace the document (the top-level "Open/
+  // Import New") or append onto the end of it (the file-scoped "Append
+  // Import").
   const [pendingMidi, setPendingMidi] = useState<{
     fileName: string;
     midiData: MidiData;
     tracks: TrackInfo[];
     explicitKey: { fifths: number; mode: string } | null;
+    importMode: "replace" | "append";
   } | null>(null);
   // A PDF/image awaiting confirmation (inference backend, staff-detection
   // mode) via ImageImportDialog before OMR recognition runs. The chosen
   // options carry over as the default for the next import.
-  const [pendingImage, setPendingImage] = useState<{ file: File } | null>(null);
+  const [pendingImage, setPendingImage] = useState<{
+    file: File;
+    importMode: "replace" | "append";
+  } | null>(null);
+  // Error from a failed "Append Import" (e.g. a part/staff-layout mismatch
+  // with the current document) — shown alongside the OMR status/error strip.
+  const [appendError, setAppendError] = useState<string | null>(null);
   const [imageImportChoice, setImageImportChoice] = useState<ImageImportChoice>(
     { backend: "auto", staffDetection: "classical" },
   );
@@ -1199,6 +1210,76 @@ export function Editor() {
     [history],
   );
 
+  // "Append Import"'s tail: append the imported score onto the end of the
+  // live document (rather than replacing it, as `finishImport` does) — the
+  // flow for a series of page screenshots that should all end up in one
+  // file. Fails (surfacing `appendError`) when the imported score isn't in
+  // the editor's single-part shape or its staff count doesn't match the live
+  // document's; a mismatched OMR/MIDI conversion has no other sensible target.
+  const finishAppend = useCallback(
+    (imported: string, sourceFileName: string, review: ImportReview | null) => {
+      const result = appendScore(documentRef.current, imported);
+      if (!result) {
+        setAppendError(
+          `Couldn't append "${sourceFileName}": its part/staff layout doesn't match this score.`,
+        );
+        return;
+      }
+      setAppendError(null);
+      commit();
+      setSelection(null);
+      setMenu(null);
+      // Shift the appended import's review data (measure/page indices) past
+      // whatever the document already had, then merge it into the existing
+      // review (if any) so cleanup can continue across every append.
+      if (review) {
+        setImportReview((prev) => {
+          const pageOffset = prev?.pages.length ?? 0;
+          return {
+            pages: [...(prev?.pages ?? []), ...review.pages],
+            systems: [
+              ...(prev?.systems ?? []),
+              ...review.systems.map((system) => ({
+                ...system,
+                page: system.page + pageOffset,
+                firstMeasure:
+                  system.firstMeasure + result.firstAppendedMeasureIndex,
+              })),
+            ],
+            flaggedNotes: [
+              ...(prev?.flaggedNotes ?? []),
+              ...review.flaggedNotes.map((flagged) => ({
+                ...flagged,
+                measureIndex:
+                  flagged.measureIndex + result.firstAppendedMeasureIndex,
+              })),
+            ],
+          };
+        });
+        setReviewOpen(true);
+      }
+      // Jump the selection/scroll to the first appended measure so the user
+      // lands on the new content rather than staying scrolled where they were.
+      const freshScore = parseScore(serializeDocument(documentRef.current));
+      const beat =
+        computeMeasureStartBeats(freshScore)[result.firstAppendedMeasureIndex];
+      if (beat !== undefined) {
+        const slot = slotAtBeat(freshScore, beat, 0.5, 0);
+        if (slot) {
+          setSelection({
+            kind: "slot",
+            partIndex: slot.partIndex,
+            measureIndex: slot.measureIndex,
+            onsetBeat: slot.onsetBeat,
+          });
+        }
+        snapBeatRef.current = beat;
+        setSnapGeneration((generation) => generation + 1);
+      }
+    },
+    [documentRef, commit],
+  );
+
   const onImport = useCallback(
     async (event: Event) => {
       const input = event.currentTarget as HTMLInputElement;
@@ -1211,7 +1292,7 @@ export function Editor() {
         // OMR's only user-facing knobs are the inference backend and staff-
         // detection mode, collected by ImageImportDialog before recognition
         // runs — see onImageImportConfirm.
-        setPendingImage({ file });
+        setPendingImage({ file, importMode: "replace" });
       } else if (isMxl(file)) {
         const bytes = new Uint8Array(await file.arrayBuffer());
         const imported = await extractMusicXmlFromMxl(bytes);
@@ -1227,6 +1308,7 @@ export function Editor() {
           midiData: parsed,
           tracks: getMidiTracks(parsed),
           explicitKey: getMidiKeySignature(parsed),
+          importMode: "replace",
         });
       } else {
         const imported = await file.text();
@@ -1236,16 +1318,55 @@ export function Editor() {
     [finishImport],
   );
 
+  // "Append Import": same file handling as `onImport`, but every path ends in
+  // `finishAppend` (or a dialog whose confirm handler branches on
+  // `importMode`) instead of replacing the document.
+  const onAppendImport = useCallback(
+    async (event: Event) => {
+      const input = event.currentTarget as HTMLInputElement;
+      const file = input.files?.[0];
+      input.value = "";
+      if (!file) {
+        return;
+      }
+      if (isImportableImage(file)) {
+        setPendingImage({ file, importMode: "append" });
+      } else if (isMxl(file)) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const imported = await extractMusicXmlFromMxl(bytes);
+        finishAppend(imported, file.name, null);
+      } else if (isMidi(file)) {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const parsed = parseMidi(bytes);
+        setPendingMidi({
+          fileName: file.name,
+          midiData: parsed,
+          tracks: getMidiTracks(parsed),
+          explicitKey: getMidiKeySignature(parsed),
+          importMode: "append",
+        });
+      } else {
+        const imported = await file.text();
+        finishAppend(imported, file.name, null);
+      }
+    },
+    [finishAppend],
+  );
+
   const onImageImportConfirm = useCallback(
     async (choice: ImageImportChoice) => {
       if (!pendingImage) {
         return;
       }
-      const { file } = pendingImage;
+      const { file, importMode } = pendingImage;
       setImageImportChoice(choice);
       setPendingImage(null);
       const result = await imageImport.importImage(file, choice);
       if (result === null) {
+        return;
+      }
+      if (importMode === "append") {
+        finishAppend(result.musicXml, file.name, result.review);
         return;
       }
       finishImport(
@@ -1256,7 +1377,7 @@ export function Editor() {
         result.review,
       );
     },
-    [pendingImage, imageImport, finishImport],
+    [pendingImage, imageImport, finishImport, finishAppend],
   );
 
   const onMidiImportConfirm = useCallback(
@@ -1265,6 +1386,11 @@ export function Editor() {
         return;
       }
       const imported = convertMidiToMusicXml(pendingMidi.midiData, choice);
+      if (pendingMidi.importMode === "append") {
+        finishAppend(imported, pendingMidi.fileName, null);
+        setPendingMidi(null);
+        return;
+      }
       const midiTempo = getMidiTempo(pendingMidi.midiData);
       finishImport(
         imported,
@@ -1275,7 +1401,7 @@ export function Editor() {
       );
       setPendingMidi(null);
     },
-    [pendingMidi, finishImport],
+    [pendingMidi, finishImport, finishAppend],
   );
 
   const onExport = useCallback(() => {
@@ -1369,8 +1495,11 @@ export function Editor() {
           flexWrap: "wrap",
         }}
       >
+        {/* Not scoped to the current file — opens a new document, replacing
+            whatever is loaded now (see "Append Import" below for adding onto
+            it instead). */}
         <label style={toolbarButtonStyle(!imageImport.busy)}>
-          Import
+          Open/Import New
           <input
             type="file"
             accept=".musicxml,.xml,.mxl,.mid,.midi,audio/midi,.pdf,image/*"
@@ -1406,6 +1535,23 @@ export function Editor() {
         >
           Delete
         </button>
+        {/* Scoped to the current file: appends onto the end of the live
+            document (e.g. a series of page screenshots that should all land
+            in one score) rather than replacing it. Undoable like any other
+            edit. */}
+        <label
+          style={toolbarButtonStyle(editable && !imageImport.busy)}
+          title="Append an imported file onto the end of this score"
+        >
+          Append Import
+          <input
+            type="file"
+            accept=".musicxml,.xml,.mxl,.mid,.midi,audio/midi,.pdf,image/*"
+            onChange={onAppendImport}
+            disabled={!editable || imageImport.busy}
+            style={{ display: "none" }}
+          />
+        </label>
         <span
           style={{ width: 1, height: 22, background: COLORS.borderLight }}
         />
@@ -1551,6 +1697,11 @@ export function Editor() {
       {imageImport.error !== null ? (
         <div style={{ fontSize: 13, color: COLORS.error, padding: "4px 14px" }}>
           Import failed: {imageImport.error}
+        </div>
+      ) : null}
+      {appendError !== null ? (
+        <div style={{ fontSize: 13, color: COLORS.error, padding: "4px 14px" }}>
+          {appendError}
         </div>
       ) : null}
 
