@@ -1,7 +1,13 @@
 import type { MidiData, MidiEvent } from "midi-file";
 
-// MusicXML divisions per quarter note (1 division = one 16th note)
-const DIVISIONS = 4;
+// The quantization grid the user can choose in the import confirmation
+// dialog, expressed as the denominator of the finest notated duration (an
+// 8th-, 16th-, or 32nd-note grid).
+export type QuantizeGrid = 8 | 16 | 32;
+
+// MusicXML divisions per quarter note for each grid choice (1 division = one
+// grid step).
+const GRID_DIVISIONS: Record<QuantizeGrid, number> = { 8: 2, 16: 4, 32: 8 };
 
 // Chromatic note names, defaulting to sharps
 const NOTE_STEPS = [
@@ -19,20 +25,45 @@ const NOTE_STEPS = [
   "B",
 ];
 
-// Map from grid duration (in 16th-note units) to MusicXML [type, hasDot]
-const DURATION_TYPE = new Map<number, [string, boolean]>([
-  [16, ["whole", false]],
-  [12, ["half", true]],
-  [8, ["half", false]],
-  [6, ["quarter", true]],
-  [4, ["quarter", false]],
-  [3, ["eighth", true]],
-  [2, ["eighth", false]],
-  [1, ["16th", false]],
-]);
+// Note-value durations as a fraction of a quarter note, used to derive the
+// duration→[type, hasDot] map for a given `divisions` (grid resolution).
+const NOTE_TYPE_FACTORS: Array<[string, number]> = [
+  ["whole", 4],
+  ["half", 2],
+  ["quarter", 1],
+  ["eighth", 0.5],
+  ["16th", 0.25],
+  ["32nd", 0.125],
+];
 
-// Nearest standard grid duration for values that don't map exactly
-const STANDARD_DURATIONS = [16, 12, 8, 6, 4, 3, 2, 1];
+// Build the duration(in divisions)→[type, hasDot] map for a given divisions
+// (grid) resolution, including dotted values where they land on an integer
+// number of divisions. At the default divisions=4 (16th-note grid) this
+// reproduces the original fixed table: whole=16, half.=12, half=8,
+// quarter.=6, quarter=4, eighth.=3, eighth=2, 16th=1.
+function buildDurationType(divisions: number): Map<number, [string, boolean]> {
+  const map = new Map<number, [string, boolean]>();
+  for (const [type, factor] of NOTE_TYPE_FACTORS) {
+    const dur = divisions * factor;
+    if (!Number.isInteger(dur) || dur < 1) {
+      continue;
+    }
+    const dotted = dur * 1.5;
+    if (Number.isInteger(dotted)) {
+      map.set(dotted, [type, true]);
+    }
+    map.set(dur, [type, false]);
+  }
+  return map;
+}
+
+// Standard grid durations, descending, for greedy rest decomposition /
+// duration snapping.
+function standardDurations(
+  durationType: Map<number, [string, boolean]>,
+): number[] {
+  return [...durationType.keys()].sort((a, b) => b - a);
+}
 
 interface RawNote {
   noteNumber: number;
@@ -86,11 +117,11 @@ function splitAtBarlines(note: RawNote, ticksPerMeasure: number): NotePart[] {
 }
 
 // Break a grid duration into a sum of standard values (for rests)
-function decompose(units: number): number[] {
+function decompose(units: number, durations: number[]): number[] {
   const result: number[] = [];
   let rem = units;
   while (rem > 0) {
-    const v = STANDARD_DURATIONS.find((d) => d <= rem);
+    const v = durations.find((d) => d <= rem);
     if (v === undefined) {
       break;
     }
@@ -100,13 +131,6 @@ function decompose(units: number): number[] {
   return result;
 }
 
-// Snap a duration to the nearest standard grid value
-function snapToStandard(units: number): number {
-  return STANDARD_DURATIONS.reduce((best, d) =>
-    Math.abs(d - units) < Math.abs(best - units) ? d : best,
-  );
-}
-
 function renderNote(
   pitch: { step: string; alter?: number; octave: number } | null,
   dur: number,
@@ -114,6 +138,7 @@ function renderNote(
   tieStart: boolean,
   chord: boolean,
   indent: string,
+  durationType: Map<number, [string, boolean]>,
   staccato = false,
   /** When provided, emit a `<play-duration>` child so the parser can store the
    *  actual sounding length separately from the display duration (`dur`).
@@ -121,8 +146,11 @@ function renderNote(
    *  instead of the display duration, keeping highlight timing accurate when a
    *  second part has intermediate onsets that advance the cursor. */
   playbackDur?: number,
+  /** Set on grand-staff (merged) parts so the parser can route each note to
+   *  the correct staff; omitted for ordinary single-staff parts. */
+  staffNumber?: number,
 ): string {
-  const [type, dot] = DURATION_TYPE.get(dur) ?? ["quarter", false];
+  const [type, dot] = durationType.get(dur) ?? ["quarter", false];
   const i = indent;
   const lines: string[] = [`${i}<note>`];
   if (chord) {
@@ -153,6 +181,9 @@ function renderNote(
   if (dot) {
     lines.push(`${i}  <dot/>`);
   }
+  if (staffNumber !== undefined) {
+    lines.push(`${i}  <staff>${staffNumber}</staff>`);
+  }
   const hasNotations = (tieStop || tieStart || staccato) && pitch !== null;
   if (hasNotations) {
     lines.push(`${i}  <notations>`);
@@ -171,13 +202,14 @@ function renderNote(
   return lines.join("\n");
 }
 
-// Emit a grace note (appoggiatura or acciaccatura) — no <duration>, type is
-// always "eighth". slash=true adds `slash="yes"` to <grace/>.
+// Emit a grace note (appoggiatura or acciaccatura) — no `<duration>`, type is
+// always "eighth". slash=true adds `slash="yes"` to `<grace/>`.
 function renderGraceNote(
   pitch: { step: string; alter?: number; octave: number },
   slash: boolean,
   chord: boolean,
   indent: string,
+  staffNumber?: number,
 ): string {
   const i = indent;
   const lines: string[] = [`${i}<note>`];
@@ -193,6 +225,9 @@ function renderGraceNote(
   lines.push(`${i}    <octave>${pitch.octave}</octave>`);
   lines.push(`${i}  </pitch>`);
   lines.push(`${i}  <type>eighth</type>`);
+  if (staffNumber !== undefined) {
+    lines.push(`${i}  <staff>${staffNumber}</staff>`);
+  }
   lines.push(`${i}</note>`);
   return lines.join("\n");
 }
@@ -230,6 +265,89 @@ export interface TrackInfo {
   index: number;
   name: string;
   noteCount: number;
+}
+
+// The file's time signature (first `timeSignature` meta event found, latest
+// wins if it changes before any notes — mirrors the scan every conversion
+// already does), defaulting to 4/4.
+function detectTimeSignature(midiData: MidiData): {
+  num: number;
+  den: number;
+} {
+  let num = 4;
+  let den = 4;
+  for (const track of midiData.tracks) {
+    for (const ev of track) {
+      if (ev.type === "timeSignature") {
+        num = ev.numerator;
+        den = ev.denominator;
+      }
+    }
+  }
+  return { num, den };
+}
+
+/** The key signature that would apply at measure 1 if the file specifies one
+ *  via a `keySignature` meta event, or null if it doesn't (in which case
+ *  `convertMidiToMusicXml`'s `inferKey` option is the only way to get a
+ *  non-C-major key). Used by the import confirmation dialog to show what the
+ *  file specifies and to grey out the (otherwise ineffective) inference
+ *  toggle. */
+export function getMidiKeySignature(
+  midiData: MidiData,
+): { fifths: number; mode: string } | null {
+  const tpb = midiData.header.ticksPerBeat ?? 480;
+  const { num, den } = detectTimeSignature(midiData);
+  const ticksPerMeasure = (tpb * num * 4) / den;
+  const { byMeasure, hasExplicitKey } = collectKeyByMeasure(
+    midiData,
+    ticksPerMeasure,
+  );
+  return hasExplicitKey ? (byMeasure.get(0) ?? null) : null;
+}
+
+// Key names in circle-of-fifths order, fifths -7..7, index = fifths + 7.
+const MAJOR_KEY_NAMES = [
+  "Cb",
+  "Gb",
+  "Db",
+  "Ab",
+  "Eb",
+  "Bb",
+  "F",
+  "C",
+  "G",
+  "D",
+  "A",
+  "E",
+  "B",
+  "F#",
+  "C#",
+];
+const MINOR_KEY_NAMES = [
+  "ab",
+  "eb",
+  "bb",
+  "f",
+  "c",
+  "g",
+  "d",
+  "a",
+  "e",
+  "b",
+  "f#",
+  "c#",
+  "g#",
+  "d#",
+  "a#",
+];
+
+/** A human-readable key name for a fifths count + mode, e.g. `keySignatureName(1, "major")` → "G major". */
+export function keySignatureName(fifths: number, mode: string): string {
+  const clamped = Math.max(-7, Math.min(7, fifths));
+  const isMinor = mode === "minor";
+  const tonic = (isMinor ? MINOR_KEY_NAMES : MAJOR_KEY_NAMES)[clamped + 7];
+  return `${tonic} ${isMinor ? "minor" : "major"}`;
 }
 
 export function getMidiTracks(midiData: MidiData): TrackInfo[] {
@@ -282,10 +400,16 @@ function extractTrackNotes(track: MidiEvent[], tpb: number): RawNote[] {
 // Map each MIDI key-signature change to the measure it takes effect in. Key
 // changes in MIDI fall on (or are snapped down to) a measure boundary. Measure 0
 // always has an entry so the first measure's header can be emitted.
+// `hasExplicitKey` is false when the file carries no `keySignature` meta event
+// at all, i.e. `byMeasure` was filled in with the C-major default rather than
+// data from the file — the signal `inferKeyFifthsFromPitches` gates on.
 function collectKeyByMeasure(
   midiData: MidiData,
   ticksPerMeasure: number,
-): Map<number, { fifths: number; mode: string }> {
+): {
+  byMeasure: Map<number, { fifths: number; mode: string }>;
+  hasExplicitKey: boolean;
+} {
   const events: Array<{ tick: number; fifths: number; mode: string }> = [];
   for (const track of midiData.tracks) {
     let tick = 0;
@@ -310,7 +434,58 @@ function collectKeyByMeasure(
   if (!byMeasure.has(0)) {
     byMeasure.set(0, { fifths: 0, mode: "major" });
   }
-  return byMeasure;
+  return { byMeasure, hasExplicitKey: events.length > 0 };
+}
+
+// The seven pitch classes of a C-major scale (fifths=0); every other major
+// key's scale is this set transposed by its circle-of-fifths root.
+const MAJOR_SCALE_DEGREES = [0, 2, 4, 5, 7, 9, 11];
+
+function majorScalePitchClasses(fifths: number): Set<number> {
+  const root = (((fifths * 7) % 12) + 12) % 12;
+  return new Set(MAJOR_SCALE_DEGREES.map((degree) => (root + degree) % 12));
+}
+
+/**
+ * Infer a major-key signature (as a fifths count, -7..7) from pitch-class
+ * content, for MIDI files that carry no `keySignature` meta event. MIDI
+ * export from DAWs and keyboards routinely omits key metadata, so notation
+ * recovered without this falls back to C major and spells every accidental
+ * as a sharp regardless of the piece's actual key. This is a simple
+ * best-fit: for each of the 15 major keys, count how many sounding pitch
+ * classes fall outside its diatonic scale and pick the fewest mismatches,
+ * breaking ties toward fewer sharps/flats (closer to C). It does not
+ * attempt minor-key detection — every inferred key is reported as major.
+ */
+export function inferKeyFifthsFromPitches(noteNumbers: number[]): number {
+  if (noteNumbers.length === 0) {
+    return 0;
+  }
+  const pitchClassCounts = new Map<number, number>();
+  for (const n of noteNumbers) {
+    const pc = ((n % 12) + 12) % 12;
+    pitchClassCounts.set(pc, (pitchClassCounts.get(pc) ?? 0) + 1);
+  }
+
+  let best = 0;
+  let bestMismatches = Number.POSITIVE_INFINITY;
+  for (let fifths = -7; fifths <= 7; fifths++) {
+    const scale = majorScalePitchClasses(fifths);
+    let mismatches = 0;
+    for (const [pc, count] of pitchClassCounts) {
+      if (!scale.has(pc)) {
+        mismatches += count;
+      }
+    }
+    if (
+      mismatches < bestMismatches ||
+      (mismatches === bestMismatches && Math.abs(fifths) < Math.abs(best))
+    ) {
+      bestMismatches = mismatches;
+      best = fifths;
+    }
+  }
+  return best;
 }
 
 function detectClef(notes: RawNote[]): { sign: string; line: number } {
@@ -449,17 +624,23 @@ function detectGraceNotes(
   return { graces, regulars };
 }
 
-function buildPartMeasuresXml(
+// Quantize and split each raw note at barlines, then render one measure's
+// worth of `<note>`/`<backup>`-free body lines per measure — no `<attributes>`,
+// which the caller emits once (single-staff) or shared across two staves
+// (grand staff). `staffNumber`, when given, tags every note/rest `<staff>`.
+function buildMeasureBody(
   rawNotes: RawNote[],
   graceNotes: GraceNoteInfo[],
   tpb: number,
   timeSigNum: number,
   timeSigDen: number,
-  keyByMeasure: Map<number, { fifths: number; mode: string }>,
-  clef: { sign: string; line: number },
+  divisions: number,
+  durationType: Map<number, [string, boolean]>,
   numMeasures: number,
-): string[] {
-  const grid = tpb / 4;
+  staffNumber?: number,
+): string[][] {
+  const durations = standardDurations(durationType);
+  const grid = tpb / divisions;
   const snap = (t: number) => Math.round(t / grid) * grid;
   const quantized: RawNote[] = rawNotes.map((n) => {
     const s = snap(n.startTick);
@@ -488,11 +669,8 @@ function buildPartMeasuresXml(
     list.sort((a, b) => a.rawStartTick - b.rawStartTick);
   }
 
-  const measureXml: string[] = [];
   const ind = "    ";
-
-  const initialKey = keyByMeasure.get(0) ?? { fifths: 0, mode: "major" };
-  let runningFifths = initialKey.fifths;
+  const measures: string[][] = [];
 
   for (let m = 0; m < numMeasures; m++) {
     const mStart = m * ticksPerMeasure;
@@ -502,27 +680,6 @@ function buildPartMeasuresXml(
     );
     const lines: string[] = [];
 
-    if (m === 0) {
-      lines.push(
-        `${ind}<attributes>`,
-        `${ind}  <divisions>${DIVISIONS}</divisions>`,
-        `${ind}  <key><fifths>${initialKey.fifths}</fifths><mode>${initialKey.mode}</mode></key>`,
-        `${ind}  <time><beats>${timeSigNum}</beats><beat-type>${timeSigDen}</beat-type></time>`,
-        `${ind}  <clef><sign>${clef.sign}</sign><line>${clef.line}</line></clef>`,
-        `${ind}</attributes>`,
-      );
-    } else {
-      // Emit a key-only <attributes> block whenever the key signature changes
-      // at this measure (key changes in the MIDI fall on measure boundaries).
-      const k = keyByMeasure.get(m);
-      if (k && k.fifths !== runningFifths) {
-        lines.push(
-          `${ind}<attributes><key><fifths>${k.fifths}</fifths><mode>${k.mode}</mode></key></attributes>`,
-        );
-        runningFifths = k.fifths;
-      }
-    }
-
     let cursor = mStart;
     let i = 0;
 
@@ -530,8 +687,21 @@ function buildPartMeasuresXml(
       const startTick = mParts[i].startTick;
       if (startTick > cursor) {
         const restGrid = Math.round((startTick - cursor) / grid);
-        for (const d of decompose(restGrid)) {
-          lines.push(renderNote(null, d, false, false, false, ind));
+        for (const d of decompose(restGrid, durations)) {
+          lines.push(
+            renderNote(
+              null,
+              d,
+              false,
+              false,
+              false,
+              ind,
+              durationType,
+              false,
+              undefined,
+              staffNumber,
+            ),
+          );
         }
       }
 
@@ -571,6 +741,7 @@ function buildPartMeasuresXml(
                 slash,
                 gk > 0, // chord member for all but the first
                 ind,
+                staffNumber,
               ),
             );
           }
@@ -587,15 +758,13 @@ function buildPartMeasuresXml(
       // X position before the space-to-next-onset expires.
       const nextStartTick = j < mParts.length ? mParts[j].startTick : mEnd;
       const spaceGrid = Math.round((nextStartTick - startTick) / grid);
-      const displayDur = STANDARD_DURATIONS.find((d) => d <= spaceGrid) ?? 1;
+      const displayDur = durations.find((d) => d <= spaceGrid) ?? 1;
 
       // Actual quantized note duration (from MIDI durationTicks), capped to the
       // space available so it never exceeds the next onset.
       const actualDurGrid = Math.round(chord[0].durationTicks / grid);
       const rhythmicDur =
-        STANDARD_DURATIONS.find(
-          (d) => d <= Math.min(actualDurGrid, spaceGrid),
-        ) ?? 1;
+        durations.find((d) => d <= Math.min(actualDurGrid, spaceGrid)) ?? 1;
 
       for (let k = 0; k < chord.length; k++) {
         const p = chord[k];
@@ -620,8 +789,10 @@ function buildPartMeasuresXml(
             p.tieStart,
             k > 0,
             ind,
+            durationType,
             staccato,
             playbackDur,
+            staffNumber,
           ),
         );
       }
@@ -636,11 +807,93 @@ function buildPartMeasuresXml(
 
     if (cursor < mEnd) {
       const restGrid = Math.round((mEnd - cursor) / grid);
-      for (const d of decompose(restGrid)) {
-        lines.push(renderNote(null, d, false, false, false, ind));
+      for (const d of decompose(restGrid, durations)) {
+        lines.push(
+          renderNote(
+            null,
+            d,
+            false,
+            false,
+            false,
+            ind,
+            durationType,
+            false,
+            undefined,
+            staffNumber,
+          ),
+        );
       }
     }
 
+    measures.push(lines);
+  }
+
+  return measures;
+}
+
+// The key `<attributes>` change common to both single- and grand-staff parts:
+// a full block in measure 1, then a key-only block wherever the key changes.
+function keyAttributesLines(
+  m: number,
+  keyByMeasure: Map<number, { fifths: number; mode: string }>,
+  runningFifthsRef: { value: number },
+  ind: string,
+): string[] {
+  if (m > 0) {
+    const k = keyByMeasure.get(m);
+    if (k && k.fifths !== runningFifthsRef.value) {
+      runningFifthsRef.value = k.fifths;
+      return [
+        `${ind}<attributes><key><fifths>${k.fifths}</fifths><mode>${k.mode}</mode></key></attributes>`,
+      ];
+    }
+  }
+  return [];
+}
+
+function buildPartMeasuresXml(
+  rawNotes: RawNote[],
+  graceNotes: GraceNoteInfo[],
+  tpb: number,
+  timeSigNum: number,
+  timeSigDen: number,
+  divisions: number,
+  durationType: Map<number, [string, boolean]>,
+  keyByMeasure: Map<number, { fifths: number; mode: string }>,
+  clef: { sign: string; line: number },
+  numMeasures: number,
+): string[] {
+  const bodies = buildMeasureBody(
+    rawNotes,
+    graceNotes,
+    tpb,
+    timeSigNum,
+    timeSigDen,
+    divisions,
+    durationType,
+    numMeasures,
+  );
+
+  const ind = "    ";
+  const initialKey = keyByMeasure.get(0) ?? { fifths: 0, mode: "major" };
+  const runningFifths = { value: initialKey.fifths };
+  const measureXml: string[] = [];
+
+  for (let m = 0; m < numMeasures; m++) {
+    const lines: string[] = [];
+    if (m === 0) {
+      lines.push(
+        `${ind}<attributes>`,
+        `${ind}  <divisions>${divisions}</divisions>`,
+        `${ind}  <key><fifths>${initialKey.fifths}</fifths><mode>${initialKey.mode}</mode></key>`,
+        `${ind}  <time><beats>${timeSigNum}</beats><beat-type>${timeSigDen}</beat-type></time>`,
+        `${ind}  <clef><sign>${clef.sign}</sign><line>${clef.line}</line></clef>`,
+        `${ind}</attributes>`,
+      );
+    } else {
+      lines.push(...keyAttributesLines(m, keyByMeasure, runningFifths, ind));
+    }
+    lines.push(...bodies[m]);
     measureXml.push(
       `  <measure number="${m + 1}">\n${lines.join("\n")}\n  </measure>`,
     );
@@ -649,31 +902,129 @@ function buildPartMeasuresXml(
   return measureXml;
 }
 
-export function midiToMusicXmlWithTracks(
-  midiData: MidiData,
-  trackIndices: number[],
-): string {
-  const tpb = midiData.header.ticksPerBeat ?? 480;
+// A single piano part split across two staves (treble/bass) by pitch, the
+// shape `isEditableDocument` (editor/src/dom-edit.ts) recognizes as editable:
+// one `<backup>` per measure rewinding from staff 1 to staff 2.
+function buildGrandStaffMeasuresXml(
+  trebleNotes: RawNote[],
+  trebleGraces: GraceNoteInfo[],
+  bassNotes: RawNote[],
+  bassGraces: GraceNoteInfo[],
+  tpb: number,
+  timeSigNum: number,
+  timeSigDen: number,
+  divisions: number,
+  durationType: Map<number, [string, boolean]>,
+  keyByMeasure: Map<number, { fifths: number; mode: string }>,
+  numMeasures: number,
+): string[] {
+  const trebleBodies = buildMeasureBody(
+    trebleNotes,
+    trebleGraces,
+    tpb,
+    timeSigNum,
+    timeSigDen,
+    divisions,
+    durationType,
+    numMeasures,
+    1,
+  );
+  const bassBodies = buildMeasureBody(
+    bassNotes,
+    bassGraces,
+    tpb,
+    timeSigNum,
+    timeSigDen,
+    divisions,
+    durationType,
+    numMeasures,
+    2,
+  );
+  const measureDivisions = (divisions * timeSigNum * 4) / timeSigDen;
 
-  let timeSigNum = 4;
-  let timeSigDen = 4;
+  const ind = "    ";
+  const initialKey = keyByMeasure.get(0) ?? { fifths: 0, mode: "major" };
+  const runningFifths = { value: initialKey.fifths };
+  const measureXml: string[] = [];
 
-  for (const track of midiData.tracks) {
-    let tick = 0;
-    for (const ev of track) {
-      tick += ev.deltaTime;
-      if (ev.type === "timeSignature") {
-        timeSigNum = ev.numerator;
-        timeSigDen = ev.denominator;
-      }
+  for (let m = 0; m < numMeasures; m++) {
+    const lines: string[] = [];
+    if (m === 0) {
+      lines.push(
+        `${ind}<attributes>`,
+        `${ind}  <divisions>${divisions}</divisions>`,
+        `${ind}  <key><fifths>${initialKey.fifths}</fifths><mode>${initialKey.mode}</mode></key>`,
+        `${ind}  <time><beats>${timeSigNum}</beats><beat-type>${timeSigDen}</beat-type></time>`,
+        `${ind}  <staves>2</staves>`,
+        `${ind}  <clef number="1"><sign>G</sign><line>2</line></clef>`,
+        `${ind}  <clef number="2"><sign>F</sign><line>4</line></clef>`,
+        `${ind}</attributes>`,
+      );
+    } else {
+      lines.push(...keyAttributesLines(m, keyByMeasure, runningFifths, ind));
     }
+    lines.push(...trebleBodies[m]);
+    lines.push(
+      `${ind}<backup>`,
+      `${ind}  <duration>${measureDivisions}</duration>`,
+      `${ind}</backup>`,
+    );
+    lines.push(...bassBodies[m]);
+    measureXml.push(
+      `  <measure number="${m + 1}">\n${lines.join("\n")}\n  </measure>`,
+    );
   }
 
-  const grid = tpb / 4;
+  return measureXml;
+}
+
+// ── Import confirmation options ──────────────────────────────────────────────
+
+export interface MidiImportOptions {
+  /** Track indices (into `midiData.tracks`) to include. */
+  trackIndices: number[];
+  /** Quantization grid, as the denominator of the finest notated duration. */
+  quantizeGrid: QuantizeGrid;
+  /** Combine every selected track's notes into one piano part, split across
+   *  two staves by pitch at `splitPoint`, instead of one part per track. */
+  mergeTracks: boolean;
+  /** MIDI note number (60 = middle C): notes at or above go to the treble
+   *  staff, below go to the bass staff. Only used when `mergeTracks`. */
+  splitPoint: number;
+  /** When the MIDI file carries no `keySignature` meta event, infer a major
+   *  key from the selected tracks' pitch content instead of defaulting to C
+   *  major (see `inferKeyFifthsFromPitches`). */
+  inferKey: boolean;
+}
+
+export const DEFAULT_MIDI_IMPORT_OPTIONS: Omit<
+  MidiImportOptions,
+  "trackIndices"
+> = {
+  quantizeGrid: 16,
+  mergeTracks: false,
+  splitPoint: 60,
+  inferKey: true,
+};
+
+export function convertMidiToMusicXml(
+  midiData: MidiData,
+  options: MidiImportOptions,
+): string {
+  const { trackIndices, quantizeGrid, mergeTracks, splitPoint, inferKey } =
+    options;
+  const tpb = midiData.header.ticksPerBeat ?? 480;
+  const divisions = GRID_DIVISIONS[quantizeGrid];
+  const durationType = buildDurationType(divisions);
+  const { num: timeSigNum, den: timeSigDen } = detectTimeSignature(midiData);
+
+  const grid = tpb / divisions;
   const snap = (t: number) => Math.round(t / grid) * grid;
   const ticksPerMeasure = (tpb * timeSigNum * 4) / timeSigDen;
-  const keyByMeasure = collectKeyByMeasure(midiData, ticksPerMeasure);
-  const initialKey = keyByMeasure.get(0) ?? { fifths: 0, mode: "major" };
+  const { byMeasure: keyByMeasureRaw, hasExplicitKey } = collectKeyByMeasure(
+    midiData,
+    ticksPerMeasure,
+  );
 
   // Extract raw notes per track, then detect grace notes *before* quantization
   // so the short-duration ornament notes are identified from the true MIDI data.
@@ -682,31 +1033,85 @@ export function midiToMusicXmlWithTracks(
   );
 
   // Detect and remove grace notes from each track's raw notes, then quantize.
-  const trackGraceNotes = rawTrackNotes.map((raw) => {
-    const { graces, regulars } = detectGraceNotes(raw, tpb, ticksPerMeasure);
-    return { graces, regulars };
-  });
+  const trackGraceNotes = rawTrackNotes.map((raw) =>
+    detectGraceNotes(raw, tpb, ticksPerMeasure),
+  );
 
-  const trackNotes = trackGraceNotes.map(({ regulars }) =>
-    regulars.map((n) => {
+  const quantizeAll = (notes: RawNote[]) =>
+    notes.map((n) => {
       const s = snap(n.startTick);
       const e = Math.max(s + grid, snap(n.endTick));
       return { ...n, startTick: s, endTick: e };
-    }),
-  );
+    });
 
+  const trackNotes = trackGraceNotes.map(({ regulars }) =>
+    quantizeAll(regulars),
+  );
   const allNotes = trackNotes.flat();
+
+  // Key: explicit from the MIDI file if present; otherwise, when requested,
+  // inferred from the pitch content of the selected tracks. Falls back to C
+  // major (the `collectKeyByMeasure` default) either way.
+  let keyByMeasure = keyByMeasureRaw;
+  if (!hasExplicitKey && inferKey && allNotes.length > 0) {
+    const inferredFifths = inferKeyFifthsFromPitches(
+      allNotes.map((n) => n.noteNumber),
+    );
+    keyByMeasure = new Map(keyByMeasureRaw);
+    keyByMeasure.set(0, { fifths: inferredFifths, mode: "major" });
+  }
+  const initialKey = keyByMeasure.get(0) ?? { fifths: 0, mode: "major" };
+
   if (allNotes.length === 0) {
     return emptyScore(
       initialKey.fifths,
       initialKey.mode,
       timeSigNum,
       timeSigDen,
+      divisions,
     );
   }
 
   const totalTicks = Math.max(...allNotes.map((n) => n.endTick));
   const numMeasures = Math.ceil(totalTicks / ticksPerMeasure);
+
+  if (mergeTracks) {
+    // Merge selected tracks' raw (pre-quantized) notes and split by pitch
+    // into a two-staff piano part; grace-note detection runs once per staff
+    // pool so ornaments split correctly alongside their main note.
+    const mergedRaw = rawTrackNotes.flat();
+    const trebleRaw = mergedRaw.filter((n) => n.noteNumber >= splitPoint);
+    const bassRaw = mergedRaw.filter((n) => n.noteNumber < splitPoint);
+    const treble = detectGraceNotes(trebleRaw, tpb, ticksPerMeasure);
+    const bass = detectGraceNotes(bassRaw, tpb, ticksPerMeasure);
+
+    const measureXml = buildGrandStaffMeasuresXml(
+      quantizeAll(treble.regulars),
+      treble.graces,
+      quantizeAll(bass.regulars),
+      bass.graces,
+      tpb,
+      timeSigNum,
+      timeSigDen,
+      divisions,
+      durationType,
+      keyByMeasure,
+      numMeasures,
+    );
+
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.1 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="3.1">
+  <part-list>
+    <score-part id="P1">
+      <part-name>Piano</part-name>
+    </score-part>
+  </part-list>
+  <part id="P1">
+${measureXml.join("\n")}
+  </part>
+</score-partwise>`;
+  }
 
   const trackNames = getMidiTracks(midiData).reduce<Record<number, string>>(
     (acc, t) => {
@@ -724,6 +1129,8 @@ export function midiToMusicXmlWithTracks(
       tpb,
       timeSigNum,
       timeSigDen,
+      divisions,
+      durationType,
       keyByMeasure,
       clef,
       numMeasures,
@@ -757,17 +1164,34 @@ ${parts}
   return musicxml;
 }
 
+/** Back-compat convenience wrapper: one part per track, 16th-note grid, no
+ *  merge, no pitch-based key inference (matches this function's pre-options
+ *  behavior exactly). */
+export function midiToMusicXmlWithTracks(
+  midiData: MidiData,
+  trackIndices: number[],
+): string {
+  return convertMidiToMusicXml(midiData, {
+    trackIndices,
+    quantizeGrid: 16,
+    mergeTracks: false,
+    splitPoint: 60,
+    inferKey: false,
+  });
+}
+
 function emptyScore(
   keyFifths: number,
   keyMode: string,
   timeSigNum: number,
   timeSigDen: number,
+  divisions: number,
 ): string {
-  const fullMeasureDur = timeSigNum * DIVISIONS;
+  const fullMeasureDur = timeSigNum * divisions;
   return scoreTemplate(
     `  <measure number="1">
     <attributes>
-      <divisions>${DIVISIONS}</divisions>
+      <divisions>${divisions}</divisions>
       <key><fifths>${keyFifths}</fifths><mode>${keyMode}</mode></key>
       <time><beats>${timeSigNum}</beats><beat-type>${timeSigDen}</beat-type></time>
       <clef><sign>G</sign><line>2</line></clef>
