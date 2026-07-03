@@ -178,8 +178,8 @@ export function ImageImportDialog({
               ))}
             </select>
             <span style={hintStyle}>
-              WebGPU recognizes faster; WASM runs on the CPU and works
-              everywhere. Auto picks WebGPU when the browser supports it.
+              WebGPU is faster; WASM runs on the CPU and works everywhere. Auto
+              picks WebGPU when the browser supports it.
             </span>
           </label>
 
@@ -203,10 +203,10 @@ export function ImageImportDialog({
               ))}
             </select>
             <span style={hintStyle}>
-              Classical is fast and works well for clean scans and born-digital
-              PDFs; it falls back automatically when it can't find staves.
-              Choose Model for photos or skewed pages, where the classical
-              line-finder is less reliable.
+              Classical is fast and works well for clean scans and
+              computer-typeset scores; it falls back automatically when it can't
+              find staves. Choose Model for photos or skewed pages, where the
+              classical line-finder is less reliable.
             </span>
           </label>
         </div>
