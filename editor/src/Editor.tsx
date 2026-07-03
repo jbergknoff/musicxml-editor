@@ -90,6 +90,13 @@ import {
 } from "./hit-test";
 import type { ImportReview } from "./import-review";
 import {
+  type EmbeddedReviewPayload,
+  buildEmbeddedReviewPayload,
+  offsetEmbeddedReviewPayload,
+  readEmbeddedReview,
+  writeEmbeddedReview,
+} from "./import-review-persistence";
+import {
   type EditableMetadata,
   readMetadata,
   stampImportProvenance,
@@ -286,7 +293,7 @@ export function Editor() {
   // with the current document) — shown alongside the OMR status/error strip.
   const [appendError, setAppendError] = useState<string | null>(null);
   const [imageImportChoice, setImageImportChoice] = useState<ImageImportChoice>(
-    { backend: "auto", staffDetection: "classical" },
+    { backend: "auto", staffDetection: "classical", embedReviewData: true },
   );
   // Instant-scroll request for the sheet renderer: set the beat, bump the
   // generation. Used when the review panel steps the selection between systems.
@@ -1214,6 +1221,7 @@ export function Editor() {
       sourceFileName: string,
       midiTempo: number | null,
       review: ImportReview | null,
+      embeddedReviewPayload: EmbeddedReviewPayload | null = null,
     ) => {
       const doc = parseDocument(imported);
       // Stamp how/when/from-what the document was imported (conversions only).
@@ -1226,13 +1234,18 @@ export function Editor() {
       if (midiTempo !== null) {
         writeTempo(doc, midiTempo);
       }
+      if (embeddedReviewPayload) {
+        writeEmbeddedReview(doc, embeddedReviewPayload);
+      }
+      // A fresh OMR import opens its cleanup panel using the live review data;
+      // otherwise, fall back to whatever review data the opened file itself
+      // carries (from a previous session's "Embed review data" export).
+      const restoredReview = review ?? readEmbeddedReview(doc);
       history.reset(doc);
       setSelection(null);
       setMenu(null);
-      // An OMR import opens its cleanup panel; any other import clears the
-      // previous one (its regions describe a document no longer loaded).
-      setImportReview(review);
-      setReviewOpen(review !== null);
+      setImportReview(restoredReview);
+      setReviewOpen(restoredReview !== null);
     },
     [history],
   );
@@ -1244,7 +1257,12 @@ export function Editor() {
   // the editor's single-part shape or its staff count doesn't match the live
   // document's; a mismatched OMR/MIDI conversion has no other sensible target.
   const finishAppend = useCallback(
-    (imported: string, sourceFileName: string, review: ImportReview | null) => {
+    (
+      imported: string,
+      sourceFileName: string,
+      review: ImportReview | null,
+      embeddedReviewPayload: EmbeddedReviewPayload | null = null,
+    ) => {
       const result = appendScore(documentRef.current, imported);
       if (!result) {
         setAppendError(
@@ -1253,6 +1271,15 @@ export function Editor() {
         return;
       }
       setAppendError(null);
+      if (embeddedReviewPayload) {
+        writeEmbeddedReview(
+          documentRef.current,
+          offsetEmbeddedReviewPayload(
+            embeddedReviewPayload,
+            result.firstAppendedMeasureIndex,
+          ),
+        );
+      }
       commit();
       setSelection(null);
       setMenu(null);
@@ -1392,8 +1419,17 @@ export function Editor() {
       if (result === null) {
         return;
       }
+      const embeddedReviewPayload =
+        choice.embedReviewData && result.review
+          ? await buildEmbeddedReviewPayload(result.review)
+          : null;
       if (importMode === "append") {
-        finishAppend(result.musicXml, file.name, result.review);
+        finishAppend(
+          result.musicXml,
+          file.name,
+          result.review,
+          embeddedReviewPayload,
+        );
         return;
       }
       finishImport(
@@ -1402,6 +1438,7 @@ export function Editor() {
         file.name,
         null,
         result.review,
+        embeddedReviewPayload,
       );
     },
     [pendingImage, imageImport, finishImport, finishAppend],

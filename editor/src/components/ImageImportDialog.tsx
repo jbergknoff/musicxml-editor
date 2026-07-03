@@ -17,6 +17,12 @@ import { COLORS, FONTS, RADIUS } from "../theme";
 export interface ImageImportChoice {
   backend: BackendChoice;
   staffDetection: StaffDetectionMode;
+  /**
+   * Embed the source page crops + alignment data used by the review panel
+   * into the exported MusicXML, so a later session can reopen the file with
+   * the review panel restored. Inflates the file (a base64 PNG per system).
+   */
+  embedReviewData: boolean;
 }
 
 export interface ImageImportDialogProps {
@@ -49,6 +55,9 @@ export function ImageImportDialog({
   const [backend, setBackend] = useState<BackendChoice>(defaultChoice.backend);
   const [staffDetection, setStaffDetection] = useState<StaffDetectionMode>(
     defaultChoice.staffDetection,
+  );
+  const [embedReviewData, setEmbedReviewData] = useState(
+    defaultChoice.embedReviewData,
   );
   const dialogRef = useRef<HTMLDialogElement>(null);
 
@@ -209,6 +218,44 @@ export function ImageImportDialog({
               classical line-finder is less reliable.
             </span>
           </label>
+
+          {/* Embed review data */}
+          <label
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 8,
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={embedReviewData}
+              onChange={(event) =>
+                setEmbedReviewData(
+                  (event.currentTarget as HTMLInputElement).checked,
+                )
+              }
+              style={{ marginTop: 2 }}
+            />
+            <span>
+              <span
+                style={{
+                  display: "block",
+                  fontSize: 13,
+                  fontFamily: FONTS.ui,
+                  color: COLORS.textPrimary,
+                }}
+              >
+                Embed review data in the file
+              </span>
+              <span style={hintStyle}>
+                Saves the source page crops and measure alignment used by the
+                review panel into the exported MusicXML, so reopening the file
+                later restores review mode. Increases file size.
+              </span>
+            </span>
+          </label>
         </div>
 
         {/* Footer */}
@@ -239,7 +286,9 @@ export function ImageImportDialog({
           </button>
           <button
             type="button"
-            onClick={() => onConfirm({ backend, staffDetection })}
+            onClick={() =>
+              onConfirm({ backend, staffDetection, embedReviewData })
+            }
             style={{
               padding: "7px 16px",
               borderRadius: RADIUS.button,
