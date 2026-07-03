@@ -51,17 +51,21 @@ import {
 } from "./components/MidiImportDialog";
 import { ScoreHeader } from "./components/ScoreHeader";
 import {
+  type MeasureClipboard,
   type NoteHandle,
   addGraceNote,
   addNote,
   addNoteToChord,
   appendScore,
+  copyMeasures,
   createBlankDocument,
+  deleteMeasures,
   insertMeasure,
   isEditableDocument,
   maxNoteDuration,
   moveNote,
   parseDocument,
+  pasteMeasures,
   removeGraceNote,
   removeNotes,
   reorderGrace,
@@ -106,6 +110,7 @@ import {
 import {
   type NoteHighlight,
   type NoteType,
+  type ParsedScore,
   type Pitch,
   computeMeasureStartBeats,
   parseScore,
@@ -149,9 +154,19 @@ const BEATS_BY_TYPE: Record<NoteType, number> = {
 // may hold a chord OR a rest — or one focused note within a chord (Level 2). A
 // slot is identified by its position (measure + onset beat) so it survives edits
 // even when it holds no note (a rest carries no handle).
+// A measure-range selection (whole measures, no beat granularity) — the
+// target for copy/cut/paste and delete-measure. `startMeasureIndex` is the
+// shift-click/shift-arrow anchor; `endMeasureIndex` is the far end and may be
+// on either side of it.
 type Selection =
   | { kind: "slot"; partIndex: number; measureIndex: number; onsetBeat: number }
   | { kind: "note"; handle: NoteHandle }
+  | {
+      kind: "measureRange";
+      partIndex: number;
+      startMeasureIndex: number;
+      endMeasureIndex: number;
+    }
   | null;
 
 function sameHandle(a: NoteHandle, b: NoteHandle): boolean {
@@ -184,6 +199,41 @@ function focusedHandle(
   }
   if (slot && !slot.isRest && slot.handles.length === 1) {
     return slot.handles[0];
+  }
+  return null;
+}
+
+// The measure range a selection covers, recomputed against a given (fresh)
+// score rather than closed over — see `selectionRef`'s doc comment for why
+// copy/cut/paste read selection this way instead of via the `activeMeasureRange`
+// memo.
+function measureRangeForSelection(
+  selection: Selection,
+  freshScore: ParsedScore,
+): { partIndex: number; lo: number; hi: number } | null {
+  if (selection?.kind === "measureRange") {
+    return {
+      partIndex: selection.partIndex,
+      lo: Math.min(selection.startMeasureIndex, selection.endMeasureIndex),
+      hi: Math.max(selection.startMeasureIndex, selection.endMeasureIndex),
+    };
+  }
+  if (selection?.kind === "slot") {
+    return {
+      partIndex: selection.partIndex,
+      lo: selection.measureIndex,
+      hi: selection.measureIndex,
+    };
+  }
+  if (selection?.kind === "note") {
+    const info = chordInfoForHandle(freshScore, selection.handle);
+    return info
+      ? {
+          partIndex: info.partIndex,
+          lo: info.measureIndex,
+          hi: info.measureIndex,
+        }
+      : null;
   }
   return null;
 }
@@ -263,6 +313,17 @@ export function Editor() {
   const history = useHistory(createBlankDocument);
   const { documentRef, version, commit } = history;
   const [selection, setSelection] = useState<Selection>(null);
+  // Mirrors `selection`, but updated synchronously in the render body rather
+  // than via an effect. The global keydown listener is re-subscribed by a
+  // `useEffect` that only flushes after the *next* commit/paint — so two
+  // keyboard shortcuts fired back-to-back (e.g. Shift+→ to extend a measure
+  // range, immediately followed by ⌘X to cut it) can have the second one
+  // handled by a listener still closing over the selection from *before* the
+  // first one's state update. Copy/cut/paste read the range from this ref
+  // (always current) instead of the `activeMeasureRange` memo to avoid acting
+  // on that stale selection.
+  const selectionRef = useRef<Selection>(null);
+  selectionRef.current = selection;
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const imageImport = useImageImport();
@@ -299,6 +360,17 @@ export function Editor() {
   // generation. Used when the review panel steps the selection between systems.
   const snapBeatRef = useRef<number | null>(null);
   const [snapGeneration, setSnapGeneration] = useState(0);
+  // The measure a shift-click/shift-arrow range selection extends from — the
+  // "far end" moves with the gesture, this end stays put. Set on any plain
+  // (non-shift) tap that lands on a slot. Session-only, not part of Selection
+  // state since it outlives a collapse back to a single slot.
+  const anchorMeasureRef = useRef<{
+    partIndex: number;
+    measureIndex: number;
+  } | null>(null);
+  // Copy/cut/paste's in-memory clipboard (session-only, not the OS clipboard —
+  // see `MeasureClipboard`'s doc comment).
+  const [clipboard, setClipboard] = useState<MeasureClipboard | null>(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: version drives re-serialize after in-place mutations
   const musicxml = useMemo(
@@ -340,7 +412,7 @@ export function Editor() {
   // The slot (chord or rest) for the current selection. A slot selection
   // resolves by position; a drilled note resolves via its chord's onset.
   const slotInfo: SlotInfo | null = useMemo(() => {
-    if (!selection) {
+    if (!selection || selection.kind === "measureRange") {
       return null;
     }
     if (selection.kind === "slot") {
@@ -362,6 +434,44 @@ export function Editor() {
     () => focusedHandle(selection, slotInfo),
     [selection, slotInfo],
   );
+
+  // The measure range copy/cut/paste/delete-measure act on: an explicit
+  // measureRange selection, or (so these commands also work from an ordinary
+  // note/beat selection) the single measure the current slot/note sits in.
+  const activeMeasureRange = useMemo<{
+    partIndex: number;
+    lo: number;
+    hi: number;
+  } | null>(() => {
+    if (selection?.kind === "measureRange") {
+      return {
+        partIndex: selection.partIndex,
+        lo: Math.min(selection.startMeasureIndex, selection.endMeasureIndex),
+        hi: Math.max(selection.startMeasureIndex, selection.endMeasureIndex),
+      };
+    }
+    if (slotInfo) {
+      return {
+        partIndex: slotInfo.partIndex,
+        lo: slotInfo.measureIndex,
+        hi: slotInfo.measureIndex,
+      };
+    }
+    return null;
+  }, [selection, slotInfo]);
+
+  // Measure-range selection chrome: a tinted background over the selected
+  // measures (1-indexed, inclusive) — null outside a measureRange selection.
+  const measureFocusRange = useMemo(() => {
+    if (selection?.kind !== "measureRange") {
+      return null;
+    }
+    return {
+      from:
+        Math.min(selection.startMeasureIndex, selection.endMeasureIndex) + 1,
+      to: Math.max(selection.startMeasureIndex, selection.endMeasureIndex) + 1,
+    };
+  }, [selection]);
 
   // The inspector model + the parallel top-first handle list it indexes into.
   // A rest slot yields an empty note list, which the Inspector renders as
@@ -540,7 +650,7 @@ export function Editor() {
   // narrow to one note on a repeat tap on a notehead. A tap that resolves to no
   // slot (off the staff) clears the selection — it never inserts a note.
   const handleTap = useCallback(
-    (gesture: EditorGesture) => {
+    (gesture: EditorGesture, event: PointerEvent) => {
       setMenu(null);
       if (!editable) {
         return;
@@ -552,8 +662,26 @@ export function Editor() {
         : slotAtBeat(score, gesture.beat, 1.5, gesture.partIndex);
       if (!slot) {
         setSelection(null);
+        anchorMeasureRef.current = null;
         return;
       }
+      // Shift-click extends a measure-range selection from the last plain
+      // (non-shift) tap's measure to this one's — text-editor-style range
+      // selection, at measure granularity.
+      const anchor = anchorMeasureRef.current;
+      if (event.shiftKey && anchor && anchor.partIndex === slot.partIndex) {
+        setSelection({
+          kind: "measureRange",
+          partIndex: slot.partIndex,
+          startMeasureIndex: anchor.measureIndex,
+          endMeasureIndex: slot.measureIndex,
+        });
+        return;
+      }
+      anchorMeasureRef.current = {
+        partIndex: slot.partIndex,
+        measureIndex: slot.measureIndex,
+      };
       setSelection((prev) => {
         const onThisSlot =
           sameSlot(prev, slot) ||
@@ -924,7 +1052,56 @@ export function Editor() {
     commit();
   }, [editable, slotInfo, documentRef, commit]);
 
+  // Delete the measures [range.lo, range.hi] and reselect the slot that now
+  // occupies that position (shared tail of both delete-measure and cut).
+  const deleteMeasureRange = useCallback(
+    (range: { partIndex: number; lo: number; hi: number }) => {
+      if (!editable) {
+        return;
+      }
+      const nextIndex = deleteMeasures(documentRef.current, range.lo, range.hi);
+      setMenu(null);
+      commit();
+      anchorMeasureRef.current = null;
+      if (nextIndex === null) {
+        setSelection(null);
+        return;
+      }
+      const freshScore = parseScore(serializeDocument(documentRef.current));
+      const beat = computeMeasureStartBeats(freshScore)[nextIndex];
+      const slot =
+        beat !== undefined
+          ? slotAtBeat(freshScore, beat, 0.5, range.partIndex)
+          : null;
+      setSelection(
+        slot
+          ? {
+              kind: "slot",
+              partIndex: slot.partIndex,
+              measureIndex: slot.measureIndex,
+              onsetBeat: slot.onsetBeat,
+            }
+          : null,
+      );
+    },
+    [editable, documentRef, commit],
+  );
+
   const deleteSelection = useCallback(() => {
+    if (!editable) {
+      return;
+    }
+    // Reads `selectionRef` fresh (see its doc comment) so a Delete fired
+    // immediately after a Shift+←/→ range-extend can't act on a stale range.
+    if (selectionRef.current?.kind === "measureRange") {
+      const sel = selectionRef.current;
+      deleteMeasureRange({
+        partIndex: sel.partIndex,
+        lo: Math.min(sel.startMeasureIndex, sel.endMeasureIndex),
+        hi: Math.max(sel.startMeasureIndex, sel.endMeasureIndex),
+      });
+      return;
+    }
     if (!selection || !slotInfo) {
       return;
     }
@@ -939,7 +1116,87 @@ export function Editor() {
     setMenu(null);
     commit();
     reselectSlotAt(onsetBeat, slotInfo.partIndex);
-  }, [commit, documentRef, selection, slotInfo, reselectSlotAt]);
+  }, [
+    editable,
+    selection,
+    slotInfo,
+    deleteMeasureRange,
+    commit,
+    documentRef,
+    reselectSlotAt,
+  ]);
+
+  // Copy the active measure range (an explicit measureRange selection, or the
+  // single measure a note/beat selection sits in) into the session clipboard.
+  // Reads `selectionRef` + a freshly parsed score rather than the closed-over
+  // `activeMeasureRange` memo (see `selectionRef`'s doc comment).
+  const copyMeasureSelection = useCallback(() => {
+    if (!editable) {
+      return;
+    }
+    const freshScore = parseScore(serializeDocument(documentRef.current));
+    const range = measureRangeForSelection(selectionRef.current, freshScore);
+    if (!range) {
+      return;
+    }
+    const clip = copyMeasures(documentRef.current, range.lo, range.hi);
+    if (clip) {
+      setClipboard(clip);
+    }
+  }, [editable, documentRef]);
+
+  const cutMeasureSelection = useCallback(() => {
+    if (!editable) {
+      return;
+    }
+    const freshScore = parseScore(serializeDocument(documentRef.current));
+    const range = measureRangeForSelection(selectionRef.current, freshScore);
+    if (!range) {
+      return;
+    }
+    const clip = copyMeasures(documentRef.current, range.lo, range.hi);
+    if (!clip) {
+      return;
+    }
+    setClipboard(clip);
+    deleteMeasureRange(range);
+  }, [editable, documentRef, deleteMeasureRange]);
+
+  // Insert the clipboard's measures before the active selection's first
+  // measure (or at the end of the piece with no selection), then select the
+  // pasted range so it's obvious what landed and ready for another paste/cut.
+  const pasteMeasureSelection = useCallback(() => {
+    if (!editable || !clipboard) {
+      return;
+    }
+    const freshScore = parseScore(serializeDocument(documentRef.current));
+    const range = measureRangeForSelection(selectionRef.current, freshScore);
+    const atIndex = range?.lo ?? freshScore.parts[0]?.measures.length ?? 0;
+    const partIndex = range?.partIndex ?? 0;
+    const result = pasteMeasures(documentRef.current, atIndex, clipboard);
+    if (!result) {
+      return;
+    }
+    setMenu(null);
+    commit();
+    anchorMeasureRef.current = {
+      partIndex,
+      measureIndex: result.firstPastedIndex,
+    };
+    setSelection({
+      kind: "measureRange",
+      partIndex,
+      startMeasureIndex: result.firstPastedIndex,
+      endMeasureIndex: result.firstPastedIndex + result.pastedCount - 1,
+    });
+    const postPasteScore = parseScore(serializeDocument(documentRef.current));
+    const beat =
+      computeMeasureStartBeats(postPasteScore)[result.firstPastedIndex];
+    if (beat !== undefined) {
+      snapBeatRef.current = beat;
+      setSnapGeneration((generation) => generation + 1);
+    }
+  }, [editable, clipboard, documentRef, commit]);
 
   // ── Selection navigation (keyboard) ─────────────────────────────────────────
 
@@ -1050,6 +1307,49 @@ export function Editor() {
     [score, slotInfo],
   );
 
+  // Shift+←/→: grow or shrink a measure-range selection by one measure, away
+  // from (or back toward) the shift-click/shift-arrow anchor — the keyboard
+  // counterpart of shift-click range selection. Starting from a slot/note
+  // selection, the current slot's measure becomes the anchor.
+  const extendMeasureRange = useCallback(
+    (dir: number) => {
+      const measureCount = score.parts[0]?.measures.length ?? 0;
+      if (measureCount === 0) {
+        return;
+      }
+      setSelection((prev) => {
+        if (prev?.kind === "measureRange") {
+          const anchor =
+            anchorMeasureRef.current?.partIndex === prev.partIndex
+              ? anchorMeasureRef.current.measureIndex
+              : prev.startMeasureIndex;
+          const far =
+            prev.startMeasureIndex === anchor
+              ? prev.endMeasureIndex
+              : prev.startMeasureIndex;
+          const next = Math.max(0, Math.min(measureCount - 1, far + dir));
+          return {
+            kind: "measureRange",
+            partIndex: prev.partIndex,
+            startMeasureIndex: anchor,
+            endMeasureIndex: next,
+          };
+        }
+        const partIndex = slotInfo?.partIndex ?? 0;
+        const base = slotInfo?.measureIndex ?? 0;
+        anchorMeasureRef.current = { partIndex, measureIndex: base };
+        const next = Math.max(0, Math.min(measureCount - 1, base + dir));
+        return {
+          kind: "measureRange",
+          partIndex,
+          startMeasureIndex: base,
+          endMeasureIndex: next,
+        };
+      });
+    },
+    [score, slotInfo],
+  );
+
   // ↑/↓: at Level 2 step the note (Shift = octave); at Level <2 drill in.
   const arrowPitch = useCallback(
     (dir: number, shift: boolean) => {
@@ -1106,6 +1406,21 @@ export function Editor() {
         redo();
         return;
       }
+      if (mod && (event.key === "c" || event.key === "C")) {
+        event.preventDefault();
+        copyMeasureSelection();
+        return;
+      }
+      if (mod && (event.key === "x" || event.key === "X")) {
+        event.preventDefault();
+        cutMeasureSelection();
+        return;
+      }
+      if (mod && (event.key === "v" || event.key === "V")) {
+        event.preventDefault();
+        pasteMeasureSelection();
+        return;
+      }
       if (mod) {
         return;
       }
@@ -1156,11 +1471,19 @@ export function Editor() {
           return;
         case "ArrowLeft":
           event.preventDefault();
-          navBeat(-1);
+          if (event.shiftKey) {
+            extendMeasureRange(-1);
+          } else {
+            navBeat(-1);
+          }
           return;
         case "ArrowRight":
           event.preventDefault();
-          navBeat(1);
+          if (event.shiftKey) {
+            extendMeasureRange(1);
+          } else {
+            navBeat(1);
+          }
           return;
         case "ArrowUp":
           event.preventDefault();
@@ -1189,7 +1512,11 @@ export function Editor() {
       }
 
       const upper = key.length === 1 ? key.toUpperCase() : "";
-      if ("ABCDEFG".includes(upper)) {
+      // "".includes("") is true, so an empty `upper` (any multi-character key
+      // name — Shift, CapsLock, Home, …) must be excluded explicitly, or a
+      // bare modifier-key press (e.g. holding Shift for a shift-click) would
+      // silently add a bogus empty-pitch chord note.
+      if (upper !== "" && "ABCDEFG".includes(upper)) {
         event.preventDefault();
         addLetter(upper as Pitch["step"]);
       }
@@ -1205,11 +1532,15 @@ export function Editor() {
     cycleChord,
     deleteSelection,
     navBeat,
+    extendMeasureRange,
     arrowPitch,
     accidentalOnFocus,
     addLetter,
     undo,
     redo,
+    copyMeasureSelection,
+    cutMeasureSelection,
+    pasteMeasureSelection,
   ]);
 
   // Shared tail of every import path: parse, stamp provenance, load into
@@ -1481,7 +1812,10 @@ export function Editor() {
 
   // Context-menu items act on the current selection.
   const canNudge = focused !== null;
-  const canDelete = hasSelection && (slotInfo ? !slotInfo.isRest : true);
+  const isMeasureRangeSelection = selection?.kind === "measureRange";
+  const canDelete =
+    isMeasureRangeSelection ||
+    (hasSelection && (slotInfo ? !slotInfo.isRest : true));
   const menuItems: ContextMenuItem[] = [
     {
       label: "Move up",
@@ -1506,7 +1840,26 @@ export function Editor() {
       onSelect: () => addNoteAtSlot(),
       disabled: !slotInfo,
     },
-    { label: "Delete", onSelect: deleteSelection, disabled: !canDelete },
+    {
+      label: "Copy measure(s)",
+      onSelect: copyMeasureSelection,
+      disabled: !activeMeasureRange,
+    },
+    {
+      label: "Cut measure(s)",
+      onSelect: cutMeasureSelection,
+      disabled: !activeMeasureRange,
+    },
+    {
+      label: "Paste measure(s)",
+      onSelect: pasteMeasureSelection,
+      disabled: !clipboard,
+    },
+    {
+      label: isMeasureRangeSelection ? "Delete measure(s)" : "Delete",
+      onSelect: deleteSelection,
+      disabled: !canDelete,
+    },
   ];
 
   // Accidental toolbar buttons act on the drilled note.
@@ -1526,13 +1879,20 @@ export function Editor() {
       fontSize: 15,
     }) as const;
 
-  const selectionReadout = slotInfo
-    ? slotInfo.isRest
-      ? `Sel: m.${slotInfo.measureIndex + 1} · rest`
-      : `Sel: m.${slotInfo.measureIndex + 1} · ${slotInfo.notes.length} ${
-          slotInfo.notes.length === 1 ? "note" : "notes"
+  const selectionReadout =
+    selection?.kind === "measureRange"
+      ? `Sel: m.${
+          Math.min(selection.startMeasureIndex, selection.endMeasureIndex) + 1
+        }–${
+          Math.max(selection.startMeasureIndex, selection.endMeasureIndex) + 1
         }`
-    : "No selection";
+      : slotInfo
+        ? slotInfo.isRest
+          ? `Sel: m.${slotInfo.measureIndex + 1} · rest`
+          : `Sel: m.${slotInfo.measureIndex + 1} · ${slotInfo.notes.length} ${
+              slotInfo.notes.length === 1 ? "note" : "notes"
+            }`
+        : "No selection";
 
   return (
     <div
@@ -1599,6 +1959,36 @@ export function Editor() {
         >
           Delete
         </button>
+        <span
+          style={{ width: 1, height: 22, background: COLORS.borderLight }}
+        />
+        <button
+          type="button"
+          onClick={copyMeasureSelection}
+          disabled={!editable || !activeMeasureRange}
+          title="Copy the selected measure(s)"
+          style={toolbarButtonStyle(editable && activeMeasureRange !== null)}
+        >
+          Copy
+        </button>
+        <button
+          type="button"
+          onClick={cutMeasureSelection}
+          disabled={!editable || !activeMeasureRange}
+          title="Cut the selected measure(s)"
+          style={toolbarButtonStyle(editable && activeMeasureRange !== null)}
+        >
+          Cut
+        </button>
+        <button
+          type="button"
+          onClick={pasteMeasureSelection}
+          disabled={!editable || !clipboard}
+          title="Paste measure(s) before the current selection"
+          style={toolbarButtonStyle(editable && clipboard !== null)}
+        >
+          Paste
+        </button>
         {/* Scoped to the current file: appends onto the end of the live
             document (e.g. a series of page screenshots that should all land
             in one score) rather than replacing it. Undoable like any other
@@ -1647,6 +2037,19 @@ export function Editor() {
           style={toolbarButtonStyle(editable)}
         >
           + Measure
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (activeMeasureRange) {
+              deleteMeasureRange(activeMeasureRange);
+            }
+          }}
+          disabled={!editable || !activeMeasureRange}
+          title="Delete the selected measure(s)"
+          style={toolbarButtonStyle(editable && activeMeasureRange !== null)}
+        >
+          − Measure
         </button>
         <span style={{ flex: 1 }} />
         {dirty ? (
@@ -1738,11 +2141,12 @@ export function Editor() {
           flexWrap: "wrap",
         }}
       >
-        <span>Click: select beat</span>
+        <span>Click: select beat · ⇧Click: select measures</span>
         <span>Enter: drill in · Esc: out</span>
         <span>↑↓: pitch (⇧ octave)</span>
-        <span>←→: beat · Tab: cycle</span>
+        <span>←→: beat · ⇧←→: measures · Tab: cycle</span>
         <span>A–G: add · −/=/0: ♭♯♮</span>
+        <span>⌘C/X/V: copy/cut/paste measures</span>
         <span>Space: listen</span>
       </div>
 
@@ -1814,6 +2218,8 @@ export function Editor() {
               snapBeatRef={snapBeatRef}
               snapGeneration={snapGeneration}
               fitContent={reviewVisible}
+              focusRange={measureFocusRange}
+              focusColor={COLORS.accentHighlight}
             />
           </div>
           {reviewVisible && importReview !== null ? (

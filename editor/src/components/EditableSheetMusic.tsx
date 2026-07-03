@@ -108,6 +108,8 @@ export function EditableSheetMusic({
   snapBeatRef,
   snapGeneration,
   fitContent = false,
+  focusRange,
+  focusColor,
 }: {
   musicxml: string;
   noteHighlights?: ReadonlyArray<NoteHighlight>;
@@ -138,6 +140,12 @@ export function EditableSheetMusic({
    * parent — used while the import-review panel sits directly below the music.
    */
   fitContent?: boolean;
+  /** Tinted background over a measure range (1-indexed, inclusive) — the
+   *  measure-range selection's chrome. No `onFocusRangeChange` is passed
+   *  through, so this never grows the renderer's draggable scrubber pills. */
+  focusRange?: { from: number; to: number } | null;
+  /** Fill color for `focusRange`. */
+  focusColor?: string;
 }) {
   return (
     <SheetMusicDisplay
@@ -152,6 +160,8 @@ export function EditableSheetMusic({
       focusNoteId={focusNoteId}
       snapBeatRef={snapBeatRef}
       snapGeneration={snapGeneration}
+      focusRange={focusRange}
+      focusColor={focusColor}
       // Allow horizontal pan: a plain drag scrolls rather than edits.
       containerStyle={{
         touchAction: "pan-x",

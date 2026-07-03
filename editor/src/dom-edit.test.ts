@@ -6,12 +6,15 @@ import {
   addNote,
   addNoteToChord,
   appendScore,
+  copyMeasures,
   createBlankDocument,
+  deleteMeasures,
   insertMeasure,
   isEditableDocument,
   maxNoteDuration,
   moveNote,
   parseDocument,
+  pasteMeasures,
   removeNote,
   removeNotes,
   serializeDocument,
@@ -796,6 +799,200 @@ describe("insertMeasure", () => {
     // The note that was in measure index 1 is now in measure index 2.
     expect(placed.length).toBe(1);
     expect(placed[0].measureIndex).toBe(2);
+  });
+});
+
+describe("copy/cut/paste measures", () => {
+  test("copyMeasures serializes the requested range", () => {
+    const doc = createBlankDocument({ measureCount: 3 });
+    addNote(doc, {
+      measureIndex: 1,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+    });
+    const clip = copyMeasures(doc, 1, 2);
+    expect(clip).not.toBeNull();
+    expect(clip?.measuresXml.length).toBe(2);
+    expect(clip?.measuresXml[0]).toContain("<step>E</step>");
+    expect(clip?.divisionsPerQuarter).toBe(4);
+    expect(clip?.staffCount).toBe(1);
+  });
+
+  test("copyMeasures accepts either index order and clamps to bounds", () => {
+    const doc = createBlankDocument({ measureCount: 3 });
+    expect(copyMeasures(doc, 2, 0)?.measuresXml.length).toBe(3);
+    expect(copyMeasures(doc, -5, 100)?.measuresXml.length).toBe(3);
+  });
+
+  test("copyMeasures returns null on an empty document", () => {
+    const doc = parseDocument(
+      `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
+  <part id="P1"></part>
+</score-partwise>`,
+    );
+    expect(copyMeasures(doc, 0, 0)).toBeNull();
+  });
+
+  test("deleteMeasures removes the range and renumbers", () => {
+    const doc = createBlankDocument({ measureCount: 4 });
+    addNote(doc, {
+      measureIndex: 3,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "G", alter: 0, octave: 5 },
+    });
+    const nextIndex = deleteMeasures(doc, 1, 2);
+    expect(nextIndex).toBe(1);
+
+    const score = reparse(doc);
+    expect(score.parts[0].measures.length).toBe(2);
+    expect(score.parts[0].measures.map((m) => m.number)).toEqual([1, 2]);
+    // The note originally in measure index 3 is now in measure index 1.
+    const placed = chords(score);
+    expect(placed.length).toBe(1);
+    expect(placed[0].measureIndex).toBe(1);
+  });
+
+  test("deleteMeasures never empties the part", () => {
+    const doc = createBlankDocument({ measureCount: 3 });
+    const nextIndex = deleteMeasures(doc, 0, 2);
+    expect(nextIndex).toBe(0);
+    expect(reparse(doc).parts[0].measures.length).toBe(1);
+  });
+
+  test("deleteMeasures returns null on an already-empty document", () => {
+    const doc = parseDocument(
+      `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
+  <part id="P1"></part>
+</score-partwise>`,
+    );
+    expect(deleteMeasures(doc, 0, 0)).toBeNull();
+  });
+
+  test("pasteMeasures inserts before the target index and renumbers", () => {
+    const doc = createBlankDocument({ measureCount: 2 });
+    const clipSource = createBlankDocument({ measureCount: 1 });
+    addNote(clipSource, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "A", alter: 0, octave: 4 },
+    });
+    const clip = copyMeasures(clipSource, 0, 0);
+    expect(clip).not.toBeNull();
+    if (!clip) {
+      return;
+    }
+
+    const result = pasteMeasures(doc, 1, clip);
+    expect(result).toEqual({ firstPastedIndex: 1, pastedCount: 1 });
+
+    const score = reparse(doc);
+    expect(score.parts[0].measures.length).toBe(3);
+    expect(score.parts[0].measures.map((m) => m.number)).toEqual([1, 2, 3]);
+    const placed = chords(score);
+    expect(placed.length).toBe(1);
+    expect(placed[0].measureIndex).toBe(1);
+    expect(placed[0].chord.notes[0].pitch).toEqual({
+      step: "A",
+      alter: 0,
+      octave: 4,
+    });
+  });
+
+  test("pasteMeasures appends when the target index is past the end", () => {
+    const doc = createBlankDocument({ measureCount: 1 });
+    const clip = copyMeasures(doc, 0, 0);
+    expect(clip).not.toBeNull();
+    if (!clip) {
+      return;
+    }
+    const result = pasteMeasures(doc, 99, clip);
+    expect(result).toEqual({ firstPastedIndex: 1, pastedCount: 1 });
+    expect(reparse(doc).parts[0].measures.length).toBe(2);
+  });
+
+  test("pasteMeasures rescales divisions to match the target document", () => {
+    const doc = createBlankDocument({ measureCount: 1 }); // divisions = 4
+    const imported = parseDocument(
+      `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>24</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>24</duration><type>quarter</type></note>
+      <note><rest/><duration>72</duration></note>
+    </measure>
+  </part>
+</score-partwise>`,
+    );
+    const clip = copyMeasures(imported, 0, 0);
+    expect(clip).not.toBeNull();
+    if (!clip) {
+      return;
+    }
+    const result = pasteMeasures(doc, 1, clip);
+    expect(result).toEqual({ firstPastedIndex: 1, pastedCount: 1 });
+    const score = reparse(doc);
+    const placed = chords(score);
+    expect(placed.length).toBe(1);
+    expect(placed[0].chord.duration).toBe(4);
+  });
+
+  test("pasteMeasures refuses a staff-count mismatch", () => {
+    const doc = createBlankDocument(); // single staff
+    const rondo = readFileSync(
+      fileURLToPath(
+        new URL(
+          "./__fixtures__/rondo-alla-turca-clip.musicxml",
+          import.meta.url,
+        ),
+      ),
+      "utf8",
+    ); // grand staff
+    const grandStaffDoc = parseDocument(rondo);
+    const clip = copyMeasures(grandStaffDoc, 0, 0);
+    expect(clip).not.toBeNull();
+    if (!clip) {
+      return;
+    }
+    expect(pasteMeasures(doc, 0, clip)).toBeNull();
+  });
+
+  test("copy then paste round-trips a note's expression children", () => {
+    const doc = createBlankDocument({ measureCount: 2 });
+    const handle = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    expect(handle).not.toBeNull();
+    if (handle) {
+      toggleTie(doc, handle); // ties to nothing yet, but exercise a real edit first
+    }
+    const clip = copyMeasures(doc, 0, 0);
+    expect(clip).not.toBeNull();
+    if (!clip) {
+      return;
+    }
+    const result = pasteMeasures(doc, 2, clip);
+    expect(result).toEqual({ firstPastedIndex: 2, pastedCount: 1 });
+    const score = reparse(doc);
+    expect(score.parts[0].measures.length).toBe(3);
+    const placed = chords(score);
+    expect(placed.map((p) => p.measureIndex)).toEqual([0, 2]);
   });
 });
 
