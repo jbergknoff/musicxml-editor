@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, type Page, test } from "@playwright/test";
+import { type Page, expect, test } from "@playwright/test";
 
 // Integration tests for slot-based (spine) selection: selection is a *position*
 // on the rhythm spine — a chord OR a rest — so ←/→ walks every slot (rests and
@@ -79,7 +79,7 @@ test("→ walks rest slots across empty measures", async ({ page }) => {
 });
 
 test("→ reaches the trailing rest of an imported measure", async ({ page }) => {
-  await page.locator('input[type="file"]').setInputFiles(SINGLE_STAFF);
+  await page.locator('input[type="file"]').first().setInputFiles(SINGLE_STAFF);
   await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
   const aside = page.locator("aside");
 
@@ -99,7 +99,7 @@ test("→ reaches the trailing rest of an imported measure", async ({ page }) =>
 test("clicking a rest then typing a letter inserts a quarter note there", async ({
   page,
 }) => {
-  await page.locator('input[type="file"]').setInputFiles(SINGLE_STAFF);
+  await page.locator('input[type="file"]').first().setInputFiles(SINGLE_STAFF);
   await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
   expect(noteSequence(await exportXml(page))).toEqual([
     "C5",

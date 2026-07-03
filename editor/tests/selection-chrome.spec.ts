@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, type Page, test } from "@playwright/test";
+import { type Page, expect, test } from "@playwright/test";
 
 // Integration tests for the selection overlay chrome (PR #28):
 //   - Level 1 beat-box: a tinted rect column over the selected beat.
@@ -28,7 +28,7 @@ async function exportXml(page: Page): Promise<string> {
 }
 
 async function loadFile(page: Page, path: string): Promise<void> {
-  await page.locator('input[type="file"]').setInputFiles(path);
+  await page.locator('input[type="file"]').first().setInputFiles(path);
   await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
 }
 

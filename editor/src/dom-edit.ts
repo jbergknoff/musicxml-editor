@@ -1865,3 +1865,131 @@ export function insertMeasure(
   });
   return index + 1;
 }
+
+// ── Copy / cut / paste measure ranges ─────────────────────────────────────────
+
+// A copied measure range: each measure's serialized XML plus enough context
+// (source divisions, staff count) to paste it faithfully into a different
+// document. Session-only (held in Editor state), not the OS clipboard — so a
+// paste only round-trips within this tab, but needs no clipboard permissions
+// and carries full MusicXML fidelity (ties/articulations/etc. survive).
+export interface MeasureClipboard {
+  measuresXml: string[];
+  divisionsPerQuarter: number;
+  staffCount: number;
+}
+
+// Copy measures [startIndex, endIndex] (inclusive, either order) as a
+// clipboard payload, or null if the range is empty/out of bounds.
+export function copyMeasures(
+  doc: Document,
+  startIndex: number,
+  endIndex: number,
+): MeasureClipboard | null {
+  const measures = measuresOf(doc);
+  const lo = Math.max(0, Math.min(startIndex, endIndex));
+  const hi = Math.min(measures.length - 1, Math.max(startIndex, endIndex));
+  if (measures.length === 0 || lo > hi) {
+    return null;
+  }
+  const { divisions } = measureMetrics(doc);
+  const serializer = new XMLSerializer();
+  return {
+    measuresXml: measures
+      .slice(lo, hi + 1)
+      .map((measureEl) => serializer.serializeToString(measureEl)),
+    divisionsPerQuarter: divisions,
+    staffCount: staffCountOf(doc),
+  };
+}
+
+// Delete measures [startIndex, endIndex] (inclusive, either order), then
+// renumber. Always leaves at least one measure: a range spanning the whole
+// part drops its last measure from the deletion instead, since an empty part
+// has no sensible blank state to fall back to. Returns the index to reselect
+// (the measure that now sits at `lo`, clamped to the new measure count), or
+// null if the part has no measures / nothing survives to select.
+export function deleteMeasures(
+  doc: Document,
+  startIndex: number,
+  endIndex: number,
+): number | null {
+  const part = doc.querySelector("part");
+  const measures = measuresOf(doc);
+  if (!part || measures.length === 0) {
+    return null;
+  }
+  const lo = Math.max(0, Math.min(startIndex, endIndex));
+  let hi = Math.min(measures.length - 1, Math.max(startIndex, endIndex));
+  if (hi - lo + 1 >= measures.length) {
+    hi -= 1;
+  }
+  if (hi < lo) {
+    return null;
+  }
+  for (const measureEl of measures.slice(lo, hi + 1)) {
+    part.removeChild(measureEl);
+  }
+  const remaining = measuresOf(doc);
+  remaining.forEach((measureEl, i) => {
+    measureEl.setAttribute("number", String(i + 1));
+  });
+  return remaining.length === 0 ? null : Math.min(lo, remaining.length - 1);
+}
+
+// Insert a copied measure range before `atIndex` (append at the end when
+// `atIndex` is past the last measure), rescaling divisions to match this
+// document — the same transplant `appendScore` does. Returns null when the
+// clipboard's staff count doesn't match this document's (a grand-staff clip
+// can't paste into a single-staff score, or vice versa) or the clipboard is
+// empty.
+export function pasteMeasures(
+  doc: Document,
+  atIndex: number,
+  clipboard: MeasureClipboard,
+): { firstPastedIndex: number; pastedCount: number } | null {
+  const part = doc.querySelector("part");
+  if (!part || clipboard.measuresXml.length === 0) {
+    return null;
+  }
+  if (staffCountOf(doc) !== clipboard.staffCount) {
+    return null;
+  }
+  const { divisions: targetDivisions } = measureMetrics(doc);
+  const parser = new DOMParser();
+  const inserted: Element[] = [];
+  for (const measureXml of clipboard.measuresXml) {
+    const wrapped = parser.parseFromString(
+      `<wrap>${measureXml}</wrap>`,
+      "text/xml",
+    );
+    const measureEl = wrapped.querySelector("measure");
+    if (!measureEl) {
+      continue;
+    }
+    const imported = doc.importNode(measureEl, true);
+    rescaleMeasureDurations(
+      imported,
+      targetDivisions,
+      clipboard.divisionsPerQuarter,
+    );
+    inserted.push(imported);
+  }
+  if (inserted.length === 0) {
+    return null;
+  }
+  const measures = measuresOf(doc);
+  const firstPastedIndex = Math.min(Math.max(0, atIndex), measures.length);
+  const anchor = measures[firstPastedIndex] ?? null;
+  for (const measureEl of inserted) {
+    if (anchor) {
+      part.insertBefore(measureEl, anchor);
+    } else {
+      part.appendChild(measureEl);
+    }
+  }
+  measuresOf(doc).forEach((measureEl, i) => {
+    measureEl.setAttribute("number", String(i + 1));
+  });
+  return { firstPastedIndex, pastedCount: inserted.length };
+}

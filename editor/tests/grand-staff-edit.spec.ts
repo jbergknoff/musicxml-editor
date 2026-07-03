@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, type Page, test } from "@playwright/test";
+import { type Page, expect, test } from "@playwright/test";
 
 // A grand staff (piano: treble + bass, one voice each) is editable, and — the
 // behaviour under test — a note can be added onto the *bass* staff, not just the
@@ -61,7 +61,7 @@ test.beforeEach(async ({ page }) => {
 test("a note can be added onto the bass staff of a grand staff", async ({
   page,
 }) => {
-  await page.locator('input[type="file"]').setInputFiles(GRAND_STAFF);
+  await page.locator('input[type="file"]').first().setInputFiles(GRAND_STAFF);
   // Both staves render: p0 is treble, p1 is bass.
   await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
   await expect(page.locator("#p1-m1-n0-v0")).toBeVisible();

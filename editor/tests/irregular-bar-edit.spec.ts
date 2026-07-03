@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, type Page, test } from "@playwright/test";
+import { type Page, expect, test } from "@playwright/test";
 
 // Regression for the chord-edit corruption seen on imported grand-staff scores
 // (the Chrono Trigger fixture): stepping a chord member's pitch in an over-full
@@ -23,7 +23,7 @@ async function exportXml(page: Page): Promise<string> {
 }
 
 async function loadFile(page: Page, path: string): Promise<void> {
-  await page.locator('input[type="file"]').setInputFiles(path);
+  await page.locator('input[type="file"]').first().setInputFiles(path);
   await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
 }
 

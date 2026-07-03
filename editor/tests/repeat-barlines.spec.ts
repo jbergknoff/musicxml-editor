@@ -16,7 +16,10 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("renders forward and backward repeat barline glyphs", async ({ page }) => {
-  await page.locator('input[type="file"]').setInputFiles(REPEAT_BARLINES);
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles(REPEAT_BARLINES);
   await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
   await expect(page.locator("svg").first()).toHaveScreenshot(
     "repeat-barlines.png",
