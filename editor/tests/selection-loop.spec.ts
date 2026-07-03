@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, type Page, test } from "@playwright/test";
+import { type Page, expect, test } from "@playwright/test";
 
 // The design handoff's core selection loop: click a notehead to drill to a note
 // (Level 2), see it mirrored in the inspector, and edit it via the inspector
@@ -38,7 +38,7 @@ function pitchButton(page: Page, label?: string) {
 
 // Load the single-staff fixture (three quarter notes C5/E5/G5) and wait for it.
 async function loadSingleStaff(page: Page): Promise<void> {
-  await page.locator('input[type="file"]').setInputFiles(SINGLE_STAFF);
+  await page.locator('input[type="file"]').first().setInputFiles(SINGLE_STAFF);
   await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
 }
 

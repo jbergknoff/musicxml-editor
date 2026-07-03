@@ -6,24 +6,14 @@ import {
   useRef,
   useState,
 } from "preact/hooks";
+import {
+  EMBEDDED_GLYPH_FONT_BASE64,
+  GLYPH_FONT_FAMILY,
+} from "./embedded-glyph-font";
+import { G, timeSigGlyphs } from "./glyphs";
+import type { NoteHighlight } from "./highlights";
 import { computeMeasureStartBeats } from "./measure-beats";
 import { diatonicIndex, isRest, parseScore } from "./musicxml-parser";
-import type {
-  AccidentalKind,
-  ChordGroup,
-  GraceGroup,
-  LayoutConfig,
-  MeasureEvent,
-  NoteType,
-  ParsedMeasure,
-  ParsedNote,
-  ParsedPart,
-  ParsedRest,
-  ParsedScore,
-  Pitch,
-  ResolvedLayout,
-} from "./sheet-music-types";
-import type { NoteHighlight } from "./highlights";
 import {
   ACCIDENTAL_BASE_OFFSET_FACTOR,
   ACCIDENTAL_COLUMN_WIDTH_FACTOR,
@@ -44,11 +34,21 @@ import {
   resolveLayout,
   stemDirection,
 } from "./sheet-music-layout";
-import {
-  EMBEDDED_GLYPH_FONT_BASE64,
-  GLYPH_FONT_FAMILY,
-} from "./embedded-glyph-font";
-import { G, timeSigGlyphs } from "./glyphs";
+import type {
+  AccidentalKind,
+  ChordGroup,
+  GraceGroup,
+  LayoutConfig,
+  MeasureEvent,
+  NoteType,
+  ParsedMeasure,
+  ParsedNote,
+  ParsedPart,
+  ParsedRest,
+  ParsedScore,
+  Pitch,
+  ResolvedLayout,
+} from "./sheet-music-types";
 
 // The notation glyphs are SMuFL codepoints that only render correctly in a
 // SMuFL font, so the package bundles its own Bravura subset and registers it
@@ -1042,9 +1042,11 @@ interface SheetMusicDisplayProps {
    * the whole gesture). Set false for a click-to-select editor that wants plain
    * drags to fall through to the container's drag-to-scroll: the down still
    * reports its gesture, but the pointer is left uncaptured so the container
-   * scrolls.
+   * scrolls. Pass a predicate to decide per-gesture (e.g. capture only when a
+   * modifier key is held, so an unmodified drag still scrolls but a modified
+   * one drives a custom drag gesture via `onStagePointerMove`/`Up`).
    */
-  captureStagePointer?: boolean;
+  captureStagePointer?: boolean | ((event: PointerEvent) => boolean);
 }
 
 /** Payload handed to the editor pointer-seam callbacks (see props above). */
@@ -1304,6 +1306,11 @@ export function SheetMusicDisplay({
   // Focus handle drag state — ref tracks the live value between renders, state
   // drives visual feedback.
   const svgRef = useRef<SVGSVGElement>(null);
+  // Whether the current gesture captured the pointer (resolved once at
+  // pointerdown from `captureStagePointer`, possibly a predicate) — read at
+  // pointerup so the release check matches what was actually captured, even
+  // if a modifier key's state changed mid-gesture.
+  const capturedRef = useRef(false);
 
   // Resolve an SVG-local point for the editor pointer seam. SVG px coordinates
   // are 1:1 with client px (no viewBox scaling), so subtracting the bounding
@@ -1582,9 +1589,15 @@ export function SheetMusicDisplay({
                   }
                   // Keep the gesture on the SVG and off the container's
                   // drag-to-scroll listener while editing. A click-to-select
-                  // editor opts out (captureStagePointer=false) so a plain drag
-                  // still reaches the container and scrolls.
-                  if (captureStagePointer) {
+                  // editor opts out (captureStagePointer=false, or a predicate
+                  // that returns false for this event) so a plain drag still
+                  // reaches the container and scrolls.
+                  const shouldCapture =
+                    typeof captureStagePointer === "function"
+                      ? captureStagePointer(event)
+                      : (captureStagePointer ?? false);
+                  capturedRef.current = shouldCapture;
+                  if (shouldCapture) {
                     event.stopPropagation();
                     svgRef.current?.setPointerCapture(event.pointerId);
                   }
@@ -1609,7 +1622,7 @@ export function SheetMusicDisplay({
                   const event = e as unknown as PointerEvent;
                   const info = stagePointerInfo(event);
                   if (
-                    captureStagePointer &&
+                    capturedRef.current &&
                     svgRef.current?.hasPointerCapture(event.pointerId)
                   ) {
                     svgRef.current.releasePointerCapture(event.pointerId);

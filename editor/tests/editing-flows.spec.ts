@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { expect, type Page, test } from "@playwright/test";
+import { type Page, expect, test } from "@playwright/test";
 
 // Editing-flow integration tests for the editor. The design contract under test:
 // tapping the staff only selects (it never inserts a note), tapping empty space
@@ -32,7 +32,7 @@ async function exportXml(page: Page): Promise<string> {
 }
 
 async function importFile(page: Page, filePath: string): Promise<void> {
-  await page.locator('input[type="file"]').setInputFiles(filePath);
+  await page.locator('input[type="file"]').first().setInputFiles(filePath);
 }
 
 function pitchCount(xml: string): number {
@@ -152,7 +152,7 @@ test("toggling a note's tie control draws and clears a tie arc, and persists on 
 }) => {
   await page.goto("/");
   await expect(page.locator("svg").first()).toBeVisible();
-  await page.locator('input[type="file"]').setInputFiles(TIE_CANDIDATE);
+  await page.locator('input[type="file"]').first().setInputFiles(TIE_CANDIDATE);
   await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
 
   await page.locator("#p0-m1-n0-v0").click();

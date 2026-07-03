@@ -8,7 +8,14 @@
 // gesture (the Editor selects, or adds on empty staff); a plain drag is left
 // uncaptured so it falls through to the renderer's drag-to-scroll; a
 // right-click / long-press reports a context-menu request. Dragging never edits.
+//
+// Shift+drag is the one exception: holding Shift at pointerdown captures the
+// pointer (so the drag doesn't scroll) and streams every subsequent gesture to
+// `onRangeSelectMove` — the Editor's measure-range selection extends live as
+// the pointer moves, finalizing on release. A shift+click with no movement
+// still just reports one `onTap`, unaffected.
 
+import { useRef } from "preact/hooks";
 import type { NoteHandle } from "../dom-edit";
 import { beatFromX, pickNote, pitchFromY } from "../hit-test";
 import {
@@ -98,6 +105,7 @@ export function EditableSheetMusic({
   noteHighlights,
   onTap,
   onContextMenu,
+  onRangeSelectMove,
   accentColor,
   textFontFamily = "'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif",
   getLiveBeat,
@@ -117,6 +125,11 @@ export function EditableSheetMusic({
   onTap?: (gesture: EditorGesture, event: PointerEvent) => void;
   /** Right-click / long-press on the staff. */
   onContextMenu?: (request: ContextMenuRequest) => void;
+  /** Fired for every pointermove (and the final pointerup) of a Shift-held
+   *  drag that started on the staff — the measure-range selection's live
+   *  drag-to-select gesture. Never fired for an unmodified drag (which
+   *  scrolls instead). */
+  onRangeSelectMove?: (gesture: EditorGesture) => void;
   /** Accent color for the playback cursor (and any selection chrome). */
   accentColor?: string;
   /** Font family for measure numbers. */
@@ -147,6 +160,12 @@ export function EditableSheetMusic({
   /** Fill color for `focusRange`. */
   focusColor?: string;
 }) {
+  // Whether the in-progress gesture is a Shift-held drag (set at pointerdown,
+  // cleared at pointerup) — gates whether pointermove/up forward to
+  // `onRangeSelectMove` rather than falling through to the container's
+  // drag-to-scroll.
+  const rangeDraggingRef = useRef(false);
+
   return (
     <SheetMusicDisplay
       musicxml={musicxml}
@@ -168,16 +187,30 @@ export function EditableSheetMusic({
         height: fitContent ? "auto" : "100%",
         cursor: "default",
       }}
-      // Leave the pointer uncaptured so a drag reaches the container's
-      // drag-to-scroll; we only act on the (primary-button) down as a tap.
-      captureStagePointer={false}
+      // Capture only a Shift-held gesture (the drag-to-select-measures
+      // affordance) so the pointer keeps reporting to this SVG even if it
+      // leaves the staff; a plain drag stays uncaptured so it reaches the
+      // container's drag-to-scroll.
+      captureStagePointer={(event) => event.shiftKey}
       onStagePointerDown={(info, event) => {
         // Ignore non-primary buttons here — right-click is handled by the
         // context-menu seam, which also fires its own pointerdown.
         if (event.button !== 0) {
           return;
         }
+        rangeDraggingRef.current = event.shiftKey;
         onTap?.(resolveGesture(info), event);
+      }}
+      onStagePointerMove={(info) => {
+        if (rangeDraggingRef.current) {
+          onRangeSelectMove?.(resolveGesture(info));
+        }
+      }}
+      onStagePointerUp={(info) => {
+        if (rangeDraggingRef.current) {
+          onRangeSelectMove?.(resolveGesture(info));
+        }
+        rangeDraggingRef.current = false;
       }}
       onSheetContextMenu={onContextMenu}
     />

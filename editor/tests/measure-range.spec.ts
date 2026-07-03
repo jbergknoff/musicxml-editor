@@ -109,6 +109,72 @@ test("Shift+ArrowRight extends a measure range from the keyboard; cut removes wh
   expect(pitchCount(restored)).toBe(3);
 });
 
+test("Shift+drag selects a measure range live", async ({ page }) => {
+  await loadThreeMeasures(page);
+  const start = await page.locator("#p0-m1-n0-v0").boundingBox();
+  const end = await page.locator("#p0-m3-n0-v0").boundingBox();
+  if (!start || !end) {
+    throw new Error("expected notehead bounding boxes");
+  }
+
+  await page.keyboard.down("Shift");
+  await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+  await page.mouse.down();
+  // Drag through measure 2 first — the range should track the live position,
+  // not just the final one.
+  const mid = await page.locator("#p0-m2-n0-v0").boundingBox();
+  if (mid) {
+    await page.mouse.move(mid.x + mid.width / 2, mid.y + mid.height / 2, {
+      steps: 3,
+    });
+    await expect(page.getByText("Sel: m.1–2")).toBeVisible();
+  }
+  await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2, {
+    steps: 3,
+  });
+  await expect(page.getByText("Sel: m.1–3")).toBeVisible();
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+
+  // The drag must not have scrolled the container (a plain drag would) or
+  // left the range selected after release.
+  await expect(page.getByText("Sel: m.1–3")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy" })).toBeEnabled();
+});
+
+test("right-click preserves a multi-measure selection and offers Cut measure(s)", async ({
+  page,
+}) => {
+  await loadThreeMeasures(page);
+  await page.locator("#p0-m1-n0-v0").click();
+  await page.locator("#p0-m2-n0-v0").click({ modifiers: ["Shift"] });
+  await expect(page.getByText("Sel: m.1–2")).toBeVisible();
+
+  await page.locator("#p0-m1-n0-v0").click({ button: "right" });
+  // The right-click must not have collapsed the range.
+  await expect(page.getByText("Sel: m.1–2")).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: "Cut measure(s)" }),
+  ).toBeVisible();
+});
+
+test("right-click on a single-note selection does not offer Cut measure(s)", async ({
+  page,
+}) => {
+  await loadThreeMeasures(page);
+  await page.locator("#p0-m1-n0-v0").click();
+  await expect(page.getByText("Sel: m.1 · 1 note")).toBeVisible();
+
+  await page.locator("#p0-m1-n0-v0").click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Delete" })).toBeVisible();
+  await expect(
+    page.getByRole("menuitem", { name: "Cut measure(s)" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("menuitem", { name: "Copy measure(s)" }),
+  ).toHaveCount(0);
+});
+
 test("the − Measure toolbar button deletes the selected measure", async ({
   page,
 }) => {

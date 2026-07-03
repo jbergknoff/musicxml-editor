@@ -702,6 +702,38 @@ export function Editor() {
     [editable, score],
   );
 
+  // Live drag-to-select-measures: fired on every pointermove (and the final
+  // pointerup) of a Shift-held drag that started on the staff. Extends the
+  // measure range from the drag's start (the anchor `handleTap`'s shift
+  // branch — or, absent a shift-branch hit, its plain-tap branch — already
+  // set) to wherever the pointer currently is, exactly like a repeated
+  // shift-click would. A drag that leaves the anchor's staff (grand staff) or
+  // starts with no anchor yet is a no-op.
+  const handleRangeSelectMove = useCallback(
+    (gesture: EditorGesture) => {
+      if (!editable) {
+        return;
+      }
+      const anchor = anchorMeasureRef.current;
+      if (!anchor) {
+        return;
+      }
+      const slot = gesture.offStaff
+        ? null
+        : slotAtBeat(score, gesture.beat, 1.5, anchor.partIndex);
+      if (!slot || slot.partIndex !== anchor.partIndex) {
+        return;
+      }
+      setSelection({
+        kind: "measureRange",
+        partIndex: anchor.partIndex,
+        startMeasureIndex: anchor.measureIndex,
+        endMeasureIndex: slot.measureIndex,
+      });
+    },
+    [editable, score],
+  );
+
   const handleContextMenu = useCallback(
     (request: ContextMenuRequest) => {
       if (!editable) {
@@ -716,6 +748,20 @@ export function Editor() {
         if (
           prev?.kind === "note" &&
           slot.handles.some((handle) => sameHandle(handle, prev.handle))
+        ) {
+          return prev;
+        }
+        // A right-click landing inside an existing measure-range selection
+        // opens the menu for the whole range rather than collapsing it to a
+        // single slot — matching how right-click behaves on an existing
+        // selection elsewhere (Finder, text editors, …).
+        if (
+          prev?.kind === "measureRange" &&
+          prev.partIndex === slot.partIndex &&
+          slot.measureIndex >=
+            Math.min(prev.startMeasureIndex, prev.endMeasureIndex) &&
+          slot.measureIndex <=
+            Math.max(prev.startMeasureIndex, prev.endMeasureIndex)
         ) {
           return prev;
         }
@@ -1840,16 +1886,18 @@ export function Editor() {
       onSelect: () => addNoteAtSlot(),
       disabled: !slotInfo,
     },
-    {
-      label: "Copy measure(s)",
-      onSelect: copyMeasureSelection,
-      disabled: !activeMeasureRange,
-    },
-    {
-      label: "Cut measure(s)",
-      onSelect: cutMeasureSelection,
-      disabled: !activeMeasureRange,
-    },
+    // Copy/Cut only appear for an explicit measure-range selection (shift-
+    // click/drag or Shift+←/→) — not for an ordinary note/beat selection,
+    // where "Cut measure(s)" acting on the whole containing measure would be
+    // a surprise. Paste and Delete stay available regardless: paste always
+    // targets the current position, and Delete already labels itself
+    // correctly for either selection kind.
+    ...(isMeasureRangeSelection
+      ? [
+          { label: "Copy measure(s)", onSelect: copyMeasureSelection },
+          { label: "Cut measure(s)", onSelect: cutMeasureSelection },
+        ]
+      : []),
     {
       label: "Paste measure(s)",
       onSelect: pasteMeasureSelection,
@@ -2209,6 +2257,7 @@ export function Editor() {
               noteHighlights={noteHighlights}
               onTap={handleTap}
               onContextMenu={handleContextMenu}
+              onRangeSelectMove={handleRangeSelectMove}
               accentColor={COLORS.accent}
               getLiveBeat={listen.getLiveBeat}
               isPlaying={listen.playing}

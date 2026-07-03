@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import { type Locator, type Page, expect, test } from "@playwright/test";
 
 // Integration tests pinning down *which* note a staff click highlights. The
 // selection-first model resolves a click to a beat by snapping its x to the
@@ -26,7 +26,7 @@ const SINGLE_STAFF = fileURLToPath(
 const CHORD_TINT = "#84a9e8";
 
 async function loadSingleStaff(page: Page): Promise<void> {
-  await page.locator('input[type="file"]').setInputFiles(SINGLE_STAFF);
+  await page.locator('input[type="file"]').first().setInputFiles(SINGLE_STAFF);
   // The fixture is three quarter notes C5 E5 G5 then a quarter rest.
   await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
 }
