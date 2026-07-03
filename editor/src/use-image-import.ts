@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import {
   createImageImporter,
   type ImageImporter,
+  type ImageImporterOptions,
   type ImageImportResult,
   isPdf,
   type ProgressUpdate,
@@ -56,13 +57,32 @@ export interface ImageImportState {
   error: string | null;
   /**
    * Recognize a file and return its MusicXML plus the source-image review
-   * data for the cleanup panel, or null on failure.
+   * data for the cleanup panel, or null on failure. `options` picks the
+   * inference backend and staff-detection mode; changing either from the
+   * previous call tears down and recreates the worker.
    */
-  importImage(file: File): Promise<ImageImportResult | null>;
+  importImage(
+    file: File,
+    options?: ImageImporterOptions,
+  ): Promise<ImageImportResult | null>;
+}
+
+/** Keys of {@link ImageImporterOptions} that require a fresh worker when changed. */
+function sameConfig(a: ImageImporterOptions, b: ImageImporterOptions): boolean {
+  return (
+    (a.backend ?? "auto") === (b.backend ?? "auto") &&
+    (a.staffDetection ?? "classical") === (b.staffDetection ?? "classical")
+  );
 }
 
 export function useImageImport(): ImageImportState {
-  const importerRef = useRef<Promise<ImageImporter> | null>(null);
+  // The importer plus the options it was created with, so a config change
+  // (backend/staff detection) tears it down and starts a fresh worker rather
+  // than silently reusing the old one.
+  const importerRef = useRef<{
+    promise: Promise<ImageImporter>;
+    options: ImageImporterOptions;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -70,20 +90,33 @@ export function useImageImport(): ImageImportState {
   // Tear the worker down when the editor unmounts.
   useEffect(() => {
     return () => {
-      importerRef.current?.then((importer) => importer.dispose());
+      importerRef.current?.promise.then((importer) => importer.dispose());
     };
   }, []);
 
   const importImage = useCallback(
-    async (file: File): Promise<ImageImportResult | null> => {
+    async (
+      file: File,
+      options: ImageImporterOptions = {},
+    ): Promise<ImageImportResult | null> => {
       setBusy(true);
       setError(null);
       setStatus(`Decoding ${file.name}…`);
       try {
-        if (importerRef.current === null) {
-          importerRef.current = createImageImporter();
+        if (
+          importerRef.current !== null &&
+          !sameConfig(importerRef.current.options, options)
+        ) {
+          importerRef.current.promise.then((importer) => importer.dispose());
+          importerRef.current = null;
         }
-        const importer = await importerRef.current;
+        if (importerRef.current === null) {
+          importerRef.current = {
+            promise: createImageImporter(options),
+            options,
+          };
+        }
+        const importer = await importerRef.current.promise;
         const result = await importer.importFile(file, (update) => {
           setStatus(describeProgress(update));
         });
