@@ -28,6 +28,13 @@ const DEFAULT_VELOCITY = 80;
 // Tail (seconds) added past each note's nominal duration for the release ramp.
 const RELEASE_TIME = 0.35;
 
+/** One sounding pitch within a `BeatStep`, with its own hold duration so a
+ *  tied note can sustain past the step's own gap to the next onset. */
+interface SoundingNote {
+  pitch: Pitch;
+  durationBeats: number;
+}
+
 interface BeatStep {
   /**
    * Cumulative quarter-note beat of this onset across the whole playback
@@ -41,9 +48,13 @@ interface BeatStep {
    * first, so the on-screen cursor snaps back rather than running off the end.
    */
   displayBeat: number;
-  pitches: Pitch[];
-  /** Beats until the next onset (how long this step holds). */
+  notes: SoundingNote[];
+  /** Beats until the next onset (how long this step holds, absent ties). */
   durationBeats: number;
+}
+
+function pitchKey(pitch: Pitch): string {
+  return `${pitch.step}${pitch.alter}${pitch.octave}`;
 }
 
 const SEMITONE_OF_STEP: Record<string, number> = {
@@ -62,18 +73,36 @@ function pitchFrequency(pitch: Pitch): number {
   return 440 * 2 ** ((midi - 69) / 12);
 }
 
+/** A sounding note still being accumulated while its tie chain is walked —
+ *  `heldDurationBeats` grows as later tied notes are folded in, and
+ *  `tied` marks it so the final step doesn't clamp it to the onset gap. */
+interface PendingNote {
+  pitch: Pitch;
+  heldDurationBeats: number;
+  tied: boolean;
+}
+
 // Flatten the score into the distinct onsets that sound, merging every part's
 // pitches at each beat, expanding any backward repeat barlines so a repeated
 // measure's notes are scheduled once per pass. Rests advance the cursor but
-// produce no step.
-function flattenBeats(score: ParsedScore): BeatStep[] {
+// produce no step. Tied notes are folded into the note that started the tie:
+// the continuation note produces no onset of its own, and instead extends the
+// starting note's held duration by its own length, so the pitch sustains
+// through the tie instead of re-attacking.
+export function flattenBeats(score: ParsedScore): BeatStep[] {
   const order = expandPlaybackOrder(score.parts[0]?.measures ?? []);
-  const byBeat = new Map<number, { displayBeat: number; pitches: Pitch[] }>();
+  const byBeat = new Map<
+    number,
+    { displayBeat: number; notes: PendingNote[] }
+  >();
   for (const part of score.parts) {
     const { playbackStart, displayStart } = computePlaybackStartBeats(
       part.measures,
       order,
     );
+    // Tracks, per pitch, the PendingNote that started the tie currently in
+    // progress for this part — reset per part since ties don't cross parts.
+    const activeTies = new Map<string, PendingNote>();
     order.forEach((measureIndex, position) => {
       const measure = part.measures[measureIndex];
       if (!measure) {
@@ -89,27 +118,57 @@ function flattenBeats(score: ParsedScore): BeatStep[] {
           continue;
         }
         const group = event as ChordGroup;
-        const entry = byBeat.get(playbackCursor) ?? {
-          displayBeat: displayCursor,
-          pitches: [],
-        };
+        const ownDurationBeats = group.duration / divisions;
         for (const note of group.notes) {
-          entry.pitches.push(note.pitch);
+          const key = pitchKey(note.pitch);
+          const continues = note.tieStop && activeTies.has(key);
+          if (continues) {
+            const pending = activeTies.get(key) as PendingNote;
+            pending.heldDurationBeats += ownDurationBeats;
+            if (note.tieStart) {
+              activeTies.set(key, pending);
+            } else {
+              activeTies.delete(key);
+            }
+            continue;
+          }
+          const entry = byBeat.get(playbackCursor) ?? {
+            displayBeat: displayCursor,
+            notes: [],
+          };
+          const pending: PendingNote = {
+            pitch: note.pitch,
+            heldDurationBeats: ownDurationBeats,
+            tied: note.tieStart,
+          };
+          entry.notes.push(pending);
+          byBeat.set(playbackCursor, entry);
+          if (note.tieStart) {
+            activeTies.set(key, pending);
+          }
         }
-        byBeat.set(playbackCursor, entry);
-        playbackCursor += group.duration / divisions;
-        displayCursor += group.duration / divisions;
+        playbackCursor += ownDurationBeats;
+        displayCursor += ownDurationBeats;
       }
     });
   }
   const playbackBeats = Array.from(byBeat.keys()).sort((a, b) => a - b);
-  return playbackBeats.map((playbackBeat, i) => ({
-    playbackBeat,
-    displayBeat: (byBeat.get(playbackBeat) as { displayBeat: number })
-      .displayBeat,
-    pitches: (byBeat.get(playbackBeat) as { pitches: Pitch[] }).pitches,
-    durationBeats: (playbackBeats[i + 1] ?? playbackBeat + 1) - playbackBeat,
-  }));
+  return playbackBeats.map((playbackBeat, i) => {
+    const entry = byBeat.get(playbackBeat) as {
+      displayBeat: number;
+      notes: PendingNote[];
+    };
+    const gapBeats = (playbackBeats[i + 1] ?? playbackBeat + 1) - playbackBeat;
+    return {
+      playbackBeat,
+      displayBeat: entry.displayBeat,
+      notes: entry.notes.map((note) => ({
+        pitch: note.pitch,
+        durationBeats: note.tied ? note.heldDurationBeats : gapBeats,
+      })),
+      durationBeats: gapBeats,
+    };
+  });
 }
 
 // Sound one note: a fundamental (triangle) plus two quieter harmonics (sine,
@@ -235,12 +294,16 @@ export function useListen(
         }
         const step = steps[index];
         liveBeatRef.current = step.displayBeat;
-        const ms = step.durationBeats * quarterMsRef.current;
-        for (const pitch of step.pitches) {
-          beep(ac, pitchFrequency(pitch), ms);
+        const stepMs = step.durationBeats * quarterMsRef.current;
+        for (const note of step.notes) {
+          beep(
+            ac,
+            pitchFrequency(note.pitch),
+            note.durationBeats * quarterMsRef.current,
+          );
         }
         index += 1;
-        timerRef.current = setTimeout(tick, ms);
+        timerRef.current = setTimeout(tick, stepMs);
       };
       tick();
     },
