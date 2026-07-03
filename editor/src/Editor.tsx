@@ -23,9 +23,9 @@ import {
 import {
   type TrackInfo,
   convertMidiToMusicXml,
+  getMidiKeySignature,
   getMidiTempo,
   getMidiTracks,
-  midiHasExplicitKeySignature,
 } from "../../lib/midi-to-musicxml";
 import { extractMusicXmlFromMxl } from "../../lib/mxl";
 import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
@@ -262,7 +262,7 @@ export function Editor() {
     fileName: string;
     midiData: MidiData;
     tracks: TrackInfo[];
-    hasExplicitKey: boolean;
+    explicitKey: { fifths: number; mode: string } | null;
   } | null>(null);
   // Instant-scroll request for the sheet renderer: set the beat, bump the
   // generation. Used when the review panel steps the selection between systems.
@@ -1222,7 +1222,7 @@ export function Editor() {
           fileName: file.name,
           midiData: parsed,
           tracks: getMidiTracks(parsed),
-          hasExplicitKey: midiHasExplicitKeySignature(parsed),
+          explicitKey: getMidiKeySignature(parsed),
         });
       } else {
         const imported = await file.text();
@@ -1736,7 +1736,7 @@ export function Editor() {
         <MidiImportDialog
           fileName={pendingMidi.fileName}
           tracks={pendingMidi.tracks}
-          hasExplicitKey={pendingMidi.hasExplicitKey}
+          explicitKey={pendingMidi.explicitKey}
           onConfirm={onMidiImportConfirm}
           onCancel={() => setPendingMidi(null)}
         />

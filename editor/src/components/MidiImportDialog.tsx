@@ -13,6 +13,7 @@ import {
   DEFAULT_MIDI_IMPORT_OPTIONS,
   type QuantizeGrid,
   type TrackInfo,
+  keySignatureName,
 } from "../../../lib/midi-to-musicxml";
 import { COLORS, FONTS, RADIUS } from "../theme";
 
@@ -27,7 +28,10 @@ export interface MidiImportChoice {
 export interface MidiImportDialogProps {
   fileName: string;
   tracks: TrackInfo[];
-  hasExplicitKey: boolean;
+  /** The key signature the file itself specifies (a `keySignature` meta
+   *  event), or null when it has none. When set, key inference has nothing
+   *  to override and the toggle is disabled. */
+  explicitKey: { fifths: number; mode: string } | null;
   onConfirm: (choice: MidiImportChoice) => void;
   onCancel: () => void;
 }
@@ -62,10 +66,11 @@ function noteNumberName(n: number): string {
 export function MidiImportDialog({
   fileName,
   tracks,
-  hasExplicitKey,
+  explicitKey,
   onConfirm,
   onCancel,
 }: MidiImportDialogProps) {
+  const hasExplicitKey = explicitKey !== null;
   const [selected, setSelected] = useState<Set<number>>(
     () => new Set(tracks.map((t) => t.index)),
   );
@@ -315,12 +320,14 @@ export function MidiImportDialog({
                 alignItems: "center",
                 gap: 8,
                 fontSize: 13,
-                cursor: "pointer",
+                cursor: hasExplicitKey ? "default" : "pointer",
+                opacity: hasExplicitKey ? 0.5 : 1,
               }}
             >
               <input
                 type="checkbox"
                 checked={inferKey}
+                disabled={hasExplicitKey}
                 onChange={(event) =>
                   setInferKey((event.currentTarget as HTMLInputElement).checked)
                 }
@@ -336,8 +343,8 @@ export function MidiImportDialog({
                 marginLeft: 24,
               }}
             >
-              {hasExplicitKey
-                ? "This file already specifies a key signature; inference is ignored."
+              {explicitKey
+                ? `This file specifies ${keySignatureName(explicitKey.fifths, explicitKey.mode)}; inference is disabled because it wouldn't be used.`
                 : "This file has no key signature — without inference, accidentals default to C major spelling."}
             </span>
           </div>

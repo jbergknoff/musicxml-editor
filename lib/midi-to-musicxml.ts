@@ -267,12 +267,87 @@ export interface TrackInfo {
   noteCount: number;
 }
 
-/** Whether the file carries a `keySignature` meta event anywhere — the
- *  import confirmation dialog defaults key inference on when this is false. */
-export function midiHasExplicitKeySignature(midiData: MidiData): boolean {
-  return midiData.tracks.some((track) =>
-    track.some((ev) => ev.type === "keySignature"),
+// The file's time signature (first `timeSignature` meta event found, latest
+// wins if it changes before any notes — mirrors the scan every conversion
+// already does), defaulting to 4/4.
+function detectTimeSignature(midiData: MidiData): {
+  num: number;
+  den: number;
+} {
+  let num = 4;
+  let den = 4;
+  for (const track of midiData.tracks) {
+    for (const ev of track) {
+      if (ev.type === "timeSignature") {
+        num = ev.numerator;
+        den = ev.denominator;
+      }
+    }
+  }
+  return { num, den };
+}
+
+/** The key signature that would apply at measure 1 if the file specifies one
+ *  via a `keySignature` meta event, or null if it doesn't (in which case
+ *  `convertMidiToMusicXml`'s `inferKey` option is the only way to get a
+ *  non-C-major key). Used by the import confirmation dialog to show what the
+ *  file specifies and to grey out the (otherwise ineffective) inference
+ *  toggle. */
+export function getMidiKeySignature(
+  midiData: MidiData,
+): { fifths: number; mode: string } | null {
+  const tpb = midiData.header.ticksPerBeat ?? 480;
+  const { num, den } = detectTimeSignature(midiData);
+  const ticksPerMeasure = (tpb * num * 4) / den;
+  const { byMeasure, hasExplicitKey } = collectKeyByMeasure(
+    midiData,
+    ticksPerMeasure,
   );
+  return hasExplicitKey ? (byMeasure.get(0) ?? null) : null;
+}
+
+// Key names in circle-of-fifths order, fifths -7..7, index = fifths + 7.
+const MAJOR_KEY_NAMES = [
+  "Cb",
+  "Gb",
+  "Db",
+  "Ab",
+  "Eb",
+  "Bb",
+  "F",
+  "C",
+  "G",
+  "D",
+  "A",
+  "E",
+  "B",
+  "F#",
+  "C#",
+];
+const MINOR_KEY_NAMES = [
+  "ab",
+  "eb",
+  "bb",
+  "f",
+  "c",
+  "g",
+  "d",
+  "a",
+  "e",
+  "b",
+  "f#",
+  "c#",
+  "g#",
+  "d#",
+  "a#",
+];
+
+/** A human-readable key name for a fifths count + mode, e.g. `keySignatureName(1, "major")` → "G major". */
+export function keySignatureName(fifths: number, mode: string): string {
+  const clamped = Math.max(-7, Math.min(7, fifths));
+  const isMinor = mode === "minor";
+  const tonic = (isMinor ? MINOR_KEY_NAMES : MAJOR_KEY_NAMES)[clamped + 7];
+  return `${tonic} ${isMinor ? "minor" : "major"}`;
 }
 
 export function getMidiTracks(midiData: MidiData): TrackInfo[] {
@@ -941,20 +1016,7 @@ export function convertMidiToMusicXml(
   const tpb = midiData.header.ticksPerBeat ?? 480;
   const divisions = GRID_DIVISIONS[quantizeGrid];
   const durationType = buildDurationType(divisions);
-
-  let timeSigNum = 4;
-  let timeSigDen = 4;
-
-  for (const track of midiData.tracks) {
-    let tick = 0;
-    for (const ev of track) {
-      tick += ev.deltaTime;
-      if (ev.type === "timeSignature") {
-        timeSigNum = ev.numerator;
-        timeSigDen = ev.denominator;
-      }
-    }
-  }
+  const { num: timeSigNum, den: timeSigDen } = detectTimeSignature(midiData);
 
   const grid = tpb / divisions;
   const snap = (t: number) => Math.round(t / grid) * grid;

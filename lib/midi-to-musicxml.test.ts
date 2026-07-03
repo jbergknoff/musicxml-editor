@@ -3,8 +3,10 @@ import type { MidiData, MidiEvent } from "midi-file";
 import {
   DEFAULT_MIDI_IMPORT_OPTIONS,
   convertMidiToMusicXml,
+  getMidiKeySignature,
   getMidiTempo,
   inferKeyFifthsFromPitches,
+  keySignatureName,
 } from "./midi-to-musicxml";
 
 function midiWithTempo(microsecondsPerBeat: number | null): MidiData {
@@ -192,5 +194,39 @@ describe("convertMidiToMusicXml", () => {
     expect((xml.match(/<part id=/g) ?? []).length).toBe(1);
     expect(xml).toContain("<staff>1</staff>");
     expect(xml).toContain("<staff>2</staff>");
+  });
+});
+
+describe("keySignatureName", () => {
+  test("names major keys by fifths", () => {
+    expect(keySignatureName(0, "major")).toBe("C major");
+    expect(keySignatureName(1, "major")).toBe("G major");
+    expect(keySignatureName(-1, "major")).toBe("F major");
+  });
+
+  test("names minor keys by fifths", () => {
+    expect(keySignatureName(0, "minor")).toBe("a minor");
+    expect(keySignatureName(3, "minor")).toBe("f# minor");
+  });
+});
+
+describe("getMidiKeySignature", () => {
+  test("returns null when the file has no keySignature meta event", () => {
+    const midiData: MidiData = {
+      header: { format: 1, numTracks: 1, ticksPerBeat: 480 },
+      tracks: [[{ deltaTime: 0, type: "trackName", text: "Notes" }]],
+    };
+    expect(getMidiKeySignature(midiData)).toBeNull();
+  });
+
+  test("returns the file's explicit key signature", () => {
+    const midiData: MidiData = {
+      header: { format: 1, numTracks: 1, ticksPerBeat: 480 },
+      tracks: [[{ deltaTime: 0, type: "keySignature", key: 2, scale: 0 }]],
+    };
+    expect(getMidiKeySignature(midiData)).toEqual({
+      fifths: 2,
+      mode: "major",
+    });
   });
 });
