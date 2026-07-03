@@ -745,17 +745,23 @@ function groupEvents(items: Array<ParsedNote | ParsedRest>): MeasureEvent[] {
     }
 
     // Regular chord — attach any buffered grace groups and clear the buffer.
-    // Propagate <play-duration> from the first note (set by MIDI-to-MusicXML
+    // The chord's own duration/type mirrors its longest member (chord members
+    // may diverge in duration; the longest one is the "lead" note that drives
+    // the cursor — see writeStaffNotes), not just the first (lowest-pitch) one.
+    // Propagate <play-duration> from that lead note (set by MIDI-to-MusicXML
     // converter when the actual note length differs from the display duration).
+    const lead = group.reduce((longest, note) =>
+      note.duration > longest.duration ? note : longest,
+    );
     const chord: ChordGroup = {
       notes: group,
-      duration: group[0].duration,
-      type: group[0].type,
-      dot: group[0].dot,
+      duration: lead.duration,
+      type: lead.type,
+      dot: lead.dot,
       noteIndex: -1, // filled by caller
       gracesBefore:
         pendingGraceGroups.length > 0 ? [...pendingGraceGroups] : undefined,
-      playbackDuration: group[0].playbackDuration,
+      playbackDuration: lead.playbackDuration,
     };
     pendingGraceGroups.length = 0;
     events.push(chord);

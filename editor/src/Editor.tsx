@@ -59,6 +59,7 @@ import {
   createBlankDocument,
   insertMeasure,
   isEditableDocument,
+  maxNoteDuration,
   moveNote,
   parseDocument,
   removeGraceNote,
@@ -66,6 +67,7 @@ import {
   reorderGrace,
   serializeDocument,
   setAccidental,
+  setChordMemberDuration,
   setGracePitch,
   setGraceSlash,
   setNoteDuration,
@@ -395,6 +397,11 @@ export function Editor() {
           numParts > 1 ? (staffSlot.partIndex === 0 ? "Treble" : "Bass") : "",
         durationLabel: staffSlot.type,
         durationBeats: BEATS_BY_TYPE[staffSlot.type],
+        maxDurationBeats:
+          rows.length > 0
+            ? (maxNoteDuration(documentRef.current, rows[0].handle) ??
+              BEATS_BY_TYPE[staffSlot.type])
+            : BEATS_BY_TYPE[staffSlot.type],
         isRest: staffSlot.isRest,
         noteOffset: offset,
         notes: rows.map((row) => ({
@@ -403,6 +410,11 @@ export function Editor() {
           alter: row.pitch.alter,
           focused: focused ? sameHandle(row.handle, focused) : false,
           tied: row.tieStart,
+          durationBeats: BEATS_BY_TYPE[row.type],
+          maxDurationBeats:
+            maxNoteDuration(documentRef.current, row.handle) ??
+            BEATS_BY_TYPE[row.type],
+          canDivergeDuration: rows.length > 1,
         })),
         graceOffset,
         graces: staffSlot.graces.map((grace) => ({
@@ -435,7 +447,7 @@ export function Editor() {
       gracePitches: flatGracePitches,
       allSlots: beatStaffSlots,
     };
-  }, [slotInfo, focused, selection, score, measureStartBeats]);
+  }, [slotInfo, focused, selection, score, measureStartBeats, documentRef]);
 
   // Whether the import-review panel is showing (drives layout + highlights).
   const reviewVisible = reviewOpen && importReview !== null;
@@ -651,6 +663,21 @@ export function Editor() {
         return;
       }
       if (setNoteDuration(documentRef.current, handle, durationBeats)) {
+        setSelection({ kind: "note", handle });
+        commit();
+      }
+    },
+    [editable, documentRef, commit],
+  );
+
+  // Resize a single chord member independently of its chord-mates — lets one
+  // note in a chord diverge from the others' duration.
+  const setMemberDurationOn = useCallback(
+    (handle: NoteHandle, durationBeats: number) => {
+      if (!editable) {
+        return;
+      }
+      if (setChordMemberDuration(documentRef.current, handle, durationBeats)) {
         setSelection({ kind: "note", handle });
         commit();
       }
@@ -1807,6 +1834,12 @@ export function Editor() {
             const handle = inspector?.handles[index];
             if (handle) {
               setDurationOn(handle, durationBeats);
+            }
+          }}
+          onSetNoteDuration={(index, durationBeats) => {
+            const handle = inspector?.handles[index];
+            if (handle) {
+              setMemberDurationOn(handle, durationBeats);
             }
           }}
           onAddNote={(partIndex) => {

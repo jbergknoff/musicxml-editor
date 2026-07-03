@@ -9,12 +9,14 @@ import {
   createBlankDocument,
   insertMeasure,
   isEditableDocument,
+  maxNoteDuration,
   moveNote,
   parseDocument,
   removeNote,
   removeNotes,
   serializeDocument,
   setAccidental,
+  setChordMemberDuration,
   setNoteDuration,
   toggleTie,
 } from "./dom-edit";
@@ -630,6 +632,136 @@ describe("setNoteDuration", () => {
     const chord = chords(reparse(doc))[0].chord;
     expect(chord.type).toBe("half");
     expect(chord.notes.map((n) => n.pitch.step).sort()).toEqual(["C", "E"]);
+  });
+});
+
+describe("maxNoteDuration", () => {
+  test("reports the full gap when nothing follows", () => {
+    const doc = createBlankDocument();
+    const handle = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+
+    expect(maxNoteDuration(doc, handle)).toBe(4);
+  });
+
+  test("reports the largest standard value that actually fits", () => {
+    const doc = createBlankDocument();
+    const handle = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1.5,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+    });
+
+    // 1.5 beats of room before the next note — a dotted quarter is the
+    // largest standard value (dotted or not) that fits.
+    expect(maxNoteDuration(doc, handle)).toBe(1.5);
+  });
+
+  test("matches what setNoteDuration would actually apply, so equal requests never no-op silently", () => {
+    const doc = createBlankDocument();
+    const handle = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1.5,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+    });
+    const max = maxNoteDuration(doc, handle);
+    expect(max).toBe(1.5);
+
+    expect(setNoteDuration(doc, handle, max as number)).toBe(true);
+    const chord = chords(reparse(doc))[0].chord;
+    expect(chord.type).toBe("quarter");
+    expect(chord.dot).toBe(true);
+  });
+
+  test("returns null on a bad handle", () => {
+    const doc = createBlankDocument();
+    expect(
+      maxNoteDuration(doc, { measureIndex: 0, noteElementIndex: 99 }),
+    ).toBeNull();
+  });
+});
+
+describe("setChordMemberDuration", () => {
+  test("resizes one chord member without touching the others", () => {
+    const doc = createBlankDocument();
+    const handle = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 2,
+      pitch: { step: "C", alter: 0, octave: 4 },
+    }) as NoteHandle;
+    const memberHandle = addNoteToChord(doc, handle, {
+      step: "E",
+      alter: 0,
+      octave: 4,
+    }) as NoteHandle;
+
+    expect(setChordMemberDuration(doc, memberHandle, 0.5)).toBe(true);
+    const chord = chords(reparse(doc))[0].chord;
+    const byStep = new Map(chord.notes.map((n) => [n.pitch.step, n]));
+    expect(byStep.get("C")?.type).toBe("half");
+    expect(byStep.get("E")?.type).toBe("eighth");
+  });
+
+  test("clamps a diverged member to the gap before the next note", () => {
+    const doc = createBlankDocument();
+    const handle = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 4 },
+    }) as NoteHandle;
+    const memberHandle = addNoteToChord(doc, handle, {
+      step: "E",
+      alter: 0,
+      octave: 4,
+    }) as NoteHandle;
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1.5,
+      durationBeats: 1,
+      pitch: { step: "G", alter: 0, octave: 4 },
+    });
+
+    expect(setChordMemberDuration(doc, memberHandle, 4)).toBe(true);
+    const placed = chords(reparse(doc));
+    const byStep = new Map(placed[0].chord.notes.map((n) => [n.pitch.step, n]));
+    expect(byStep.get("C")?.type).toBe("quarter");
+    // Clamped to the 1.5-beat gap: a dotted quarter, now the longer (lead)
+    // member, so the group's onset-advancing duration follows it.
+    expect(byStep.get("E")?.type).toBe("quarter");
+    expect(byStep.get("E")?.dot).toBe(true);
+    expect(placed[1].onsetBeat).toBe(1.5);
+  });
+
+  test("returns false for a solo note (nothing to diverge from)", () => {
+    const doc = createBlankDocument();
+    const handle = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+
+    expect(setChordMemberDuration(doc, handle, 2)).toBe(false);
   });
 });
 

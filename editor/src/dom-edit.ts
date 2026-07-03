@@ -1044,25 +1044,29 @@ export function moveNote(
   return handleFor(measuresOf(doc), target.measureIndex, element);
 }
 
-// Change a note's rhythmic duration, keeping its onset and pitch. Every chord
-// member sharing the note's onset (in the same staff/voice) is resized with
-// it — chords share one duration intrinsically, so the whole beat moves
-// together. The requested span is clamped to the largest standard duration
-// that fits before the next note in the same staff/voice (or the measure's
-// end); the freed or consumed time is rebalanced into rests by `writeMeasure`.
-// Returns false on a bad handle.
-export function setNoteDuration(
+// Shared groundwork for setNoteDuration/maxNoteDuration: resolves the anchor
+// note, every chord member sharing its onset (in the same staff/voice, since
+// chords share one duration intrinsically), and how many divisions are free
+// before the next note in that staff/voice (or the measure's end).
+function noteDurationContext(
   doc: Document,
   handle: NoteHandle,
-  durationBeats: number,
-): boolean {
+): {
+  measureEl: Element;
+  notes: RealNote[];
+  members: RealNote[];
+  measureLength: number;
+  divisions: number;
+  sc: number;
+  availableDivisions: number;
+} | null {
   const measureEl = measuresOf(doc)[handle.measureIndex];
   if (!measureEl) {
-    return false;
+    return null;
   }
   const target = elementForHandle(doc, handle);
   if (!target) {
-    return false;
+    return null;
   }
   const { divisions, divisionsPerMeasure } = measureMetrics(doc);
   const measureLength =
@@ -1070,7 +1074,7 @@ export function setNoteDuration(
   const notes = readRealNotes(measureEl, divisions);
   const anchor = notes.find((note) => note.element === target);
   if (!anchor) {
-    return false;
+    return null;
   }
   const sc = staffCountOf(doc);
   const targetStaff = sc > 1 ? staffOf(target) : 0;
@@ -1084,7 +1088,6 @@ export function setNoteDuration(
   );
   const memberSet = new Set(members);
 
-  const requested = Math.max(1, Math.round(durationBeats * divisions));
   const nextOnset = notes.reduce((min, note) => {
     if (
       memberSet.has(note) ||
@@ -1097,16 +1100,113 @@ export function setNoteDuration(
       ? Math.min(min, note.onsetDivisions)
       : min;
   }, measureLength);
-  const fit = largestFit(
-    Math.min(requested, nextOnset - anchor.onsetDivisions),
+
+  return {
+    measureEl,
+    notes,
+    members,
+    measureLength,
     divisions,
+    sc,
+    availableDivisions: nextOnset - anchor.onsetDivisions,
+  };
+}
+
+// Change a note's rhythmic duration, keeping its onset and pitch. Every chord
+// member sharing the note's onset (in the same staff/voice) is resized with
+// it — chords share one duration intrinsically, so the whole beat moves
+// together. The requested span is clamped to the largest standard duration
+// that fits before the next note in the same staff/voice (or the measure's
+// end); the freed or consumed time is rebalanced into rests by `writeMeasure`.
+// Returns false on a bad handle.
+export function setNoteDuration(
+  doc: Document,
+  handle: NoteHandle,
+  durationBeats: number,
+): boolean {
+  const ctx = noteDurationContext(doc, handle);
+  if (!ctx) {
+    return false;
+  }
+  const requested = Math.max(1, Math.round(durationBeats * ctx.divisions));
+  const fit = largestFit(
+    Math.min(requested, ctx.availableDivisions),
+    ctx.divisions,
   );
 
-  for (const member of members) {
-    setDuration(doc, member.element, fit, divisions);
+  for (const member of ctx.members) {
+    setDuration(doc, member.element, fit, ctx.divisions);
     member.durationDivisions = fit;
   }
-  writeMeasure(doc, measureEl, notes, measureLength, divisions, sc);
+  writeMeasure(
+    doc,
+    ctx.measureEl,
+    ctx.notes,
+    ctx.measureLength,
+    ctx.divisions,
+    ctx.sc,
+  );
+  return true;
+}
+
+// The largest standard duration (in quarter-note beats) that setNoteDuration
+// could actually apply to this note without clamping it back down — the
+// Inspector uses this to disable picker options that would silently no-op.
+// Returns null on a bad handle.
+export function maxNoteDuration(
+  doc: Document,
+  handle: NoteHandle,
+): number | null {
+  const ctx = noteDurationContext(doc, handle);
+  if (!ctx) {
+    return null;
+  }
+  return largestFit(ctx.availableDivisions, ctx.divisions) / ctx.divisions;
+}
+
+// Change a single chord member's duration independently of its chord-mates —
+// unlike setNoteDuration (which resizes every note sharing the onset
+// together), this touches only the note at `handle`. `writeStaffNotes`
+// already re-derives which member leads the group (the longest — see its
+// comment) and re-flags `<chord/>` on write, so any member can end up plain
+// or `<chord/>`-flagged after this; nothing here needs to track that
+// explicitly. Clamped the same way as setNoteDuration: the largest standard
+// value that fits before the next note in the same staff/voice. Returns
+// false on a bad handle or a note with no chord-mates (nothing to diverge
+// a single note's duration from).
+export function setChordMemberDuration(
+  doc: Document,
+  handle: NoteHandle,
+  durationBeats: number,
+): boolean {
+  const ctx = noteDurationContext(doc, handle);
+  if (!ctx || ctx.members.length < 2) {
+    return false;
+  }
+  const target = elementForHandle(doc, handle);
+  if (!target) {
+    return false;
+  }
+  const member = ctx.members.find((note) => note.element === target);
+  if (!member) {
+    return false;
+  }
+  const requested = Math.max(1, Math.round(durationBeats * ctx.divisions));
+  const fit = largestFit(
+    Math.min(requested, ctx.availableDivisions),
+    ctx.divisions,
+  );
+
+  setDuration(doc, member.element, fit, ctx.divisions);
+  member.durationDivisions = fit;
+  writeMeasure(
+    doc,
+    ctx.measureEl,
+    ctx.notes,
+    ctx.measureLength,
+    ctx.divisions,
+    ctx.sc,
+  );
   return true;
 }
 

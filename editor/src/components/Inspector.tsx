@@ -21,6 +21,15 @@ export interface InspectorNoteRow {
   focused: boolean;
   /** True when this note ties forward into the next chord's matching pitch. */
   tied: boolean;
+  /** This note's own duration, in quarter-note beats — matches the group's
+   *  `durationBeats` unless it's been diverged from its chord-mates. */
+  durationBeats: number;
+  /** The largest duration this note could take without clamping. */
+  maxDurationBeats: number;
+  /** Only a chord (more than one note at this onset) can diverge a member's
+   *  duration from the rest — a lone note's duration is set via the group
+   *  control above, not per-row. */
+  canDivergeDuration: boolean;
 }
 
 export interface InspectorGraceRow {
@@ -49,6 +58,10 @@ export interface InspectorNoteGroup {
   /** This slot's duration in quarter-note beats (the `onSetDuration` value
    *  space) — undotted, matching `durationLabel`. */
   durationBeats: number;
+  /** The largest duration (in quarter-note beats) that actually fits before
+   *  the next note — picker options above this would silently clamp back
+   *  down to the current value, so they're disabled. */
+  maxDurationBeats: number;
   /** True when this staff's slot is a rest (no notes). */
   isRest: boolean;
   /** Index of this group's first note in the flat handles array. */
@@ -74,9 +87,15 @@ const DURATION_OPTIONS: Array<{ label: string; beats: number }> = [
 
 function DurationSelect({
   value,
+  maxBeats,
   onChange,
 }: {
   value: number;
+  /** Options larger than this would silently clamp back down (no room
+   *  before the next note) — they're disabled rather than hidden, so the
+   *  full standard scale stays visible and the reason (no space) is
+   *  discoverable via the title. */
+  maxBeats: number;
   onChange: (beats: number) => void;
 }) {
   return (
@@ -98,7 +117,16 @@ function DurationSelect({
       }}
     >
       {DURATION_OPTIONS.map((option) => (
-        <option key={option.beats} value={option.beats}>
+        <option
+          key={option.beats}
+          value={option.beats}
+          disabled={option.beats > maxBeats && option.beats !== value}
+          title={
+            option.beats > maxBeats && option.beats !== value
+              ? "Doesn't fit before the next note"
+              : undefined
+          }
+        >
           {option.label}
         </option>
       ))}
@@ -377,6 +405,9 @@ export interface InspectorProps {
   /** Set the duration (in quarter-note beats) of the chord at `index`'s onset —
    *  every chord member is resized together. */
   onSetDuration: (index: number, durationBeats: number) => void;
+  /** Set the duration of just the note at `index`, independent of its
+   *  chord-mates — how one member's rhythm diverges from the rest. */
+  onSetNoteDuration: (index: number, durationBeats: number) => void;
   onGraceAccidental: (index: number, alter: number) => void;
   /** Staff-step the grace note: delta +1 up, -1 down. */
   onGraceStep: (index: number, delta: number) => void;
@@ -508,6 +539,7 @@ function NoteGroupSection({
   onToggleTie,
   onAddNote,
   onSetDuration,
+  onSetNoteDuration,
   onGraceAccidental,
   onGraceStep,
   onGraceRemove,
@@ -524,6 +556,7 @@ function NoteGroupSection({
   onToggleTie: (flatIndex: number) => void;
   onAddNote: (partIndex: number) => void;
   onSetDuration: (flatIndex: number, durationBeats: number) => void;
+  onSetNoteDuration: (flatIndex: number, durationBeats: number) => void;
   onGraceAccidental: (flatIndex: number, alter: number) => void;
   onGraceStep: (flatIndex: number, delta: number) => void;
   onGraceRemove: (flatIndex: number) => void;
@@ -641,6 +674,7 @@ function NoteGroupSection({
           </span>
           <DurationSelect
             value={group.durationBeats}
+            maxBeats={group.maxDurationBeats}
             onChange={(beats) => onSetDuration(group.noteOffset, beats)}
           />
         </div>
@@ -700,6 +734,13 @@ function NoteGroupSection({
                 >
                   {note.label}
                 </button>
+                {note.canDivergeDuration && (
+                  <DurationSelect
+                    value={note.durationBeats}
+                    maxBeats={note.maxDurationBeats}
+                    onChange={(beats) => onSetNoteDuration(flatIndex, beats)}
+                  />
+                )}
                 <AccidentalControl
                   alter={note.alter}
                   onSet={(alter) => onAccidental(flatIndex, alter)}
@@ -763,6 +804,7 @@ export function Inspector({
   onToggleTie,
   onAddNote,
   onSetDuration,
+  onSetNoteDuration,
   onGraceAccidental,
   onGraceStep,
   onGraceRemove,
@@ -865,6 +907,7 @@ export function Inspector({
                 onToggleTie={onToggleTie}
                 onAddNote={onAddNote}
                 onSetDuration={onSetDuration}
+                onSetNoteDuration={onSetNoteDuration}
                 onGraceAccidental={onGraceAccidental}
                 onGraceStep={onGraceStep}
                 onGraceRemove={onGraceRemove}
