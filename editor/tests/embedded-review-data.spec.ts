@@ -3,15 +3,18 @@ import { fileURLToPath } from "node:url";
 import { type Page, expect, test } from "@playwright/test";
 
 // Round-trips the "Embed review data" feature (see ImageImportDialog and
-// editor/src/import-review-persistence.ts): a document carrying embedded OMR
+// editor/src/import-review-persistence.ts): a document carrying embedded
 // review data opens with its review panel restored, the panel survives an
-// export, and reopening the exported file restores it again — without ever
-// running real OMR recognition (this suite is deliberately weight/network
-// free; see playwright.editor.config.ts). The fixture stands in for what a
-// live OMR import would have embedded: one two-measure system with one
-// flagged note.
-const OMR_REVIEW_FIXTURE = fileURLToPath(
-  new URL("./fixtures/omr-review-embedded.musicxml", import.meta.url),
+// export, and reopening the exported file restores it again. This suite is
+// deliberately weight/network free (see playwright.editor.config.ts), so the
+// fixture is a hand-built .musicxml carrying the same
+// `<miscellaneous-field name="import-review-data">` a live OMR import would
+// have embedded (one two-measure system, one flagged note) — it's opened via
+// the plain file-open path, not a real OMR run. What's under test is the
+// editor's read/export/reopen handling of that data, not OMR recognition
+// itself.
+const REVIEW_DATA_FIXTURE = fileURLToPath(
+  new URL("./fixtures/review-data-embedded.musicxml", import.meta.url),
 );
 
 async function exportXml(page: Page): Promise<string> {
@@ -23,11 +26,11 @@ async function exportXml(page: Page): Promise<string> {
   return readFileSync(path, "utf8");
 }
 
-async function importFile(page: Page, filePath: string): Promise<void> {
+async function loadFile(page: Page, filePath: string): Promise<void> {
   await page.locator('input[type="file"]').first().setInputFiles(filePath);
 }
 
-async function importXmlContent(page: Page, xml: string): Promise<void> {
+async function loadXmlContent(page: Page, xml: string): Promise<void> {
   await page
     .locator('input[type="file"]')
     .first()
@@ -48,12 +51,12 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator("svg").first()).toBeVisible();
 });
 
-test("review data embedded in a file round-trips through export and reopen", async ({
+test("opening a file with embedded review data shows the review panel, and it survives export + reopen", async ({
   page,
 }) => {
-  // Opening a file with embedded review data restores the review panel, as if
-  // it were the tail of a fresh OMR import.
-  await importFile(page, OMR_REVIEW_FIXTURE);
+  // Opening a file that carries embedded review data restores the review
+  // panel, including the flagged (low-confidence) note count for that system.
+  await loadFile(page, REVIEW_DATA_FIXTURE);
   await expect(reviewPanel(page)).toBeVisible();
   await expect(page.getByText("line 1/1 · measures 1–2")).toBeVisible();
   await expect(page.getByText(/1 amber note on this line/)).toBeVisible();
@@ -69,19 +72,19 @@ test("review data embedded in a file round-trips through export and reopen", asy
   await page.getByRole("button", { name: "Close review" }).click();
   await expect(reviewPanel(page)).toBeHidden();
 
-  await importXmlContent(page, exported);
+  await loadXmlContent(page, exported);
   await expect(reviewPanel(page)).toBeVisible();
   await expect(page.getByText("line 1/1 · measures 1–2")).toBeVisible();
   await expect(page.getByText(/1 amber note on this line/)).toBeVisible();
 });
 
-test("a plain import with no embedded data does not open the review panel", async ({
+test("opening a file with no embedded review data does not open the review panel", async ({
   page,
 }) => {
   const SINGLE_STAFF = fileURLToPath(
     new URL("./fixtures/single-staff.musicxml", import.meta.url),
   );
-  await importFile(page, SINGLE_STAFF);
+  await loadFile(page, SINGLE_STAFF);
   await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
   await expect(reviewPanel(page)).toBeHidden();
 });
