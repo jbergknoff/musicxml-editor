@@ -1,14 +1,15 @@
+import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, test } from "bun:test";
 import {
+  type NoteHandle,
   addNote,
   addNoteToChord,
+  appendScore,
   createBlankDocument,
   insertMeasure,
   isEditableDocument,
   moveNote,
-  type NoteHandle,
   parseDocument,
   removeNote,
   removeNotes,
@@ -19,8 +20,8 @@ import {
 } from "./dom-edit";
 import {
   type ChordGroup,
-  isRest,
   type ParsedScore,
+  isRest,
   parseScore,
 } from "./sheet-music/index";
 
@@ -663,6 +664,106 @@ describe("insertMeasure", () => {
     // The note that was in measure index 1 is now in measure index 2.
     expect(placed.length).toBe(1);
     expect(placed[0].measureIndex).toBe(2);
+  });
+});
+
+describe("appendScore", () => {
+  test("appends the imported score's measures and renumbers sequentially", () => {
+    const doc = createBlankDocument({ measureCount: 2 });
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    const imported = createBlankDocument({ measureCount: 2 });
+    addNote(imported, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+    });
+
+    const result = appendScore(doc, serializeDocument(imported));
+    expect(result).toEqual({
+      firstAppendedMeasureIndex: 2,
+      appendedMeasureCount: 2,
+    });
+
+    const score = reparse(doc);
+    expect(score.parts[0].measures.length).toBe(4);
+    expect(score.parts[0].measures.map((m) => m.number)).toEqual([1, 2, 3, 4]);
+    const placed = chords(score);
+    expect(placed.map((p) => p.measureIndex)).toEqual([0, 2]);
+  });
+
+  test("rescales note durations when divisions differ", () => {
+    const doc = createBlankDocument({ measureCount: 1 }); // divisions = 4
+    const imported = parseDocument(
+      `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>24</divisions>
+        <key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>24</duration><type>quarter</type></note>
+      <note><rest/><duration>72</duration></note>
+    </measure>
+  </part>
+</score-partwise>`,
+    );
+
+    const result = appendScore(doc, serializeDocument(imported));
+    expect(result).toEqual({
+      firstAppendedMeasureIndex: 1,
+      appendedMeasureCount: 1,
+    });
+
+    const score = reparse(doc);
+    // The rescaled quarter note now spans 4 divisions (this document's
+    // divisions-per-quarter), not the source's 24.
+    const placed = chords(score);
+    expect(placed.length).toBe(1);
+    expect(placed[0].chord.duration).toBe(4);
+    expect(score.parts[0].measures[1].divisions).toBe(4);
+  });
+
+  test("refuses to append a multi-part score", () => {
+    const doc = createBlankDocument();
+    const multiPart = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list>
+    <score-part id="P1"><part-name>A</part-name></score-part>
+    <score-part id="P2"><part-name>B</part-name></score-part>
+  </part-list>
+  <part id="P1"><measure number="1"><note><rest measure="yes"/><duration>16</duration></note></measure></part>
+  <part id="P2"><measure number="1"><note><rest measure="yes"/><duration>16</duration></note></measure></part>
+</score-partwise>`;
+    expect(appendScore(doc, multiPart)).toBeNull();
+  });
+
+  test("refuses to append a staff-count mismatch", () => {
+    const doc = createBlankDocument(); // single staff
+    const rondo = readFileSync(
+      fileURLToPath(
+        new URL(
+          "./__fixtures__/rondo-alla-turca-clip.musicxml",
+          import.meta.url,
+        ),
+      ),
+      "utf8",
+    ); // grand staff
+    expect(appendScore(doc, rondo)).toBeNull();
+  });
+
+  test("refuses invalid MusicXML", () => {
+    const doc = createBlankDocument();
+    expect(appendScore(doc, "not xml at all <<<")).toBeNull();
   });
 });
 

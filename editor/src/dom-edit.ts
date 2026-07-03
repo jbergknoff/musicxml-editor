@@ -1621,6 +1621,94 @@ export function addGraceNote(
   return handleFor(measuresOf(doc), handle.measureIndex, graceEl);
 }
 
+// ── Append (from another import) ──────────────────────────────────────────────
+
+export interface AppendResult {
+  /** 0-based index of the first measure the appended score contributed. */
+  firstAppendedMeasureIndex: number;
+  appendedMeasureCount: number;
+}
+
+// Rescale every `<duration>` value in a measure (on `<note>`, `<backup>`, and
+// `<forward>` elements) from one divisions-per-quarter to another, and update
+// the measure's own `<attributes><divisions>` to match, if present. Used when
+// appending a score whose divisions differ from the target document's — the
+// measure's note spans are otherwise expressed in the wrong units.
+function rescaleMeasureDurations(
+  measureEl: Element,
+  targetDivisions: number,
+  sourceDivisions: number,
+): void {
+  if (targetDivisions === sourceDivisions) {
+    return;
+  }
+  const ratio = targetDivisions / sourceDivisions;
+  for (const tag of ["note", "backup", "forward"]) {
+    for (const durationEl of Array.from(
+      measureEl.querySelectorAll(`${tag} > duration`),
+    )) {
+      const value = Number.parseInt(durationEl.textContent ?? "0", 10);
+      durationEl.textContent = String(Math.max(1, Math.round(value * ratio)));
+    }
+  }
+  const divisionsEl = measureEl.querySelector("attributes > divisions");
+  if (divisionsEl) {
+    divisionsEl.textContent = String(targetDivisions);
+  }
+}
+
+// Append every measure of `importedXml` onto the end of `doc`'s (single) part,
+// then renumber every measure sequentially — the "append from import" flow:
+// several imports (e.g. a series of page screenshots) landing sequentially in
+// one document rather than replacing it. Both documents must be in the
+// editor's single-part shape (`isEditableDocument`) and declare the same
+// staff count (a grand-staff score can only extend with another grand-staff
+// score) — anything else returns null rather than guessing a layout. Note
+// spans are rescaled if the two documents' `<divisions>` differ; each
+// transplanted measure's own `<attributes>` (clef/key/time changes) are kept
+// verbatim, since MusicXML allows a mid-score change and this is exactly one.
+export function appendScore(
+  doc: Document,
+  importedXml: string,
+): AppendResult | null {
+  let sourceDoc: Document;
+  try {
+    sourceDoc = parseDocument(importedXml);
+  } catch {
+    return null;
+  }
+  if (!isEditableDocument(doc) || !isEditableDocument(sourceDoc)) {
+    return null;
+  }
+  const sourceMeasures = measuresOf(sourceDoc);
+  const part = doc.querySelector("part");
+  if (sourceMeasures.length === 0 || !part) {
+    return null;
+  }
+  if (staffCountOf(sourceDoc) !== staffCountOf(doc)) {
+    return null;
+  }
+
+  const firstAppendedMeasureIndex = measuresOf(doc).length;
+  const { divisions: targetDivisions } = measureMetrics(doc);
+  const { divisions: sourceDivisions } = measureMetrics(sourceDoc);
+
+  for (const sourceMeasureEl of sourceMeasures) {
+    const imported = doc.importNode(sourceMeasureEl, true);
+    rescaleMeasureDurations(imported, targetDivisions, sourceDivisions);
+    part.appendChild(imported);
+  }
+
+  measuresOf(doc).forEach((measureEl, i) => {
+    measureEl.setAttribute("number", String(i + 1));
+  });
+
+  return {
+    firstAppendedMeasureIndex,
+    appendedMeasureCount: sourceMeasures.length,
+  };
+}
+
 // Insert a blank (full-measure-rest) measure after `afterIndex` (default: the
 // end), then renumber every measure sequentially. Returns the new measure's
 // index, or null when the part has no measures to anchor against.
