@@ -98,6 +98,12 @@ const WORK_ORDER = ["work-number", "work-title", "opus"];
 // `<miscellaneous>` provenance fields.
 export const SOFTWARE_NAME = "musicxml-editor";
 
+// Reserved `<miscellaneous-field>` name used to embed OMR import-review data
+// (see import-review-persistence.ts). Excluded from `ScoreMetadata.miscellaneous`
+// below — it's a large machine-readable blob, not something to show in the
+// metadata editor.
+export const IMPORT_REVIEW_FIELD_NAME = "import-review-data";
+
 // The project's home, credited in the import description so a file's
 // provenance trail points back to the tool that produced it.
 const PROJECT_URL = "https://github.com/jbergknoff/musicxml-editor";
@@ -394,12 +400,68 @@ export function readMetadata(doc: Document): ScoreMetadata {
         : null,
     },
     miscellaneous: miscellaneous
-      ? directChildren(miscellaneous, "miscellaneous-field").map((field) => ({
-          name: field.getAttribute("name") ?? "",
-          value: field.textContent?.trim() ?? "",
-        }))
+      ? directChildren(miscellaneous, "miscellaneous-field")
+          .filter(
+            (field) => field.getAttribute("name") !== IMPORT_REVIEW_FIELD_NAME,
+          )
+          .map((field) => ({
+            name: field.getAttribute("name") ?? "",
+            value: field.textContent?.trim() ?? "",
+          }))
       : [],
   };
+}
+
+// ── Generic miscellaneous-field access ─────────────────────────────────────────
+// Reusable read/write for a single `<miscellaneous-field>` by name, for callers
+// (like import-review-persistence.ts) that store their own structured data
+// rather than a human-editable string. Untrimmed, unlike `ScoreMetadata` above.
+
+export function readMiscField(doc: Document, name: string): string | null {
+  const identification = firstChild(doc.documentElement, "identification");
+  const miscellaneous = identification
+    ? firstChild(identification, "miscellaneous")
+    : null;
+  if (!miscellaneous) {
+    return null;
+  }
+  const field = directChildren(miscellaneous, "miscellaneous-field").find(
+    (candidate) => candidate.getAttribute("name") === name,
+  );
+  return field ? (field.textContent ?? "") : null;
+}
+
+/** Set a miscellaneous field's raw value, or remove it when `value` is null. */
+export function writeMiscField(
+  doc: Document,
+  name: string,
+  value: string | null,
+): void {
+  const root = doc.documentElement;
+  if (value === null) {
+    const identification = firstChild(root, "identification");
+    const miscellaneous = identification
+      ? firstChild(identification, "miscellaneous")
+      : null;
+    if (!miscellaneous) {
+      return;
+    }
+    const field = directChildren(miscellaneous, "miscellaneous-field").find(
+      (candidate) => candidate.getAttribute("name") === name,
+    );
+    field?.remove();
+    pruneIfEmpty(miscellaneous);
+    pruneIfEmpty(identification);
+    return;
+  }
+  const identification = ensureChild(doc, root, "identification", SCORE_ORDER);
+  const miscellaneous = ensureChild(
+    doc,
+    identification,
+    "miscellaneous",
+    IDENTIFICATION_ORDER,
+  );
+  setMiscField(doc, miscellaneous, name, value);
 }
 
 // ── Write ─────────────────────────────────────────────────────────────────────
