@@ -1,7 +1,9 @@
 // A modal confirmation dialog shown before a MIDI file is converted to
 // MusicXML. MIDI conversion has choices no other import format needs — which
-// tracks to bring in (and whether to merge them into one piano part split by
-// pitch), how fine a rhythmic grid to quantize to, and whether to infer a key
+// tracks to bring in (and whether to arrange the selected notes into one
+// piano part split across treble/bass clef by pitch, whether that's one
+// track's notes or several tracks' merged together), how fine a rhythmic
+// grid to quantize to, and whether to infer a key
 // signature from the notes themselves (most MIDI files carry no key-signature
 // meta event, so without this every accidental defaults to a sharp spelling
 // in C major regardless of the piece's actual key). This is a pure form: the
@@ -286,9 +288,7 @@ export function MidiImportDialog({
                   )
                 }
               />
-              <span>
-                Merge selected tracks into one piano part, split by pitch
-              </span>
+              <span>Arrange into one piano part (treble + bass clef)</span>
             </label>
             {mergeTracks ? (
               <div style={{ marginTop: 10 }}>
