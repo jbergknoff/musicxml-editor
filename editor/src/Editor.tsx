@@ -34,6 +34,10 @@ import {
   EditableSheetMusic,
   type EditorGesture,
 } from "./components/EditableSheetMusic";
+import {
+  type ImageImportChoice,
+  ImageImportDialog,
+} from "./components/ImageImportDialog";
 import { ImportReviewPanel } from "./components/ImportReviewPanel";
 import {
   Inspector,
@@ -264,6 +268,13 @@ export function Editor() {
     tracks: TrackInfo[];
     explicitKey: { fifths: number; mode: string } | null;
   } | null>(null);
+  // A PDF/image awaiting confirmation (inference backend, staff-detection
+  // mode) via ImageImportDialog before OMR recognition runs. The chosen
+  // options carry over as the default for the next import.
+  const [pendingImage, setPendingImage] = useState<{ file: File } | null>(null);
+  const [imageImportChoice, setImageImportChoice] = useState<ImageImportChoice>(
+    { backend: "auto", staffDetection: "classical" },
+  );
   // Instant-scroll request for the sheet renderer: set the beat, bump the
   // generation. Used when the review panel steps the selection between systems.
   const snapBeatRef = useRef<number | null>(null);
@@ -1197,17 +1208,10 @@ export function Editor() {
         return;
       }
       if (isImportableImage(file)) {
-        const result = await imageImport.importImage(file);
-        if (result === null) {
-          return;
-        }
-        finishImport(
-          result.musicXml,
-          "optical-music-recognition",
-          file.name,
-          null,
-          result.review,
-        );
+        // OMR's only user-facing knobs are the inference backend and staff-
+        // detection mode, collected by ImageImportDialog before recognition
+        // runs — see onImageImportConfirm.
+        setPendingImage({ file });
       } else if (isMxl(file)) {
         const bytes = new Uint8Array(await file.arrayBuffer());
         const imported = await extractMusicXmlFromMxl(bytes);
@@ -1229,7 +1233,30 @@ export function Editor() {
         finishImport(imported, null, file.name, null, null);
       }
     },
-    [imageImport, finishImport],
+    [finishImport],
+  );
+
+  const onImageImportConfirm = useCallback(
+    async (choice: ImageImportChoice) => {
+      if (!pendingImage) {
+        return;
+      }
+      const { file } = pendingImage;
+      setImageImportChoice(choice);
+      setPendingImage(null);
+      const result = await imageImport.importImage(file, choice);
+      if (result === null) {
+        return;
+      }
+      finishImport(
+        result.musicXml,
+        "optical-music-recognition",
+        file.name,
+        null,
+        result.review,
+      );
+    },
+    [pendingImage, imageImport, finishImport],
   );
 
   const onMidiImportConfirm = useCallback(
@@ -1739,6 +1766,15 @@ export function Editor() {
           explicitKey={pendingMidi.explicitKey}
           onConfirm={onMidiImportConfirm}
           onCancel={() => setPendingMidi(null)}
+        />
+      ) : null}
+
+      {pendingImage ? (
+        <ImageImportDialog
+          fileName={pendingImage.file.name}
+          defaultChoice={imageImportChoice}
+          onConfirm={onImageImportConfirm}
+          onCancel={() => setPendingImage(null)}
         />
       ) : null}
     </div>
