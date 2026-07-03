@@ -158,6 +158,29 @@ test("right-click preserves a multi-measure selection and offers Cut measure(s)"
   ).toBeVisible();
 });
 
+test("dismissing the context menu with Escape does not clear the range selection", async ({
+  page,
+}) => {
+  await loadThreeMeasures(page);
+  await page.locator("#p0-m1-n0-v0").click();
+  await page.locator("#p0-m2-n0-v0").click({ modifiers: ["Shift"] });
+  await expect(page.getByText("Sel: m.1–2")).toBeVisible();
+
+  await page.locator("#p0-m1-n0-v0").click({ button: "right" });
+  await expect(
+    page.getByRole("menuitem", { name: "Cut measure(s)" }),
+  ).toBeVisible();
+
+  // Escape is the natural way to dismiss a menu without picking anything —
+  // it must close the menu but leave the range selected.
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("menuitem", { name: "Cut measure(s)" }),
+  ).toHaveCount(0);
+  await expect(page.getByText("Sel: m.1–2")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy" })).toBeEnabled();
+});
+
 test("right-click on a single-note selection does not offer Cut measure(s)", async ({
   page,
 }) => {

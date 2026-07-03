@@ -739,6 +739,15 @@ export function Editor() {
       if (!editable) {
         return;
       }
+      // Which measure the click landed in, straight from the renderer's own
+      // `measureXs` boundary walk — precise regardless of where in the bar
+      // the click fell. `request.beat` (used below for the slot lookup) is a
+      // cruder proportional interpolation within that measure and can, near a
+      // barline, round into the *adjacent* measure; comparing this instead of
+      // `slot.measureIndex` against the current range is what makes a
+      // right-click that's visually inside a multi-measure selection reliably
+      // read as inside it.
+      const clickedMeasureIndex = request.measureNumber - 1;
       const slot = slotAtBeat(score, request.beat);
       if (!slot) {
         setMenu(null);
@@ -754,13 +763,15 @@ export function Editor() {
         // A right-click landing inside an existing measure-range selection
         // opens the menu for the whole range rather than collapsing it to a
         // single slot — matching how right-click behaves on an existing
-        // selection elsewhere (Finder, text editors, …).
+        // selection elsewhere (Finder, text editors, …). The range's tinted
+        // background spans every staff of a grand staff, so any staff's click
+        // at that measure counts — not just the one the range's own partIndex
+        // happens to be.
         if (
           prev?.kind === "measureRange" &&
-          prev.partIndex === slot.partIndex &&
-          slot.measureIndex >=
+          clickedMeasureIndex >=
             Math.min(prev.startMeasureIndex, prev.endMeasureIndex) &&
-          slot.measureIndex <=
+          clickedMeasureIndex <=
             Math.max(prev.startMeasureIndex, prev.endMeasureIndex)
         ) {
           return prev;
@@ -1268,6 +1279,15 @@ export function Editor() {
   const stepOut = useCallback(() => {
     setMenu(null);
     setSelection((prev) => {
+      // A measure range isn't part of the slot→note drill hierarchy Escape
+      // steps back out of, so it isn't Escape's to clear. Without this, the
+      // very natural "right-click a range, then press Escape to dismiss the
+      // menu without picking anything" gesture would silently wipe the
+      // range: Escape reaches this global handler before (or as well as)
+      // ContextMenu's own Escape-closes-the-menu listener.
+      if (prev?.kind === "measureRange") {
+        return prev;
+      }
       if (prev?.kind !== "note") {
         return null;
       }
