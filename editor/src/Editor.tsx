@@ -56,6 +56,7 @@ import {
   addGraceNote,
   addNote,
   addNoteToChord,
+  addStaff,
   appendScore,
   copyMeasures,
   createBlankDocument,
@@ -68,6 +69,7 @@ import {
   pasteMeasures,
   removeGraceNote,
   removeNotes,
+  removeStaff,
   reorderGrace,
   serializeDocument,
   setAccidental,
@@ -1109,6 +1111,36 @@ export function Editor() {
     commit();
   }, [editable, slotInfo, documentRef, commit]);
 
+  // The number of staves in the (single) part = the number of parsed staff-parts.
+  const staffCount = score.parts.length;
+
+  const onAddStaff = useCallback(() => {
+    if (!editable) {
+      return;
+    }
+    if (addStaff(documentRef.current) === null) {
+      return;
+    }
+    setSelection(null);
+    setMenu(null);
+    commit();
+  }, [editable, documentRef, commit]);
+
+  // Remove the staff holding the current selection, or the bottom staff when
+  // nothing is selected.
+  const onRemoveStaff = useCallback(() => {
+    if (!editable || staffCount <= 1) {
+      return;
+    }
+    const target = slotInfo !== null ? slotInfo.partIndex + 1 : staffCount;
+    if (removeStaff(documentRef.current, target) === null) {
+      return;
+    }
+    setSelection(null);
+    setMenu(null);
+    commit();
+  }, [editable, staffCount, slotInfo, documentRef, commit]);
+
   // Delete the measures [range.lo, range.hi] and reselect the slot that now
   // occupies that position (shared tail of both delete-measure and cut).
   const deleteMeasureRange = useCallback(
@@ -2118,6 +2150,24 @@ export function Editor() {
           style={toolbarButtonStyle(editable && activeMeasureRange !== null)}
         >
           − Measure
+        </button>
+        <button
+          type="button"
+          onClick={onAddStaff}
+          disabled={!editable}
+          title="Add a staff below the existing staves"
+          style={toolbarButtonStyle(editable)}
+        >
+          + Staff
+        </button>
+        <button
+          type="button"
+          onClick={onRemoveStaff}
+          disabled={!editable || staffCount <= 1}
+          title="Remove the selected staff (or the bottom staff)"
+          style={toolbarButtonStyle(editable && staffCount > 1)}
+        >
+          − Staff
         </button>
         <span style={{ flex: 1 }} />
         {dirty ? (
