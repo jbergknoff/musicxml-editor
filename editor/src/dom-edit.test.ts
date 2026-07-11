@@ -23,6 +23,7 @@ import {
   setAccidental,
   setChordMemberDuration,
   setNoteDuration,
+  shiftNotesInTime,
   toggleTie,
 } from "./dom-edit";
 import {
@@ -1773,3 +1774,120 @@ function sliceMeasure(xml: string, number: number): string {
   const close = xml.indexOf("</measure>", open) + "</measure>".length;
   return xml.slice(open, close);
 }
+
+describe("shiftNotesInTime", () => {
+  // C5 quarter at beat 0, E5 quarter at beat 1, rest of the bar empty.
+  function docWithRun(): { doc: Document; first: NoteHandle } {
+    const doc = createBlankDocument();
+    const first = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+    });
+    return { doc, first };
+  }
+
+  test("shifts the anchor and everything after it right, absorbing trailing rest", () => {
+    const { doc, first } = docWithRun();
+    const moved = shiftNotesInTime(doc, first, 1);
+    expect(moved).not.toBeNull();
+    const onsets = chords(reparse(doc)).map((entry) => entry.onsetBeat);
+    expect(onsets).toEqual([1, 2]);
+  });
+
+  test("shifts left back into the freed rest space", () => {
+    const { doc, first } = docWithRun();
+    const moved = shiftNotesInTime(doc, first, 1) as NoteHandle;
+    const back = shiftNotesInTime(doc, moved, -1);
+    expect(back).not.toBeNull();
+    const onsets = chords(reparse(doc)).map((entry) => entry.onsetBeat);
+    expect(onsets).toEqual([0, 1]);
+  });
+
+  test("shifting only the tail leaves earlier notes in place", () => {
+    const { doc } = docWithRun();
+    // Anchor on the E5 at beat 1; the C5 at beat 0 must not move.
+    const second = handleOfNoteAt(doc, 1);
+    const moved = shiftNotesInTime(doc, second, 2);
+    expect(moved).not.toBeNull();
+    const onsets = chords(reparse(doc)).map((entry) => entry.onsetBeat);
+    expect(onsets).toEqual([0, 3]);
+  });
+
+  test("refuses a shift past the end of the measure", () => {
+    const { doc, first } = docWithRun();
+    const before = serializeDocument(doc);
+    expect(shiftNotesInTime(doc, first, 3)).toBeNull();
+    expect(serializeDocument(doc)).toBe(before);
+  });
+
+  test("refuses a left shift that would collide with the previous note", () => {
+    const { doc } = docWithRun();
+    const second = handleOfNoteAt(doc, 1);
+    const before = serializeDocument(doc);
+    expect(shiftNotesInTime(doc, second, -1)).toBeNull();
+    expect(serializeDocument(doc)).toBe(before);
+  });
+
+  test("on a grand staff, shifting one staff leaves the other untouched", () => {
+    const doc = createBlankDocument();
+    addStaff(doc);
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+      staff: 1,
+    });
+    const bass = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "G", alter: 0, octave: 2 },
+      staff: 2,
+    }) as NoteHandle;
+    expect(shiftNotesInTime(doc, bass, 1)).not.toBeNull();
+    const score = reparse(doc);
+    // Treble (parts[0]) still starts at beat 0; bass (parts[1]) moved to 1.
+    const partOnsets = score.parts.map((part) => {
+      let onsetBeat = 0;
+      const divisions = part.measures[0].divisions || 4;
+      for (const event of part.measures[0].events) {
+        if (!isRest(event)) {
+          return onsetBeat;
+        }
+        onsetBeat += event.duration / divisions;
+      }
+      return null;
+    });
+    expect(partOnsets).toEqual([0, 1]);
+  });
+
+  // The handle of the (single) non-rest note whose onset is `beat` in measure 1.
+  function handleOfNoteAt(doc: Document, beat: number): NoteHandle {
+    const noteEls = Array.from(
+      doc.querySelectorAll("measure")[0].querySelectorAll("note"),
+    );
+    let cursor = 0;
+    for (let index = 0; index < noteEls.length; index++) {
+      const el = noteEls[index];
+      const duration = Number.parseInt(
+        el.querySelector("duration")?.textContent ?? "0",
+        10,
+      );
+      const isRestEl = el.querySelector("rest") !== null;
+      if (!isRestEl && cursor === beat * 4) {
+        return { measureIndex: 0, noteElementIndex: index };
+      }
+      cursor += duration;
+    }
+    throw new Error(`no note at beat ${beat}`);
+  }
+});

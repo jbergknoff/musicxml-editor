@@ -230,3 +230,25 @@ test("a multi-part score is view-only", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Undo" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Redo" })).toBeDisabled();
 });
+
+test("a selected run shifts in time with , and .", async ({ page }) => {
+  await loadSingleStaff(page);
+  // Select the first note; "." shifts it and everything after it one quarter
+  // later, absorbing the bar's trailing rest.
+  await page.locator("#p0-m1-n0-v0").click();
+  await page.keyboard.press(".");
+  expect(noteSequence(await exportXml(page))).toEqual([
+    "REST",
+    "C5",
+    "E5",
+    "G5",
+  ]);
+  // "," pulls the block back to the start of the bar.
+  await page.keyboard.press(",");
+  expect(noteSequence(await exportXml(page))).toEqual([
+    "C5",
+    "E5",
+    "G5",
+    "REST",
+  ]);
+});

@@ -1167,6 +1167,72 @@ export function setNoteDuration(
   return true;
 }
 
+// Shift a staff's notes — from the anchor note's onset through the end of its
+// measure — later (positive `deltaBeats`) or earlier (negative) in time, as a
+// block. This is the OMR-cleanup "this entry came in a beat early/late" fix:
+// the run keeps its relative rhythm, and the freed/consumed time rebalances
+// into rests via `writeMeasure` (rest space shrinks at one end of the bar and
+// grows at the other). Clamped to the measure: the shifted block must stay
+// inside it and clear of the unshifted notes before it, otherwise nothing
+// changes. Other staves are untouched. Returns the anchor's new handle, or
+// null when the shift doesn't fit (or the handle is bad).
+export function shiftNotesInTime(
+  doc: Document,
+  handle: NoteHandle,
+  deltaBeats: number,
+): NoteHandle | null {
+  const measures = measuresOf(doc);
+  const measureEl = measures[handle.measureIndex];
+  const target = elementForHandle(doc, handle);
+  if (!measureEl || !target) {
+    return null;
+  }
+  const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+  const deltaDivisions = Math.round(deltaBeats * divisions);
+  if (deltaDivisions === 0) {
+    return null;
+  }
+  const measureLength =
+    measureContentDivisions(measureEl) || divisionsPerMeasure;
+  const sc = staffCountOf(doc);
+  const targetStaff = sc > 1 ? staffOf(target) : 0;
+  const notes = readRealNotes(measureEl, divisions);
+  const anchor = notes.find((note) => note.element === target);
+  if (!anchor) {
+    return null;
+  }
+  const inStaff = (note: RealNote) =>
+    targetStaff === 0 || staffOf(note.element) === targetStaff;
+  const shifted = notes.filter(
+    (note) => inStaff(note) && note.onsetDivisions >= anchor.onsetDivisions,
+  );
+  // Bounds: the block must stay inside the measure (right shift eats trailing
+  // rest space) and clear of the unshifted notes before it (left shift eats
+  // the rest space in between).
+  const blockEnd = shifted.reduce(
+    (max, note) => Math.max(max, note.onsetDivisions + note.durationDivisions),
+    0,
+  );
+  const priorEnd = notes.reduce(
+    (max, note) =>
+      inStaff(note) && note.onsetDivisions < anchor.onsetDivisions
+        ? Math.max(max, note.onsetDivisions + note.durationDivisions)
+        : max,
+    0,
+  );
+  if (
+    anchor.onsetDivisions + deltaDivisions < priorEnd ||
+    blockEnd + deltaDivisions > measureLength
+  ) {
+    return null;
+  }
+  for (const note of shifted) {
+    note.onsetDivisions += deltaDivisions;
+  }
+  writeMeasure(doc, measureEl, notes, measureLength, divisions, sc);
+  return handleFor(measuresOf(doc), handle.measureIndex, target);
+}
+
 // The largest standard duration (in quarter-note beats) that setNoteDuration
 // could actually apply to this note without clamping it back down — the
 // Inspector uses this to disable picker options that would silently no-op.

@@ -77,6 +77,7 @@ import {
   setGracePitch,
   setGraceSlash,
   setNoteDuration,
+  shiftNotesInTime,
   toggleTie,
 } from "./dom-edit";
 import {
@@ -1073,6 +1074,53 @@ export function Editor() {
     [documentRef],
   );
 
+  // Shift the selected chord — and everything after it in its measure/staff —
+  // later (+1) or earlier (−1) in time by the chord's own duration, swallowing
+  // rest space at one end of the bar and emitting it at the other (see
+  // `shiftNotesInTime`). The OMR-cleanup fix for a run the recognizer placed a
+  // beat early or late: select its first note and nudge the whole block.
+  const shiftSelectionInTime = useCallback(
+    (direction: 1 | -1) => {
+      if (
+        !editable ||
+        !slotInfo ||
+        slotInfo.isRest ||
+        slotInfo.handles.length === 0
+      ) {
+        return;
+      }
+      const step = BEATS_BY_TYPE[slotInfo.type];
+      const moved = shiftNotesInTime(
+        documentRef.current,
+        slotInfo.handles[0],
+        direction * step,
+      );
+      if (!moved) {
+        return;
+      }
+      dropFlagsInMeasure(slotInfo.measureIndex);
+      setMenu(null);
+      commit();
+      // Follow the block to its new onset, keeping the drill level.
+      if (selectionRef.current?.kind === "note") {
+        setSelection({ kind: "note", handle: moved });
+      } else {
+        reselectSlotAt(
+          slotInfo.onsetBeat + direction * step,
+          slotInfo.partIndex,
+        );
+      }
+    },
+    [
+      editable,
+      slotInfo,
+      documentRef,
+      commit,
+      dropFlagsInMeasure,
+      reselectSlotAt,
+    ],
+  );
+
   // A pointer-down on the canvas around/below the staves (not on the staff
   // SVG) clears the selection; taps that reach the SVG are handleTap's.
   const clearSelectionOffStaff = useCallback((event: PointerEvent) => {
@@ -1795,6 +1843,16 @@ export function Editor() {
           event.preventDefault();
           accidentalOnFocus(0);
           return;
+        case ",":
+        case "<":
+          event.preventDefault();
+          shiftSelectionInTime(-1);
+          return;
+        case ".":
+        case ">":
+          event.preventDefault();
+          shiftSelectionInTime(1);
+          return;
         default:
           break;
       }
@@ -1824,6 +1882,7 @@ export function Editor() {
     arrowPitch,
     accidentalOnFocus,
     addLetter,
+    shiftSelectionInTime,
     undo,
     redo,
     copyMeasureSelection,
@@ -2127,6 +2186,19 @@ export function Editor() {
       label: "Add note",
       onSelect: () => addNoteAtSlot(),
       disabled: !slotInfo,
+    },
+    // Time shifts move the selected chord and everything after it in the
+    // measure as a block, by the chord's own duration (see
+    // `shiftSelectionInTime`).
+    {
+      label: "Shift later in time",
+      onSelect: () => shiftSelectionInTime(1),
+      disabled: !slotInfo || slotInfo.isRest,
+    },
+    {
+      label: "Shift earlier in time",
+      onSelect: () => shiftSelectionInTime(-1),
+      disabled: !slotInfo || slotInfo.isRest,
     },
     // Copy/Cut only appear for an explicit measure-range selection (shift-
     // click/drag or Shift+←/→) — not for an ordinary note/beat selection,
@@ -2455,7 +2527,7 @@ export function Editor() {
         <span>Enter: drill in · Esc: out</span>
         <span>↑↓: pitch (⇧ octave)</span>
         <span>←→: beat · ⇧←→: measures · Tab: cycle</span>
-        <span>A–G: add · −/=/0: ♭♯♮</span>
+        <span>A–G: add · −/=/0: ♭♯♮ · ,/.: shift in time</span>
         <span>⌘C/X/V: copy/cut/paste measures</span>
         <span>Space: listen</span>
       </div>
