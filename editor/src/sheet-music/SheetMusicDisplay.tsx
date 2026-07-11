@@ -1,3 +1,4 @@
+import type { VNode } from "preact";
 import { memo } from "preact/compat";
 import {
   useCallback,
@@ -17,6 +18,8 @@ import { diatonicIndex, isRest, parseScore } from "./musicxml-parser";
 import {
   ACCIDENTAL_BASE_OFFSET_FACTOR,
   ACCIDENTAL_COLUMN_WIDTH_FACTOR,
+  CLEF_CHANGE_FONT_FACTOR,
+  CLEF_CHANGE_LEAD_FACTOR,
   DIVISIONS,
   FLAT_POSITIONS,
   GRACE_NOTE_ADVANCE,
@@ -26,6 +29,7 @@ import {
   SHARP_POSITIONS,
   accidentalColumns,
   beamStemDirection,
+  clefChangeWidth,
   eventXsFromSpine,
   groupBeamableEvents,
   keyChangeGlyphs,
@@ -75,6 +79,54 @@ injectGlyphFont();
 const DEFAULT_TEXT_FONT_FAMILY =
   "'Geist', ui-sans-serif, system-ui, sans-serif";
 
+// Opacity for the lines that make up the staff itself — the five staff lines,
+// barlines, and the ledger lines that extend the staff for notes above/below
+// it. They share one value so the staff reads as a single uniform colour and
+// the ink-strength noteheads/stems stand out against it.
+const STAFF_LINE_OPACITY = 0.55;
+
+// A notehead's half-width as a fraction of the staff-line spacing. Used to
+// place stems, accidentals, dots, and ledger-line overhangs relative to the
+// head; grace heads scale this down further by their own grace scale.
+const NOTEHEAD_HALF_WIDTH_FACTOR = 0.55;
+
+// Width of the invisible pointer hit-area for a focus-range drag handle,
+// centered on the handle's pill. Wider than the visible pill (12px) so the
+// handle is easy to grab on a touchscreen without needing pixel precision.
+const HANDLE_HIT_WIDTH = 44;
+
+// Fraction of the adjacent measure's width a focus-handle drag must cross
+// before it snaps to that measure (see snapIndexFromCurrent).
+const HANDLE_SNAP_THRESHOLD_FRACTION = 0.25;
+
+// A stem's attachment point, tangent to the notehead's nominal half-width.
+function stemAttachX(
+  centerX: number,
+  nrx: number,
+  stemDir: "up" | "down",
+): number {
+  return stemDir === "up" ? centerX + nrx : centerX - nrx;
+}
+
+// A flag glyph always hooks to the right of its stem (for both up- and
+// down-stem flags), so nudging the stem's own line slightly right and the
+// flag glyph's anchor slightly left — toward each other — closes any small
+// gap between them without moving either one far enough to look offset from
+// the notehead or the flag's own curve. Weighted toward the stem: nudging
+// the flag noticeably shifts its own curve leftward (visibly offsetting it
+// from the notehead), while the stem is just a straight line that can move
+// a little further without looking wrong.
+const STEM_FLAG_NUDGE = 0.3;
+const FLAG_STEM_NUDGE = 0.1;
+
+// Stroke width of a note stem. A beam's vertical end edge sits exactly on the
+// stem's centerline, so its diagonal top/bottom edges get anti-aliased right
+// at the corner where they meet the crisp stem stroke — that softened corner
+// reads as the beam falling short of the stem. Beams overhang each end by
+// half this width so the filled polygon fully covers the stem's width at the
+// tip, closing that seam.
+const STEM_STROKE_WIDTH = 1.2;
+
 // ── Beam geometry ─────────────────────────────────────────────────────────────
 
 interface BeamGroupData {
@@ -107,25 +159,27 @@ function computeBeamGroups(
   const stemLength = staffSpace * 3;
   // Diagonal beams may not exceed this total rise/fall, keeping angles readable.
   const maxBeamRise = staffSpace * 1.5;
-  const nrx = staffSpace * 0.55;
+  const nrx = staffSpace * NOTEHEAD_HALF_WIDTH_FACTOR;
 
   return groupBeamableEvents(events, beatDivisions).map((indices) => {
     const chords = indices.map((i) => events[i] as ChordGroup);
-    const stemDir = beamStemDirection(chords, clef);
+    // Resolve each chord's own clef so a beam group spanning a mid-measure clef
+    // change measures every chord against the clef it is actually drawn in
+    // (otherwise stems land on the wrong side after the change).
+    const chordClef = (g: ChordGroup) => g.clef ?? clef;
+    const stemDir = beamStemDirection(chords, (i) => chordClef(chords[i]));
 
     // Reference Y for each chord: the notehead the beam must clear, i.e. the
     // outermost note in the beam direction (top note for stem-up, bottom note
     // for stem-down). The natural beam position sits stemLength beyond this.
     const referenceYs = chords.map((g) => {
       const ys = g.notes.map((n) =>
-        noteY(n.pitch, clef, staffBottomY, staffSpace),
+        noteY(n.pitch, chordClef(g), staffBottomY, staffSpace),
       );
       return stemDir === "up" ? Math.min(...ys) : Math.max(...ys);
     });
 
-    const stemXs = indices.map((i) =>
-      stemDir === "up" ? eventXs[i] + nrx : eventXs[i] - nrx,
-    );
+    const stemXs = indices.map((i) => stemAttachX(eventXs[i], nrx, stemDir));
 
     // Beam endpoints: natural stem tip (standard length) for the first and last
     // chord, then clamped so the total rise stays within maxBeamRise.
@@ -183,23 +237,68 @@ function computeBeamGroups(
   });
 }
 
+// SVG <line> with stroke-width draws end caps perpendicular to the beam's own
+// slope, so a diagonal beam's end edge is slanted relative to the (always
+// vertical) stem it terminates against — the corner where they meet looks
+// notched rather than flush. Real engraving draws beams as parallelograms
+// with vertical end edges regardless of slope; build that polygon directly.
+// An end anchored on a real stem is pushed outward along the beam's own line
+// (by half the stem's stroke width) so the fill fully covers the stem's
+// width at the tip — otherwise the diagonal edges' anti-aliasing leaves a
+// faint seam right where they'd otherwise meet the stem's crisp edge. Only
+// stem-anchored ends should overhang; a secondary beam's open stub tip (see
+// secondaryBeamSegments) has no stem to reach and must stay put.
+function beamPolygonPoints(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  thickness: number,
+  anchorStart = true,
+  anchorEnd = true,
+): string {
+  const half = thickness / 2;
+  const dX = x2 - x1;
+  const slope = dX === 0 ? 0 : (y2 - y1) / dX;
+  const overhang = STEM_STROKE_WIDTH / 2;
+  const ax1 = anchorStart ? x1 - overhang : x1;
+  const ay1 = anchorStart ? y1 - slope * overhang : y1;
+  const ax2 = anchorEnd ? x2 + overhang : x2;
+  const ay2 = anchorEnd ? y2 + slope * overhang : y2;
+  return `${ax1},${ay1 - half} ${ax2},${ay2 - half} ${ax2},${ay2 + half} ${ax1},${ay1 + half}`;
+}
+
 // Compute secondary beam segments for 16th notes within a beam group.
 // Returns x/y endpoints for each segment, following the diagonal of the primary
-// beam (offset toward the noteheads by beamOffset).
+// beam (offset toward the noteheads by beamOffset), plus which ends land on a
+// real stem (see beamPolygonPoints — only those ends should overhang).
 function secondaryBeamSegments(
   types: NoteType[],
   stems: Array<{ stemX: number; stemTipY: number }>,
   beamOffset: number,
   stemDir: "up" | "down",
-): Array<{ x1: number; y1: number; x2: number; y2: number }> {
+): Array<{
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  anchorStart: boolean;
+  anchorEnd: boolean;
+}> {
   const yOffset = stemDir === "up" ? beamOffset : -beamOffset;
   // Pre-compute beam slope for interpolating y at stub endpoints.
   const dX = stems[stems.length - 1].stemX - stems[0].stemX;
   const slope =
     dX === 0 ? 0 : (stems[stems.length - 1].stemTipY - stems[0].stemTipY) / dX;
 
-  const segments: Array<{ x1: number; y1: number; x2: number; y2: number }> =
-    [];
+  const segments: Array<{
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    anchorStart: boolean;
+    anchorEnd: boolean;
+  }> = [];
   let i = 0;
   while (i < types.length) {
     if (types[i] !== "16th") {
@@ -223,6 +322,8 @@ function secondaryBeamSegments(
           y1: stemY - slope * halfGap,
           x2: stems[idx].stemX,
           y2: stemY,
+          anchorStart: false,
+          anchorEnd: true,
         });
       } else {
         const halfGap =
@@ -234,6 +335,8 @@ function secondaryBeamSegments(
           y1: stemY,
           x2: stems[idx].stemX + halfGap,
           y2: stemY + slope * halfGap,
+          anchorStart: true,
+          anchorEnd: false,
         });
       }
     } else {
@@ -242,6 +345,8 @@ function secondaryBeamSegments(
         y1: stems[runStart].stemTipY + yOffset,
         x2: stems[runEnd - 1].stemX,
         y2: stems[runEnd - 1].stemTipY + yOffset,
+        anchorStart: true,
+        anchorEnd: true,
       });
     }
   }
@@ -249,6 +354,25 @@ function secondaryBeamSegments(
 }
 
 // ── Cursor position helper ────────────────────────────────────────────────────
+
+// Largest index i where measureStartBeats[i] <= beat — the measure containing
+// `beat`. Handles pickup measures and any irregular measure lengths.
+function measureIndexForBeat(
+  measureStartBeats: number[],
+  beat: number,
+): number {
+  let low = 0;
+  let high = measureStartBeats.length - 1;
+  while (low < high) {
+    const mid = Math.floor((low + high + 1) / 2);
+    if (measureStartBeats[mid] <= beat) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return Math.max(0, low);
+}
 
 export function computeCursorX(
   beat: number,
@@ -546,7 +670,7 @@ function chordNoteGeometry(
   stemDir: "up" | "down",
 ): NoteRenderInfo[] {
   const { type, notes, noteIndex, dot } = group;
-  const nrx = staffSpace * 0.55;
+  const nrx = staffSpace * NOTEHEAD_HALF_WIDTH_FACTOR;
   const xOffsets = chordXOffsets(notes, stemDir, nrx);
   const accidentalXs = accidentalColumnXs(notes, ex, staffSpace);
   return notes.map((note, v) => ({
@@ -580,7 +704,7 @@ function graceNoteGeometry(
     return [];
   }
   const graceScale = GRACE_FONT_FACTOR / 4;
-  const graceNrx = staffSpace * 0.55 * graceScale;
+  const graceNrx = staffSpace * NOTEHEAD_HALF_WIDTH_FACTOR * graceScale;
   const graceFontSize = staffSpace * GRACE_FONT_FACTOR;
   const mainAccWidth = group.notes.some((n) => n.accidental !== "none")
     ? staffSpace * ACCIDENTAL_BASE_OFFSET_FACTOR
@@ -617,15 +741,18 @@ function computeNoteRenderInfos(
 
   score.parts.forEach((part, p) => {
     const staffBottomY = staffBottomYs[p];
-    const clef = part.clef;
     const beatDivisions = beamUnitDivisions(part.timeSig.beatType);
 
     part.measures.forEach((measure, m) => {
+      // The measure's start clef (and, per chord, its own clef after a
+      // mid-measure change) must match what the renderer draws so highlight and
+      // marker geometry lands on the right notehead.
+      const measureClef = measure.clef ?? part.clef;
       const eventXs = eventXsFromSpine(measure.events, measureSpines[m]);
       const { beamOverrideMap } = beamStemOverrides(
         measure.events,
         eventXs,
-        clef,
+        measureClef,
         staffBottomY,
         staffSpace,
         beatDivisions,
@@ -636,6 +763,7 @@ function computeNoteRenderInfos(
           return;
         }
         const group = event as ChordGroup;
+        const clef = group.clef ?? measureClef;
         const stemDir =
           beamOverrideMap.get(ei)?.stemDir ?? stemDirection(group, clef);
         for (const info of chordNoteGeometry(
@@ -695,7 +823,6 @@ export function computeTieArcs(
 
   score.parts.forEach((part, p) => {
     const staffBottomY = staffBottomYs[p];
-    const clef = part.clef;
     const beatDivisions = beamUnitDivisions(part.timeSig.beatType);
     // Ties curve opposite the stem: a notehead at or above the staff's middle
     // line (stem down) gets an arc above it (bulges up); one below the middle
@@ -705,11 +832,12 @@ export function computeTieArcs(
     const openTies = new Map<string, { x: number; y: number }>();
 
     part.measures.forEach((measure, m) => {
+      const measureClef = measure.clef ?? part.clef;
       const eventXs = eventXsFromSpine(measure.events, measureSpines[m]);
       const { beamOverrideMap } = beamStemOverrides(
         measure.events,
         eventXs,
-        clef,
+        measureClef,
         staffBottomY,
         staffSpace,
         beatDivisions,
@@ -720,6 +848,7 @@ export function computeTieArcs(
           return;
         }
         const group = event as ChordGroup;
+        const clef = group.clef ?? measureClef;
         const stemDir =
           beamOverrideMap.get(ei)?.stemDir ?? stemDirection(group, clef);
         const geom = chordNoteGeometry(
@@ -825,20 +954,28 @@ const PlayerMarkerOverlay = memo(function PlayerMarkerOverlay({
           return null;
         }
         const pitch = midiNumberToPitch(marker.noteNumber);
+        // Use the clef in effect at this beat (measure granularity) so a marker
+        // in a clef-changed section lands on the right staff and height.
+        const mi = measureIndexForBeat(measureStartBeats, marker.beat);
+        const clefAt = (i: number) =>
+          score.parts[i].measures[mi]?.clef ?? score.parts[i].clef;
         let bestStaff = visibleIndices[0];
         let bestDistance = Number.POSITIVE_INFINITY;
         for (const i of visibleIndices) {
-          const clef = score.parts[i].clef;
           const middleY = staffBottomYs[i] - 2 * staffSpace;
-          const y = noteY(pitch, clef, staffBottomYs[i], staffSpace);
+          const y = noteY(pitch, clefAt(i), staffBottomYs[i], staffSpace);
           const distance = Math.abs(y - middleY);
           if (distance < bestDistance) {
             bestDistance = distance;
             bestStaff = i;
           }
         }
-        const clef = score.parts[bestStaff].clef;
-        const y = noteY(pitch, clef, staffBottomYs[bestStaff], staffSpace);
+        const y = noteY(
+          pitch,
+          clefAt(bestStaff),
+          staffBottomYs[bestStaff],
+          staffSpace,
+        );
         return (
           // biome-ignore lint/suspicious/noArrayIndexKey: marker list is append-only during a session
           <g key={index}>
@@ -881,7 +1018,7 @@ const NoteColorOverlay = memo(function NoteColorOverlay({
         if (!info) {
           return null;
         }
-        const nrx = info.staffSpace * 0.55;
+        const nrx = info.staffSpace * NOTEHEAD_HALF_WIDTH_FACTOR;
         return (
           // Grace noteheads carry a font-size override so the recolored glyph
           // matches the smaller ink note; regular notes inherit the document
@@ -936,7 +1073,7 @@ const TieLayer = memo(function TieLayer({
   inkColor: string;
   staffSpace: number;
 }) {
-  const nrx = staffSpace * 0.55; // notehead half-width
+  const nrx = staffSpace * NOTEHEAD_HALF_WIDTH_FACTOR; // notehead half-width
   return (
     <g style={{ pointerEvents: "none" }} fill="none" stroke={inkColor}>
       {ties.map((tie) => {
@@ -1110,6 +1247,12 @@ export function SheetMusicDisplay({
   if (score.parts.length === 0 || score.numMeasures === 0) {
     return <p>No music to display.</p>;
   }
+
+  // Right-edge x of each measure, used to snap the focus range's "to" handle.
+  const measureEndXs = useMemo(
+    () => layout.measureXs.map((x, i) => x + layout.measureWidths[i]),
+    [layout],
+  );
 
   // Per-note geometry for the color overlay. Depends only on score + layout, so
   // it is computed once per piece and never on color changes.
@@ -1337,30 +1480,38 @@ export function SheetMusicDisplay({
     to: number;
   } | null>(null);
 
-  const snapToMeasureStart = (svgX: number): number => {
-    let best = 0;
-    let bestDist = Number.POSITIVE_INFINITY;
-    for (let i = 0; i < layout.measureXs.length; i++) {
-      const d = Math.abs(layout.measureXs[i] - svgX);
-      if (d < bestDist) {
-        bestDist = d;
-        best = i;
+  // Walks `idx` from its current position toward whichever neighboring
+  // boundary `svgX` has crossed, one measure at a time (the while loops cover
+  // fast drags that skip past several measures in one pointermove). Using the
+  // *current* index as the reference — rather than picking whichever boundary
+  // in the whole piece is nearest to svgX — means a step only requires
+  // crossing HANDLE_SNAP_THRESHOLD_FRACTION of the adjacent measure's width,
+  // not the 50% you'd need to become "nearest" to the next boundary. That's
+  // what makes the drag feel like it tracks the finger instead of needing a
+  // half-measure throw before anything visibly moves.
+  const snapIndexFromCurrent = (
+    svgX: number,
+    currentIndex: number,
+    boundaries: number[],
+  ): number => {
+    let idx = currentIndex;
+    while (idx < boundaries.length - 1) {
+      const width = boundaries[idx + 1] - boundaries[idx];
+      if (svgX > boundaries[idx] + width * HANDLE_SNAP_THRESHOLD_FRACTION) {
+        idx++;
+      } else {
+        break;
       }
     }
-    return best + 1;
-  };
-
-  const snapToMeasureEnd = (svgX: number): number => {
-    let best = 0;
-    let bestDist = Number.POSITIVE_INFINITY;
-    for (let i = 0; i < layout.measureXs.length; i++) {
-      const d = Math.abs(layout.measureXs[i] + layout.measureWidths[i] - svgX);
-      if (d < bestDist) {
-        bestDist = d;
-        best = i;
+    while (idx > 0) {
+      const width = boundaries[idx] - boundaries[idx - 1];
+      if (svgX < boundaries[idx] - width * HANDLE_SNAP_THRESHOLD_FRACTION) {
+        idx--;
+      } else {
+        break;
       }
     }
-    return best + 1;
+    return idx;
   };
 
   const onHandlePointerDown = (e: PointerEvent, handle: "left" | "right") => {
@@ -1406,12 +1557,19 @@ export function SheetMusicDisplay({
     const next =
       drag.handle === "left"
         ? {
-            from: Math.min(snapToMeasureStart(svgX), current.to),
+            from: Math.min(
+              snapIndexFromCurrent(svgX, current.from - 1, layout.measureXs) +
+                1,
+              current.to,
+            ),
             to: current.to,
           }
         : {
             from: current.from,
-            to: Math.max(snapToMeasureEnd(svgX), current.from),
+            to: Math.max(
+              snapIndexFromCurrent(svgX, current.to - 1, measureEndXs) + 1,
+              current.from,
+            ),
           };
     dragFocusRangeRef.current = next;
     setDragFocusRange(next);
@@ -1477,13 +1635,17 @@ export function SheetMusicDisplay({
     };
   }, []);
 
+  // Extend past the staff itself by ledgerMargin so the cursor, focus overlay,
+  // and drag handles cover notes (and their ledger lines) sitting above/below
+  // the grand staff, rather than stopping flush with the staff lines.
   const cursorY1 =
     layout.staffBottomYs.length > 0
-      ? layout.staffBottomYs[0] - 4 * layout.staffSpace
+      ? layout.staffBottomYs[0] - 4 * layout.staffSpace - layout.ledgerMargin
       : 0;
   const cursorY2 =
     layout.staffBottomYs.length > 0
-      ? layout.staffBottomYs[layout.staffBottomYs.length - 1]
+      ? layout.staffBottomYs[layout.staffBottomYs.length - 1] +
+        layout.ledgerMargin
       : layout.totalHeight;
 
   // Compute focus highlight rect bounds (measure indices are 1-indexed in focusRange).
@@ -1759,8 +1921,8 @@ export function SheetMusicDisplay({
               style={{
                 position: "absolute",
                 top: cursorY1 - 4,
-                left: focusX1 - 14,
-                width: 28,
+                left: focusX1 - HANDLE_HIT_WIDTH / 2,
+                width: HANDLE_HIT_WIDTH,
                 height: cursorY2 - cursorY1 + 8,
                 cursor: "ew-resize",
                 touchAction: "none",
@@ -1773,14 +1935,17 @@ export function SheetMusicDisplay({
               }
               onPointerUp={onHandlePointerUp}
               onPointerCancel={onHandlePointerUp}
-              onContextMenu={(e) => e.preventDefault()}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
             />
             <div
               style={{
                 position: "absolute",
                 top: cursorY1 - 4,
-                left: focusX2 - 14,
-                width: 28,
+                left: focusX2 - HANDLE_HIT_WIDTH / 2,
+                width: HANDLE_HIT_WIDTH,
                 height: cursorY2 - cursorY1 + 8,
                 cursor: "ew-resize",
                 touchAction: "none",
@@ -1793,7 +1958,10 @@ export function SheetMusicDisplay({
               }
               onPointerUp={onHandlePointerUp}
               onPointerCancel={onHandlePointerUp}
-              onContextMenu={(e) => e.preventDefault()}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
             />
           </>
         )}
@@ -1918,7 +2086,7 @@ function StaffLines({
             y2={y}
             stroke={inkColor}
             stroke-width="0.8"
-            stroke-opacity="0.55"
+            stroke-opacity={STAFF_LINE_OPACITY}
           />
         );
       })}
@@ -1962,7 +2130,7 @@ function Barline({
         y2={staffBottomY}
         stroke={inkColor}
         stroke-width="0.9"
-        stroke-opacity="0.55"
+        stroke-opacity={STAFF_LINE_OPACITY}
       />
     );
   }
@@ -1993,7 +2161,7 @@ function Barline({
         y2={staffBottomY}
         stroke={inkColor}
         stroke-width={staffSpace * 0.3}
-        stroke-opacity="0.55"
+        stroke-opacity={STAFF_LINE_OPACITY}
       />
       {sides.map((side) => (
         <g key={side}>
@@ -2004,7 +2172,7 @@ function Barline({
             y2={staffBottomY}
             stroke={inkColor}
             stroke-width="0.9"
-            stroke-opacity="0.55"
+            stroke-opacity={STAFF_LINE_OPACITY}
           />
           {dotYs.map((dotY) => (
             <circle
@@ -2042,7 +2210,59 @@ function boundaryBarlineStyle(
   return "plain";
 }
 
+// ── Ledger lines ──────────────────────────────────────────────────────────────
+
+// The short line segments that extend the staff up/down to a note sitting off
+// it. Drawn at STAFF_LINE_OPACITY (like the staff lines they extend). The
+// notehead's center x and half-width plus a small overhang give each segment's
+// span; `strokeWidth` matches the caller's notehead weight (graces are lighter).
+function LedgerLines({
+  pitch,
+  clef,
+  staffBottomY,
+  staffSpace,
+  centerX,
+  halfWidth,
+  overhang,
+  strokeWidth,
+  inkColor,
+}: {
+  pitch: Pitch;
+  clef: { sign: "G" | "F"; line: number };
+  staffBottomY: number;
+  staffSpace: number;
+  centerX: number;
+  halfWidth: number;
+  overhang: number;
+  strokeWidth: string;
+  inkColor: string;
+}) {
+  return (
+    <>
+      {ledgerLineYs(pitch, clef, staffBottomY, staffSpace).map((ly) => (
+        <line
+          key={ly}
+          x1={centerX - halfWidth - overhang}
+          x2={centerX + halfWidth + overhang}
+          y1={ly}
+          y2={ly}
+          stroke={inkColor}
+          stroke-width={strokeWidth}
+          stroke-opacity={STAFF_LINE_OPACITY}
+        />
+      ))}
+    </>
+  );
+}
+
 // ── Measure ───────────────────────────────────────────────────────────────────
+
+function clefEqual(
+  a: { sign: "G" | "F"; line: number } | undefined,
+  b: { sign: "G" | "F"; line: number } | undefined,
+): boolean {
+  return a?.sign === b?.sign && a?.line === b?.line;
+}
 
 interface MeasureProps {
   measure: ParsedMeasure;
@@ -2075,6 +2295,9 @@ function Measure({
 }: MeasureProps) {
   const { staffSpace } = layout;
   const spine = layout.measureSpines[measureIndex];
+  // The clef in effect at the measure's start (resolved by the parser); falls
+  // back to the part clef for scores whose measures carry no resolved clef.
+  const measureClef = measure.clef ?? clef;
 
   // Note positions and beam geometry depend only on the score + layout, never
   // on note colors. Memoize so color changes during playback don't recompute
@@ -2085,13 +2308,20 @@ function Measure({
     const { beamGroups, beamOverrideMap } = beamStemOverrides(
       measure.events,
       eventXs,
-      clef,
+      measureClef,
       staffBottomY,
       staffSpace,
       beatDivisions,
     );
     return { eventXs, beamGroups, beamOverrideMap };
-  }, [measure.events, spine, staffSpace, clef, staffBottomY, beatDivisions]);
+  }, [
+    measure.events,
+    spine,
+    staffSpace,
+    measureClef,
+    staffBottomY,
+    beatDivisions,
+  ]);
 
   const clefX = x + 2;
   const keySigX = clefX + 32;
@@ -2121,7 +2351,7 @@ function Measure({
       {isFirstMeasure && (
         <>
           <Clef
-            clef={clef}
+            clef={measureClef}
             x={clefX}
             staffBottomY={staffBottomY}
             staffSpace={staffSpace}
@@ -2129,7 +2359,7 @@ function Measure({
           />
           <KeySig
             keySig={{ fifths: measure.activeFifths }}
-            clef={clef}
+            clef={measureClef}
             x={keySigX}
             staffBottomY={staffBottomY}
             staffSpace={staffSpace}
@@ -2144,11 +2374,28 @@ function Measure({
           />
         </>
       )}
+      {/* A clef change at the barline: drawn just after it, ahead of the notes
+          (which the layout has shifted right to make room). A simultaneous key
+          change is pushed further right so the two don't overlap. */}
+      {!isFirstMeasure && measure.clefChange && (
+        <Clef
+          clef={measure.clefChange}
+          x={x + staffSpace * CLEF_CHANGE_LEAD_FACTOR}
+          staffBottomY={staffBottomY}
+          staffSpace={staffSpace}
+          inkColor={inkColor}
+          fontSize={staffSpace * CLEF_CHANGE_FONT_FACTOR}
+        />
+      )}
       {!isFirstMeasure && measure.keyChange && (
         <KeySigChange
           keyChange={measure.keyChange}
-          clef={clef}
-          x={x + staffSpace * KEY_CHANGE_LEAD_FACTOR}
+          clef={measureClef}
+          x={
+            x +
+            staffSpace * KEY_CHANGE_LEAD_FACTOR +
+            (measure.clefChange ? clefChangeWidth(staffSpace) : 0)
+          }
           staffBottomY={staffBottomY}
           staffSpace={staffSpace}
           inkColor={inkColor}
@@ -2156,7 +2403,12 @@ function Measure({
       )}
       {(() => {
         let beatOffset = 0;
-        return measure.events.map((event, ei) => {
+        // Track the clef as we walk the events so a mid-measure change draws a
+        // small clef glyph at the point it takes effect and shifts every later
+        // notehead onto the new clef.
+        let runningClef = measureClef;
+        const elements: VNode[] = [];
+        measure.events.forEach((event, ei) => {
           const key = `o${beatOffset}`;
           const dur = isRest(event)
             ? event.duration
@@ -2164,7 +2416,7 @@ function Measure({
           beatOffset += dur;
           const ex = eventXs[ei];
           if (isRest(event)) {
-            return (
+            elements.push(
               <RestEl
                 key={key}
                 rest={event}
@@ -2172,25 +2424,48 @@ function Measure({
                 staffBottomY={staffBottomY}
                 staffSpace={staffSpace}
                 inkColor={inkColor}
-              />
+              />,
             );
+            return;
           }
           const group = event as ChordGroup;
-          return (
+          const eventClef = group.clef ?? measureClef;
+          if (!clefEqual(eventClef, runningClef)) {
+            // Centre the glyph in the widened gap between the previous note and
+            // this one (the spine reserved MID_CLEF_ADVANCE_FACTOR of extra
+            // space here), so its margins are symmetric rather than piling up on
+            // one side.
+            const previousX = ei > 0 ? eventXs[ei - 1] : ex - staffSpace;
+            elements.push(
+              <Clef
+                key={`clef-${key}`}
+                clef={eventClef}
+                x={(previousX + ex) / 2}
+                anchor="middle"
+                staffBottomY={staffBottomY}
+                staffSpace={staffSpace}
+                inkColor={inkColor}
+                fontSize={staffSpace * CLEF_CHANGE_FONT_FACTOR}
+              />,
+            );
+            runningClef = eventClef;
+          }
+          elements.push(
             <ChordGroupEl
               key={key}
               group={group}
               x={ex}
               staffBottomY={staffBottomY}
-              clef={clef}
+              clef={eventClef}
               partIndex={partIndex}
               measureNumber={measure.number}
               staffSpace={staffSpace}
               beamStemOverride={beamOverrideMap.get(ei)}
               inkColor={inkColor}
-            />
+            />,
           );
         });
+        return elements;
       })()}
       <BeamLines
         beamGroups={beamGroups}
@@ -2209,12 +2484,20 @@ function Clef({
   staffBottomY,
   staffSpace,
   inkColor,
+  fontSize,
+  anchor = "start",
 }: {
   clef: { sign: "G" | "F" };
   x: number;
   staffBottomY: number;
   staffSpace: number;
   inkColor: string;
+  /** Override the inherited glyph size — used to draw a smaller mid-staff clef
+   *  change than the full-size clef in a measure header. */
+  fontSize?: number;
+  /** Horizontal anchor. "middle" centres the glyph on `x` (used to centre a
+   *  mid-measure clef change in the gap between two notes). */
+  anchor?: "start" | "middle";
 }) {
   const char = clef.sign === "G" ? G.gClef : G.fClef;
   // SMuFL origins: G clef baseline sits on the G line (2nd line = 1 staffSpace up);
@@ -2224,7 +2507,13 @@ function Clef({
       ? staffBottomY - staffSpace
       : staffBottomY - 3 * staffSpace;
   return (
-    <text x={x + 2} y={y} fill={inkColor}>
+    <text
+      x={anchor === "middle" ? x : x + 2}
+      y={y}
+      fill={inkColor}
+      font-size={fontSize}
+      text-anchor={anchor === "middle" ? "middle" : undefined}
+    >
       {char}
     </text>
   );
@@ -2397,7 +2686,7 @@ function GraceNoteGroupEl({
   const fontSize = staffSpace * GRACE_FONT_FACTOR;
   // Scale factor relative to full size — used for geometry adjustments.
   const scale = GRACE_FONT_FACTOR / 4;
-  const nrx = staffSpace * 0.55 * scale; // notehead half-width
+  const nrx = staffSpace * NOTEHEAD_HALF_WIDTH_FACTOR * scale; // notehead half-width
   const stemLength = staffSpace * 2.5;
 
   return (
@@ -2405,7 +2694,7 @@ function GraceNoteGroupEl({
       {notes.map((note, vi) => {
         const ny = noteY(note.pitch, clef, staffBottomY, staffSpace);
         const nx = x + vi * nrx * 0.3; // slight rightward cascade for unisons
-        const stemX = nx + nrx;
+        const stemX = stemAttachX(nx, nrx, "up");
         const stemTipY = stemTipOverride ?? ny - stemLength;
         const noteId = `p${partIndex}-m${measureNumber}-n${noteIndex}-v${vi}`;
 
@@ -2438,23 +2727,21 @@ function GraceNoteGroupEl({
               {G.noteheadBlack}
             </text>
             {/* Ledger lines */}
-            {ledgerLineYs(note.pitch, clef, staffBottomY, staffSpace).map(
-              (ly) => (
-                <line
-                  key={ly}
-                  x1={nx - nrx - 3}
-                  x2={nx + nrx + 3}
-                  y1={ly}
-                  y2={ly}
-                  stroke={inkColor}
-                  stroke-width="0.8"
-                />
-              ),
-            )}
+            <LedgerLines
+              pitch={note.pitch}
+              clef={clef}
+              staffBottomY={staffBottomY}
+              staffSpace={staffSpace}
+              centerX={nx}
+              halfWidth={nrx}
+              overhang={3}
+              strokeWidth="0.8"
+              inkColor={inkColor}
+            />
             {/* Stem (upward) */}
             <line
-              x1={stemX}
-              x2={stemX}
+              x1={showFlag ? stemX + STEM_FLAG_NUDGE : stemX}
+              x2={showFlag ? stemX + STEM_FLAG_NUDGE : stemX}
               y1={ny}
               y2={stemTipY}
               stroke={inkColor}
@@ -2463,7 +2750,7 @@ function GraceNoteGroupEl({
             {/* Flag — omitted when the group belongs to a beamed run */}
             {showFlag && (
               <text
-                x={stemX}
+                x={stemX - FLAG_STEM_NUDGE}
                 y={stemTipY}
                 text-anchor="start"
                 fill={inkColor}
@@ -2562,11 +2849,11 @@ const ChordGroupEl = memo(function ChordGroupEl({
   const topY = Math.min(...noteYs);
   const bottomY = Math.max(...noteYs);
   const stemLength = staffSpace * 3;
-  const nrx = staffSpace * 0.55;
+  const nrx = staffSpace * NOTEHEAD_HALF_WIDTH_FACTOR;
 
   // Grace note geometry — proportional to the smaller grace scale.
   const graceScale = GRACE_FONT_FACTOR / 4;
-  const graceNrx = staffSpace * 0.55 * graceScale; // grace notehead half-width
+  const graceNrx = staffSpace * NOTEHEAD_HALF_WIDTH_FACTOR * graceScale; // grace notehead half-width
   const graceStemLength = staffSpace * 2.0;
   const isGraceBeamed = N > 1;
   // When the main chord has accidentals, push grace notes further left so
@@ -2609,18 +2896,18 @@ const ChordGroupEl = memo(function ChordGroupEl({
       : { x: noteGeom[noteGeom.length - 1].nx, y: topY - staffSpace }
     : null;
 
-  let stemX: number;
+  const stemX = stemAttachX(x, nrx, stemDir);
   let stemY1: number;
   let stemY2: number;
   if (stemDir === "up") {
-    stemX = x + nrx;
     stemY1 = bottomY;
     stemY2 = beamStemOverride?.stemTipY ?? topY - stemLength;
   } else {
-    stemX = x - nrx;
     stemY1 = topY;
     stemY2 = beamStemOverride?.stemTipY ?? bottomY + stemLength;
   }
+  const hasFlag =
+    !hasNoStem && (type === "eighth" || type === "16th") && !beamStemOverride;
 
   return (
     <g data-chord-id={`p${partIndex}-m${measureNumber}-n${group.noteIndex}`}>
@@ -2642,36 +2929,36 @@ const ChordGroupEl = memo(function ChordGroupEl({
       ))}
       {/* Beam bar connecting multiple grace note groups */}
       {isGraceBeamed && graceStemTipYs !== undefined && (
-        <line
-          x1={graceXs[0] + graceNrx}
-          x2={graceXs[N - 1] + graceNrx}
-          y1={graceStemTipYs[0]}
-          y2={graceStemTipYs[N - 1]}
-          stroke={inkColor}
-          stroke-width={staffSpace * 0.5 * graceScale}
+        <polygon
+          points={beamPolygonPoints(
+            stemAttachX(graceXs[0], graceNrx, "up"),
+            graceStemTipYs[0],
+            stemAttachX(graceXs[N - 1], graceNrx, "up"),
+            graceStemTipYs[N - 1],
+            staffSpace * 0.5 * graceScale,
+          )}
+          fill={inkColor}
         />
       )}
       {!hasNoStem && (
         <line
-          x1={stemX}
-          x2={stemX}
+          x1={hasFlag ? stemX + STEM_FLAG_NUDGE : stemX}
+          x2={hasFlag ? stemX + STEM_FLAG_NUDGE : stemX}
           y1={stemY1}
           y2={stemY2}
           stroke={inkColor}
-          stroke-width="1.2"
+          stroke-width={STEM_STROKE_WIDTH}
         />
       )}
-      {!hasNoStem &&
-        (type === "eighth" || type === "16th") &&
-        !beamStemOverride && (
-          <Flags
-            type={type}
-            stemDir={stemDir}
-            stemX={stemX}
-            stemTipY={stemY2}
-            inkColor={inkColor}
-          />
-        )}
+      {hasFlag && (
+        <Flags
+          type={type}
+          stemDir={stemDir}
+          stemX={stemX - FLAG_STEM_NUDGE}
+          stemTipY={stemY2}
+          inkColor={inkColor}
+        />
+      )}
       {noteGeom.map((info, v) => {
         const { nx, ny } = info;
         return (
@@ -2686,19 +2973,17 @@ const ChordGroupEl = memo(function ChordGroupEl({
               accidentalX={info.accidentalX}
               staffSpace={staffSpace}
             />
-            {ledgerLineYs(notes[v].pitch, clef, staffBottomY, staffSpace).map(
-              (ly) => (
-                <line
-                  key={ly}
-                  x1={nx - nrx - 4}
-                  x2={nx + nrx + 4}
-                  y1={ly}
-                  y2={ly}
-                  stroke={inkColor}
-                  stroke-width="1"
-                />
-              ),
-            )}
+            <LedgerLines
+              pitch={notes[v].pitch}
+              clef={clef}
+              staffBottomY={staffBottomY}
+              staffSpace={staffSpace}
+              centerX={nx}
+              halfWidth={nrx}
+              overhang={4}
+              strokeWidth="1"
+              inkColor={inkColor}
+            />
             {info.dot && (
               <circle
                 cx={nx + nrx + 4}
@@ -2832,23 +3117,29 @@ function BeamLines({
 
         return (
           <g key={groupKey}>
-            <line
-              x1={x1}
-              x2={x2}
-              y1={beamStartY}
-              y2={beamEndY}
-              stroke={inkColor}
-              stroke-width={beamThickness}
+            <polygon
+              points={beamPolygonPoints(
+                x1,
+                beamStartY,
+                x2,
+                beamEndY,
+                beamThickness,
+              )}
+              fill={inkColor}
             />
             {secSegments.map((seg) => (
-              <line
+              <polygon
                 key={seg.x1}
-                x1={seg.x1}
-                x2={seg.x2}
-                y1={seg.y1}
-                y2={seg.y2}
-                stroke={inkColor}
-                stroke-width={beamThickness}
+                points={beamPolygonPoints(
+                  seg.x1,
+                  seg.y1,
+                  seg.x2,
+                  seg.y2,
+                  beamThickness,
+                  seg.anchorStart,
+                  seg.anchorEnd,
+                )}
+                fill={inkColor}
               />
             ))}
           </g>
