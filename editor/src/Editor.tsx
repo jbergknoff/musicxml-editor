@@ -402,6 +402,10 @@ export function Editor() {
   // Copy/cut/paste's in-memory clipboard (session-only, not the OS clipboard —
   // see `MeasureClipboard`'s doc comment).
   const [clipboard, setClipboard] = useState<MeasureClipboard | null>(null);
+  // A transient one-line explanation for an edit that couldn't apply (e.g. a
+  // time-shift refused because the bar is full), shown in the transport bar.
+  // Cleared on the next keypress/tap so it never lingers.
+  const [editHint, setEditHint] = useState<string | null>(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: version drives re-serialize after in-place mutations
   const musicxml = useMemo(
@@ -682,6 +686,7 @@ export function Editor() {
   const handleTap = useCallback(
     (gesture: EditorGesture, event: PointerEvent) => {
       setMenu(null);
+      setEditHint(null);
       if (!editable) {
         return;
       }
@@ -1096,6 +1101,14 @@ export function Editor() {
         direction * step,
       );
       if (!moved) {
+        // No room in the bar — tell the user rather than dead-keying. An
+        // over-full bar (a too-long OMR duration) is the usual cause; fixing
+        // that note's duration frees the room.
+        setEditHint(
+          direction > 0
+            ? "No room to shift later — this bar is full on that staff."
+            : "No room to shift earlier — no rest before it on that staff.",
+        );
         return;
       }
       dropFlagsInMeasure(slotInfo.measureIndex);
@@ -1556,49 +1569,79 @@ export function Editor() {
     [score],
   );
 
-  // ←/→: move to the adjacent spine slot. Walks every slot (rests and empty
-  // measures included), not just note onsets — the core "next spot on the spine"
-  // behavior. Clamps at the piece ends.
+  // ←/→: move to the adjacent position on the *shared* rhythm spine — the union
+  // of every staff's onsets (chords and rests alike), in time order. Navigation
+  // is not staff-bound: pressing → from a note that spans a beat another staff
+  // subdivides advances to that subdivision rather than skipping to this staff's
+  // own next onset. On landing, the selection stays on the current staff when it
+  // has an onset at the destination beat, and otherwise crosses to the staff
+  // that does (a note-bearing staff first, then the topmost). Clamps at the ends.
   const navBeat = useCallback(
     (dir: number) => {
-      // Walk one staff at a time so ←/→ stays on the staff being edited.
-      const partIndex = slotInfo?.partIndex ?? 0;
-      const list = slots(score, partIndex);
-      if (list.length === 0) {
+      const allSlots = slots(score);
+      if (allSlots.length === 0) {
         return;
       }
+      // Distinct onset beats across all staves = the shared spine.
+      const beats = [...new Set(allSlots.map((slot) => slot.onsetBeat))].sort(
+        (a, b) => a - b,
+      );
       setSelection((prev) => {
-        let index: number;
-        if (!prev) {
-          index = dir > 0 ? 0 : list.length - 1;
-        } else {
-          const current =
-            prev.kind === "note"
-              ? list.findIndex((slot) =>
-                  slot.handles.some((handle) =>
-                    sameHandle(handle, prev.handle),
-                  ),
-                )
-              : list.findIndex((slot) => sameSlot(prev, slot));
-          index = current < 0 ? (dir > 0 ? 0 : list.length - 1) : current + dir;
+        // The current beat + staff, from either selection level.
+        let currentBeat: number | null = null;
+        let currentPart = 0;
+        if (prev?.kind === "note") {
+          const info = chordInfoForHandle(score, prev.handle);
+          if (info) {
+            currentBeat = info.onsetBeat;
+            currentPart = info.partIndex;
+          }
+        } else if (prev?.kind === "slot") {
+          currentBeat = prev.onsetBeat;
+          currentPart = prev.partIndex;
         }
-        if (index < 0 || index >= list.length) {
-          return prev; // clamp at the ends
+        const beatIndex =
+          currentBeat === null
+            ? dir > 0
+              ? -1
+              : beats.length
+            : beats.findIndex((beat) => Math.abs(beat - currentBeat) < 1e-6);
+        const nextIndex = beatIndex + dir;
+        if (nextIndex < 0 || nextIndex >= beats.length) {
+          return prev; // clamp at the piece ends
         }
-        const next = list[index];
+        const destBeat = beats[nextIndex];
+        const here = allSlots.filter(
+          (slot) => Math.abs(slot.onsetBeat - destBeat) < 1e-6,
+        );
+        // Keep the current staff when it has an onset here; otherwise cross to
+        // another staff, preferring one that actually holds a note.
+        const chosen =
+          here.find((slot) => slot.partIndex === currentPart) ??
+          [...here].sort(
+            (a, b) =>
+              Number(a.isRest) - Number(b.isRest) || a.partIndex - b.partIndex,
+          )[0];
+        if (!chosen) {
+          return prev;
+        }
         // Stay drilled to a note only when the destination actually holds one.
-        if (prev?.kind === "note" && !next.isRest && next.notes.length > 0) {
-          return { kind: "note", handle: topFirstNotes(next)[0].handle };
+        if (
+          prev?.kind === "note" &&
+          !chosen.isRest &&
+          chosen.notes.length > 0
+        ) {
+          return { kind: "note", handle: topFirstNotes(chosen)[0].handle };
         }
         return {
           kind: "slot",
-          partIndex: next.partIndex,
-          measureIndex: next.measureIndex,
-          onsetBeat: next.onsetBeat,
+          partIndex: chosen.partIndex,
+          measureIndex: chosen.measureIndex,
+          onsetBeat: chosen.onsetBeat,
         };
       });
     },
-    [score, slotInfo],
+    [score],
   );
 
   // Shift+←/→: grow or shrink a measure-range selection by one measure, away
@@ -1727,6 +1770,9 @@ export function Editor() {
   // single-key commands are ignored while typing in a form field.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // Any keypress clears a lingering edit hint (a refused shift below may set
+      // a fresh one within this same handler).
+      setEditHint(null);
       const mod = event.metaKey || event.ctrlKey;
       if (mod && (event.key === "z" || event.key === "Z")) {
         event.preventDefault();
@@ -2749,6 +2795,9 @@ export function Editor() {
           {listen.playing ? "⏸" : "▶"}
         </button>
         <span>♩ = {bpm}</span>
+        {editHint !== null ? (
+          <span style={{ color: COLORS.warning }}>{editHint}</span>
+        ) : null}
         <span style={{ flex: 1 }} />
         <span>{selectionReadout}</span>
       </div>

@@ -190,3 +190,18 @@ select correctly. A tap while drilled to note level stays at note level. The
 `slot` variant of the `Selection` union also carries `partIndex`. `sameSlot()`
 compares `partIndex`. The `slots()`, `slotAt()`, and `slotAtBeat()` functions in
 `hit-test.ts` accept an optional `partIndex` to restrict results to one staff.
+
+`←/→` navigation (`navBeat`), by contrast, is **not** staff-bound: it walks the
+*shared* rhythm spine — the union of every staff's onsets — so it reaches a beat
+that only another staff subdivides rather than skipping to the current staff's
+own next onset. On landing it keeps the current staff when that staff has an
+onset at the destination beat, and otherwise crosses to the staff that does
+(note-bearing staff first, then topmost). Editing ops that must target a staff
+(add-note, `shiftNotesInTime`) stay staff-aware via the landed slot's `partIndex`.
+
+**Shift in time (`shiftNotesInTime` / `shiftSelectionInTime`):** `,` / `.` move
+the selected chord and everything after it in its measure/staff as a block, by
+the chord's own duration, absorbing/emitting rest space at the bar ends. It is
+clamped to the measure and refuses (no-op) when the block can't fit — an
+over-full bar (a too-long OMR duration) has no room, so the editor surfaces a
+transient `editHint` in the transport bar rather than dead-keying.
