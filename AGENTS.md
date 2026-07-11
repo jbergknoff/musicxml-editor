@@ -148,6 +148,16 @@ pass `slotInfo.partIndex + 1` (1-based) as the MusicXML `<staff>` number to
 grand staff with ≤1 `<backup>` per measure is editable; more than one `<backup>`
 per measure → view-only.
 
+`addStaff(doc)` / `removeStaff(doc, staff?)` (`dom-edit.ts`, toolbar "+ Staff" /
+"− Staff") grow and shrink that staff array in place: `addStaff` appends a staff
+below the rest (bass clef when it becomes staff 2, treble otherwise), bumps
+`<staves>`, and gives every measure a full-measure rest for it; `removeStaff`
+drops one staff's notes, slides the staves below it up (renumbering `<staff>`
+tags and clefs), and reverts to plain single-staff shape (no `<staves>`, no
+`<staff>` tags) when one staff remains. Both rebuild each measure through
+`writeMeasure`, whose `requiredStaves` argument forces an otherwise-empty staff
+to still emit its blank bar.
+
 **Tempo storage in MusicXML:**
 Playback BPM is stored as `<sound tempo="N">` inside a `<direction>` in measure 1,
 paired with `<metronome>` for display. `readMetadata()` finds it via

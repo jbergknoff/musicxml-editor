@@ -5,6 +5,7 @@ import {
   type NoteHandle,
   addNote,
   addNoteToChord,
+  addStaff,
   appendScore,
   copyMeasures,
   createBlankDocument,
@@ -17,6 +18,7 @@ import {
   pasteMeasures,
   removeNote,
   removeNotes,
+  removeStaff,
   serializeDocument,
   setAccidental,
   setChordMemberDuration,
@@ -1281,6 +1283,161 @@ describe("grand-staff editing", () => {
     // The new measure is all rests in both staves.
     expect(score.parts[0].measures[1].events.every(isRest)).toBe(true);
     expect(score.parts[1].measures[1].events.every(isRest)).toBe(true);
+  });
+});
+
+describe("add / remove staves", () => {
+  test("addStaff turns a single-staff score into a grand staff", () => {
+    const doc = createBlankDocument({ measureCount: 2 });
+    const newCount = addStaff(doc);
+    expect(newCount).toBe(2);
+
+    const score = reparse(doc);
+    // Two staves now parse into two parts.
+    expect(score.parts.length).toBe(2);
+    // Both staves span the same measures, all rests, and the new (bass) staff
+    // carries an F clef.
+    expect(score.parts[0].measures.length).toBe(2);
+    expect(score.parts[1].measures.length).toBe(2);
+    expect(score.parts[1].clef?.sign).toBe("F");
+    for (const part of score.parts) {
+      for (const measure of part.measures) {
+        expect(measure.events.every(isRest)).toBe(true);
+      }
+    }
+    // The document declares two staves.
+    expect(doc.querySelector("staves")?.textContent).toBe("2");
+  });
+
+  test("addStaff preserves existing notes on staff 1", () => {
+    const doc = createBlankDocument({ measureCount: 1 });
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+    });
+    addStaff(doc);
+
+    const score = reparse(doc);
+    // The E5 still leads the treble staff; the bass staff is blank.
+    const treble = score.parts[0].measures[0].events;
+    const firstNote = treble.find((event) => !isRest(event)) as ChordGroup;
+    expect(firstNote.notes[0].pitch.step).toBe("E");
+    expect(firstNote.notes[0].pitch.octave).toBe(5);
+    expect(score.parts[1].measures[0].events.every(isRest)).toBe(true);
+    // That preserved note is now explicitly tagged onto staff 1.
+    const staffTags = Array.from(doc.querySelectorAll("note")).flatMap(
+      (noteEl) =>
+        noteEl.querySelector("rest")
+          ? []
+          : [noteEl.querySelector("staff")?.textContent],
+    );
+    expect(staffTags).toContain("1");
+  });
+
+  test("addStaff extends a grand staff to three staves", () => {
+    const doc = parseDocument(GRAND_STAFF_XML);
+    const newCount = addStaff(doc);
+    expect(newCount).toBe(3);
+
+    const score = reparse(doc);
+    expect(score.parts.length).toBe(3);
+    // Original staves keep their notes; the third staff is blank.
+    expect(score.parts[2].measures[0].events.every(isRest)).toBe(true);
+    expect(doc.querySelector("staves")?.textContent).toBe("3");
+  });
+
+  test("removeStaff drops the bottom staff and reverts to single-staff", () => {
+    const doc = parseDocument(GRAND_STAFF_XML);
+    const newCount = removeStaff(doc);
+    expect(newCount).toBe(1);
+
+    const score = reparse(doc);
+    // Back to a single part carrying the treble content (E5).
+    expect(score.parts.length).toBe(1);
+    const firstNote = score.parts[0].measures[0].events.find(
+      (event) => !isRest(event),
+    ) as ChordGroup;
+    expect(firstNote.notes[0].pitch.step).toBe("E");
+    // `<staves>` is gone, and no note keeps a `<staff>` tag.
+    expect(doc.querySelector("staves")).toBeNull();
+    expect(doc.querySelector("note staff")).toBeNull();
+    // The lone remaining clef drops its number attribute.
+    const clef = doc.querySelector("clef");
+    expect(clef?.getAttribute("number")).toBeNull();
+    expect(isEditableDocument(doc)).toBe(true);
+  });
+
+  test("removeStaff can drop the treble staff, keeping the bass", () => {
+    const doc = parseDocument(GRAND_STAFF_XML);
+    const newCount = removeStaff(doc, 1);
+    expect(newCount).toBe(1);
+
+    const score = reparse(doc);
+    const firstNote = score.parts[0].measures[0].events.find(
+      (event) => !isRest(event),
+    ) as ChordGroup;
+    // The surviving staff holds the bass content (G2) with a bass clef.
+    expect(firstNote.notes[0].pitch.step).toBe("G");
+    expect(firstNote.notes[0].pitch.octave).toBe(2);
+    expect(score.parts[0].clef?.sign).toBe("F");
+  });
+
+  test("removeStaff on a three-staff score renumbers the survivors", () => {
+    const doc = parseDocument(GRAND_STAFF_XML);
+    addStaff(doc); // now 3 staves: treble(1), bass(2), treble(3)
+    // Put a note on the middle (bass) staff so we can track renumbering.
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 2,
+      durationBeats: 1,
+      pitch: { step: "A", alter: 0, octave: 3 },
+      staff: 2,
+    });
+    const newCount = removeStaff(doc, 1); // drop the original treble
+    expect(newCount).toBe(2);
+
+    const score = reparse(doc);
+    expect(score.parts.length).toBe(2);
+    // The old staff-2 content slid up to staff 1 (parts[0]).
+    const survivor = score.parts[0].measures[0].events.find(
+      (event) => !isRest(event),
+    ) as ChordGroup;
+    expect(survivor.notes[0].pitch.step).toBe("G");
+    // Every surviving note is tagged staff 1 or 2 — none still references 3.
+    const staffTags = new Set(
+      Array.from(doc.querySelectorAll("note > staff")).map(
+        (el) => el.textContent,
+      ),
+    );
+    expect(staffTags.has("3")).toBe(false);
+  });
+
+  test("removeStaff refuses to remove the only staff", () => {
+    const doc = createBlankDocument();
+    expect(removeStaff(doc)).toBeNull();
+  });
+
+  test("add then remove round-trips to a single staff", () => {
+    const doc = createBlankDocument({ measureCount: 3 });
+    addNote(doc, {
+      measureIndex: 1,
+      onsetBeatInMeasure: 0,
+      durationBeats: 2,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    addStaff(doc);
+    removeStaff(doc);
+
+    const score = reparse(doc);
+    expect(score.parts.length).toBe(1);
+    // The half note in measure 2 survives the round trip.
+    const note = score.parts[0].measures[1].events.find(
+      (event) => !isRest(event),
+    ) as ChordGroup;
+    expect(note.notes[0].pitch.step).toBe("C");
+    expect(isEditableDocument(doc)).toBe(true);
   });
 });
 

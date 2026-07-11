@@ -515,6 +515,11 @@ function writeStaffNotes(
 // a contiguous run, separated from the next by a <backup> element that rewinds to
 // the measure start. Freshly created rests carry the <staff> and <voice> numbers
 // of the group they fill. Existing note elements already carry their own children.
+// `requiredStaves` (multi-staff only) lists staff numbers that must be emitted
+// even when they hold no notes — an empty staff has nothing in `notes`, so it
+// would otherwise vanish from the rebuilt measure. Each missing staff is filled
+// with a single full-measure rest. Used by `addStaff`/`removeStaff` so a newly
+// added (or newly emptied) staff always carries a well-formed blank bar.
 function writeMeasure(
   doc: Document,
   measureEl: Element,
@@ -522,6 +527,7 @@ function writeMeasure(
   measureLength: number,
   divisionsPerQuarter: number,
   staffCount = 1,
+  requiredStaves?: number[],
 ): void {
   for (const noteEl of Array.from(measureEl.querySelectorAll("note"))) {
     noteEl.remove();
@@ -565,6 +571,18 @@ function writeMeasure(
     const key = `${s}:${v}`;
     if (!groupKeys.has(key)) {
       groupKeys.set(key, { staff: s, voice: v });
+    }
+  }
+  // Ensure every required staff appears, even if it has no notes (voice 0 → the
+  // fill rest carries a <staff> but no <voice>, matching a simple grand staff).
+  if (requiredStaves) {
+    for (const staff of requiredStaves) {
+      if (
+        !groupKeys.has(`${staff}:0`) &&
+        ![...groupKeys.values()].some((g) => g.staff === staff)
+      ) {
+        groupKeys.set(`${staff}:0`, { staff, voice: 0 });
+      }
     }
   }
   const groups = [...groupKeys.values()].sort(
@@ -1992,4 +2010,208 @@ export function pasteMeasures(
     measureEl.setAttribute("number", String(i + 1));
   });
   return { firstPastedIndex, pastedCount: inserted.length };
+}
+
+// ── Add / remove staves ───────────────────────────────────────────────────────
+
+// The `<attributes>` element carrying the score-wide declarations (`<staves>`,
+// `<clef>`s, `<key>`, `<time>`): the first measure's, created if absent.
+function firstAttributes(doc: Document): Element | null {
+  const measure = measuresOf(doc)[0];
+  if (!measure) {
+    return null;
+  }
+  const existing = measure.querySelector("attributes");
+  if (existing) {
+    return existing;
+  }
+  const attributes = doc.createElement("attributes");
+  measure.insertBefore(attributes, measure.firstChild);
+  return attributes;
+}
+
+// Insert a `<clef>` at its canonical spot in `<attributes>` (clefs are the last
+// of the ordered attribute children we build, so append after the final clef, or
+// at the end when there is none yet). Order among clefs follows staff number.
+function insertClef(
+  doc: Document,
+  attributes: Element,
+  number: number,
+  sign: "G" | "F",
+  line: number,
+): void {
+  const clefEl = doc.createElement("clef");
+  clefEl.setAttribute("number", String(number));
+  clefEl.appendChild(child(doc, "sign", sign));
+  clefEl.appendChild(child(doc, "line", String(line)));
+  const clefs = Array.from(attributes.children).filter(
+    (el) => el.tagName.toLowerCase() === "clef",
+  );
+  const after = clefs[clefs.length - 1];
+  if (after?.nextSibling) {
+    attributes.insertBefore(clefEl, after.nextSibling);
+  } else {
+    attributes.appendChild(clefEl);
+  }
+}
+
+// Set (or create) the `<staves>` count in `<attributes>`. A count of 1 removes
+// the element entirely — a single-staff part omits `<staves>`. When creating it,
+// `<staves>` sits before the first `<clef>` (its schema position), else at the end.
+function setStavesCount(
+  doc: Document,
+  attributes: Element,
+  count: number,
+): void {
+  const existing = attributes.querySelector("staves");
+  if (count <= 1) {
+    existing?.remove();
+    return;
+  }
+  if (existing) {
+    existing.textContent = String(count);
+    return;
+  }
+  const stavesEl = child(doc, "staves", String(count));
+  const firstClef = Array.from(attributes.children).find(
+    (el) => el.tagName.toLowerCase() === "clef",
+  );
+  if (firstClef) {
+    attributes.insertBefore(stavesEl, firstClef);
+  } else {
+    attributes.appendChild(stavesEl);
+  }
+}
+
+// Add a staff to the (single) part, appended below the existing staves — turning
+// a single-staff score into a grand staff, or extending an existing grand staff.
+// The new staff gets a bass clef when it becomes the second staff (the piano
+// convention) and a treble clef otherwise. Every measure gains a full-measure
+// rest for it, and notes that had no explicit `<staff>` (a former single-staff
+// part) are tagged onto staff 1. Returns the new staff count, or null when there
+// is no part/measures to act on.
+export function addStaff(doc: Document): number | null {
+  const attributes = firstAttributes(doc);
+  const measures = measuresOf(doc);
+  if (!attributes || measures.length === 0) {
+    return null;
+  }
+  const previousCount = staffCountOf(doc);
+  const newCount = previousCount + 1;
+  const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+
+  // A former single-staff part may have a lone `<clef>` with no `number`; give it
+  // number 1 so the new clef's numbering is unambiguous.
+  if (previousCount === 1) {
+    const soleClef = attributes.querySelector("clef");
+    if (soleClef && !soleClef.getAttribute("number")) {
+      soleClef.setAttribute("number", "1");
+    }
+  }
+  setStavesCount(doc, attributes, newCount);
+  const newIsBass = newCount === 2;
+  insertClef(
+    doc,
+    attributes,
+    newCount,
+    newIsBass ? "F" : "G",
+    newIsBass ? 4 : 2,
+  );
+
+  for (const measureEl of measures) {
+    // Tag pre-existing (untagged) notes onto staff 1 so the part is explicitly
+    // multi-staff; then rebuild with the new staff required so it gets a rest.
+    if (previousCount === 1) {
+      for (const noteEl of Array.from(measureEl.querySelectorAll("note"))) {
+        if (!noteEl.querySelector("staff")) {
+          noteEl.appendChild(child(doc, "staff", "1"));
+        }
+      }
+    }
+    const measureLength =
+      measureContentDivisions(measureEl) || divisionsPerMeasure;
+    const notes = readRealNotes(measureEl, divisions);
+    writeMeasure(
+      doc,
+      measureEl,
+      notes,
+      measureLength,
+      divisions,
+      newCount,
+      Array.from({ length: newCount }, (_, i) => i + 1),
+    );
+  }
+  return newCount;
+}
+
+// Remove a staff from the (single) part. `staff` defaults to the bottom staff.
+// Every note/rest on that staff is dropped, staves below it slide up by one, and
+// the matching `<clef>` is removed (remaining clefs renumbered). Removing the
+// last remaining staff is a no-op — a part must keep at least one. When the
+// result is a single staff, `<staves>` and the surviving notes' `<staff>` tags
+// are dropped so the part reverts to plain single-staff shape. Returns the new
+// staff count, or null when there is nothing to remove.
+export function removeStaff(doc: Document, staff?: number): number | null {
+  const attributes = firstAttributes(doc);
+  const measures = measuresOf(doc);
+  if (!attributes || measures.length === 0) {
+    return null;
+  }
+  const previousCount = staffCountOf(doc);
+  if (previousCount <= 1) {
+    return null;
+  }
+  const target = staff ?? previousCount;
+  if (target < 1 || target > previousCount) {
+    return null;
+  }
+  const newCount = previousCount - 1;
+  const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+
+  // Drop the target clef and renumber the rest (staves above `target` shift down).
+  for (const clefEl of Array.from(attributes.querySelectorAll("clef"))) {
+    const number = Number.parseInt(clefEl.getAttribute("number") ?? "1", 10);
+    if (number === target) {
+      clefEl.remove();
+    } else if (number > target) {
+      if (newCount === 1) {
+        clefEl.removeAttribute("number");
+      } else {
+        clefEl.setAttribute("number", String(number - 1));
+      }
+    } else if (newCount === 1) {
+      clefEl.removeAttribute("number");
+    }
+  }
+  setStavesCount(doc, attributes, newCount);
+
+  for (const measureEl of measures) {
+    const measureLength =
+      measureContentDivisions(measureEl) || divisionsPerMeasure;
+    // Keep notes not on the removed staff; slide higher-numbered staves down.
+    const kept = readRealNotes(measureEl, divisions).filter(
+      (note) => staffOf(note.element) !== target,
+    );
+    for (const note of kept) {
+      const noteStaff = staffOf(note.element);
+      const staffEl = note.element.querySelector("staff");
+      if (newCount === 1) {
+        staffEl?.remove();
+      } else if (noteStaff > target && staffEl) {
+        staffEl.textContent = String(noteStaff - 1);
+      }
+    }
+    writeMeasure(
+      doc,
+      measureEl,
+      kept,
+      measureLength,
+      divisions,
+      newCount,
+      newCount > 1
+        ? Array.from({ length: newCount }, (_, i) => i + 1)
+        : undefined,
+    );
+  }
+  return newCount;
 }
