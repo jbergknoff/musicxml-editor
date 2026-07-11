@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { render } from "preact";
-import { Editor } from "./Editor";
+import { Editor, staffGroupLabels } from "./Editor";
 
 // Smoke test: mount the full Editor shell into the linkedom DOM (set up in
 // src/test-setup.ts) and confirm it renders an SVG staff and the toolbar, so
@@ -35,5 +35,27 @@ describe("Editor", () => {
       );
     expect(button("Undo")?.hasAttribute("disabled")).toBe(true);
     expect(button("Redo")?.hasAttribute("disabled")).toBe(true);
+  });
+});
+
+describe("staffGroupLabels", () => {
+  test("a single staff shows no label", () => {
+    expect(staffGroupLabels([{ clef: { sign: "G" } }])).toEqual([""]);
+  });
+
+  test("a classic grand staff keeps Treble/Bass", () => {
+    expect(
+      staffGroupLabels([{ clef: { sign: "G" } }, { clef: { sign: "F" } }]),
+    ).toEqual(["Treble", "Bass"]);
+  });
+
+  test("staves sharing a clef get numbered", () => {
+    expect(
+      staffGroupLabels([
+        { clef: { sign: "G" } },
+        { clef: { sign: "G" } },
+        { clef: { sign: "F" } },
+      ]),
+    ).toEqual(["Treble 1", "Treble 2", "Bass"]);
   });
 });

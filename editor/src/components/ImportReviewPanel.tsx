@@ -32,6 +32,8 @@ export function ImportReviewPanel({
   review,
   selectedMeasure,
   onSelectMeasure,
+  flaggedTargetCount,
+  onNextFlagged,
   onClose,
 }: {
   review: ImportReview;
@@ -39,8 +41,16 @@ export function ImportReviewPanel({
   selectedMeasure: number | null;
   /** Step the editor's selection to the given 0-based measure. */
   onSelectMeasure: (measureIndex: number) => void;
+  /** How many flagged (amber) notes still resolve in the score — drives the
+   *  "Next flagged" jump button. */
+  flaggedTargetCount: number;
+  /** Step the editor's selection to the next flagged note (wrapping). */
+  onNextFlagged: () => void;
   onClose: () => void;
 }) {
+  // Click-to-zoom on the source crop: 1× fits the strip; 2× doubles it inside
+  // a scrollable strip so individual noteheads are legible for comparison.
+  const [zoomed, setZoomed] = useState(false);
   // Object URLs for the page snapshots, revoked when the review data changes.
   const pageUrls = useMemo(
     () => review.pages.map((page) => URL.createObjectURL(page.image)),
@@ -129,6 +139,9 @@ export function ImportReviewPanel({
     if (cropHeight * scale > MAX_CROP_HEIGHT) {
       scale = MAX_CROP_HEIGHT / cropHeight;
     }
+    if (zoomed) {
+      scale *= 2;
+    }
     const devicePixels = window.devicePixelRatio || 1;
     const displayWidth = Math.round(cropWidth * scale);
     const displayHeight = Math.round(cropHeight * scale);
@@ -153,7 +166,7 @@ export function ImportReviewPanel({
       canvas.width,
       canvas.height,
     );
-  }, [pageImage, pageUrls, activeSystem, bodyWidth]);
+  }, [pageImage, pageUrls, activeSystem, bodyWidth, zoomed]);
 
   if (!activeSystem) {
     return null;
@@ -208,6 +221,19 @@ export function ImportReviewPanel({
           </span>
         ) : null}
         <span style={{ flex: 1 }} />
+        {flaggedTargetCount > 0 ? (
+          <button
+            type="button"
+            onClick={onNextFlagged}
+            title="Jump to the next low-confidence (amber) note"
+            style={{
+              ...stepButtonStyle(true),
+              color: COLORS.warning,
+            }}
+          >
+            ⚠ Next flagged
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => stepTo(activeIndex - 1)}
@@ -240,14 +266,34 @@ export function ImportReviewPanel({
           ✕
         </button>
       </div>
-      <div ref={bodyRef} style={{ overflow: "hidden" }}>
+      {/* Click the crop to toggle 2× zoom (scrollable when zoomed) — the
+          fit-to-strip rendering is too small to compare individual notes. */}
+      <div
+        ref={bodyRef}
+        style={{
+          overflowX: zoomed ? "auto" : "hidden",
+          overflowY: "hidden",
+        }}
+      >
         <canvas
           ref={canvasRef}
+          title={zoomed ? "Click to fit" : "Click to zoom"}
+          role="button"
+          tabIndex={0}
+          aria-label={zoomed ? "Fit source image" : "Zoom source image"}
+          onClick={() => setZoomed((zoom) => !zoom)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              setZoomed((zoom) => !zoom);
+            }
+          }}
           style={{
             display: "block",
             border: `1px solid ${COLORS.borderLight}`,
             borderRadius: RADIUS.overlay,
             boxSizing: "border-box",
+            cursor: zoomed ? "zoom-out" : "zoom-in",
           }}
         />
       </div>

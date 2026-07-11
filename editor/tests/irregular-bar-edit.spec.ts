@@ -61,17 +61,16 @@ test("stepping a chord member in an over-full bar keeps the bar intact", async (
   // selects the whole beat; the inspector lists it top-first as C5, A4.
   await clickNotehead(page, "#p0-m1-n0-v0");
   await expect(inspector.getByText("Beat", { exact: true })).toBeVisible();
-  await expect(inspector.getByText("2 notes", { exact: false })).toBeVisible();
-  await expect(pitchButtons(page)).toHaveText(["C5", "A4"]);
+  // Top-first treble chord rows, then the bass staff's own note at this beat
+  // (the inspector shows a group per staff).
+  await expect(pitchButtons(page)).toHaveText(["C5", "A4", "C3"]);
 
   // Click the top row's "Up one step" stepper: C5 → D5.
   await inspector.getByTitle("Up one step").first().click();
 
-  // The chord is now D5 over A4 — still exactly two notes. The bug turned this
-  // into "3 notes" with a phantom "5" row; guard against both.
-  await expect(inspector.getByText("2 notes", { exact: false })).toBeVisible();
-  await expect(inspector.getByText("3 notes", { exact: false })).toHaveCount(0);
-  await expect(pitchButtons(page)).toHaveText(["D5", "A4"]);
+  // The chord is now D5 over A4 — no extra phantom row appeared (the bug
+  // produced a bogus "5" row); the exact row assertion guards against it.
+  await expect(pitchButtons(page)).toHaveText(["D5", "A4", "C3"]);
 
   // The rendered staves stay intact: the over-full bar keeps its five beats and
   // the bass is untouched (no shift, no phantom notehead).

@@ -9,6 +9,9 @@ import { type Page, expect, test } from "@playwright/test";
 // carrying <staff>2</staff>. Without staff-aware selection every add landed on
 // the top staff.
 
+const GRAND_STAFF_LEDGER = fileURLToPath(
+  new URL("./fixtures/grand-staff-ledger.musicxml", import.meta.url),
+);
 const GRAND_STAFF = fileURLToPath(
   new URL("./fixtures/grand-staff.musicxml", import.meta.url),
 );
@@ -81,7 +84,8 @@ test("a note can be added onto the bass staff of a grand staff", async ({
   // → walks the bass staff to its beat-2 rest (staff-aware navigation).
   await page.keyboard.press("ArrowRight");
   await expect(inspector.getByText("Measure 1 · Beat 2")).toBeVisible();
-  await expect(inspector.getByText("Rest · quarter")).toBeVisible();
+  // Both staves rest at beat 2 — the inspector shows one group per staff.
+  await expect(inspector.getByText("Rest · quarter")).toHaveCount(2);
 
   // Typing a letter fills that bass rest with a note on the bass staff.
   await page.keyboard.press("e");
@@ -93,4 +97,32 @@ test("a note can be added onto the bass staff of a grand staff", async ({
   expect(pitchedNotesOnStaff(after, 2)).toBe(2);
   // It was placed near the bass staff (an E in octave 2–3), not treble range.
   expect(after).toMatch(/<step>E<\/step>\s*<octave>[23]<\/octave>/);
+});
+
+test("a ledger-line bass note selects the bass staff even when the click is nearer the treble staff", async ({
+  page,
+}) => {
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles(GRAND_STAFF_LEDGER);
+  // p1 is the bass staff; its D4 sits on ledger lines between the staves.
+  const head = page.locator("#p1-m1-n0-v0");
+  await expect(head).toBeVisible();
+  const box = await head.boundingBox();
+  if (!box) {
+    throw new Error("notehead has no bounding box");
+  }
+
+  // Click slightly ABOVE the notehead's center — vertically nearer the treble
+  // staff's band than the bass staff's. The screen-space notehead pick must
+  // still resolve the tap to the bass note's own slot, not the treble rest.
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2 - 4);
+  await expect(page.getByText("Sel: m.1 · 1 note")).toBeVisible();
+
+  // A repeat tap on the notehead drills into the note itself.
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2 - 4);
+  await expect(
+    page.locator("aside").getByText("Note", { exact: true }),
+  ).toBeVisible();
 });
