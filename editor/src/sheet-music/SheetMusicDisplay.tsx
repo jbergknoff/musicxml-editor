@@ -585,11 +585,15 @@ const NoteRing = memo(function NoteRing({
 // Green; matches the editor theme's "green" playback color (the renderer is
 // standalone and does not import the theme).
 const FLAG_CHECK_COLOR = "#1f8a5b";
+// Neutral button chrome; matches the editor theme's button surface/border
+// (the renderer is standalone and does not import the theme).
+const FLAG_CHECK_BUTTON_FILL = "#f5f6f7";
+const FLAG_CHECK_BUTTON_BORDER = "#c8ccd0";
 
 // Floating "mark reviewed" button drawn at each flagged note's position (the
 // OMR cleanup mode's low-confidence flags) — clicking it clears that one
-// note's flag. Sits just above and right of the notehead so it stays
-// associated with the note without covering it.
+// note's flag. Vertically centered on the notehead, just to its right, so it
+// stays clearly associated with the note without covering it.
 const FlagCheckButtons = memo(function FlagCheckButtons({
   noteIds,
   infos,
@@ -609,7 +613,7 @@ const FlagCheckButtons = memo(function FlagCheckButtons({
         const r = info.staffSpace * 0.55;
         const cx =
           info.nx + info.staffSpace * NOTEHEAD_HALF_WIDTH_FACTOR + r + 2;
-        const cy = info.ny - info.staffSpace * 2;
+        const cy = info.ny;
         return (
           <g
             key={id}
@@ -632,11 +636,15 @@ const FlagCheckButtons = memo(function FlagCheckButtons({
             }}
           >
             <title>Mark reviewed — clears this low-confidence flag</title>
-            <circle
-              r={r}
-              fill="#ffffff"
-              stroke={FLAG_CHECK_COLOR}
-              stroke-width="1.25"
+            <rect
+              x={-r}
+              y={-r}
+              width={r * 2}
+              height={r * 2}
+              rx={r * 0.35}
+              fill={FLAG_CHECK_BUTTON_FILL}
+              stroke={FLAG_CHECK_BUTTON_BORDER}
+              stroke-width="1"
             />
             <path
               d={`M ${-r * 0.45} 0 L ${-r * 0.1} ${r * 0.4} L ${r * 0.5} ${-r * 0.4}`}
