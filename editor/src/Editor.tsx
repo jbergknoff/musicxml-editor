@@ -105,6 +105,7 @@ import {
   offsetEmbeddedReviewPayload,
   readEmbeddedReview,
   writeEmbeddedReview,
+  writeEmbeddedReviewFlaggedNotes,
 } from "./import-review-persistence";
 import {
   type EditableMetadata,
@@ -690,6 +691,23 @@ export function Editor() {
     [flaggedNoteEntries],
   );
 
+  // Flags whose target actually resolves to a note/grace the amber tint and
+  // "Mark reviewed" button can attach to (see flaggedNoteEntries above). A
+  // flag addressing a rest resolves to neither — the review UI has no way to
+  // show or dismiss it — so counting it in the per-line badge would leave the
+  // count permanently stuck above zero with nothing left the user can act on.
+  const resolvableFlaggedNotes = useMemo(
+    () =>
+      importReview === null
+        ? []
+        : importReview.flaggedNotes.filter((flagged) =>
+            flaggedNoteEntries.some((entry) =>
+              sameHandle(entry.handle, flagged),
+            ),
+          ),
+    [importReview, flaggedNoteEntries],
+  );
+
   // Selection highlights: at Level 2 the focused note draws strong and its
   // chord-mates light; a slot selection tints all its members across every
   // staff (none for a rest — the beat-box chrome marks a rest instead).
@@ -922,18 +940,20 @@ export function Editor() {
   // note is worse than none.
   const dropFlagsInMeasure = useCallback(
     (measureIndex: number) => {
-      setExtra((prev) =>
-        prev
-          ? {
-              ...prev,
-              flaggedNotes: prev.flaggedNotes.filter(
-                (flagged) => flagged.measureIndex !== measureIndex,
-              ),
-            }
-          : prev,
-      );
+      setExtra((prev) => {
+        if (!prev) {
+          return prev;
+        }
+        const flaggedNotes = prev.flaggedNotes.filter(
+          (flagged) => flagged.measureIndex !== measureIndex,
+        );
+        // Keep the document's embedded copy (if any) in sync so an export
+        // taken after this edit doesn't resurrect the dropped flags.
+        writeEmbeddedReviewFlaggedNotes(documentRef.current, flaggedNotes);
+        return { ...prev, flaggedNotes };
+      });
     },
-    [setExtra],
+    [setExtra, documentRef],
   );
 
   // User-initiated counterpart to dropFlagsInMeasure: the user looked at this
@@ -942,19 +962,21 @@ export function Editor() {
   // immediately so it lands on the undo stack like any other edit.
   const dismissFlaggedNote = useCallback(
     (handle: NoteHandle) => {
-      setExtra((prev) =>
-        prev
-          ? {
-              ...prev,
-              flaggedNotes: prev.flaggedNotes.filter(
-                (flagged) => !sameHandle(flagged, handle),
-              ),
-            }
-          : prev,
-      );
+      setExtra((prev) => {
+        if (!prev) {
+          return prev;
+        }
+        const flaggedNotes = prev.flaggedNotes.filter(
+          (flagged) => !sameHandle(flagged, handle),
+        );
+        // Keep the document's embedded copy (if any) in sync so an export
+        // taken after this edit doesn't resurrect the dismissed flag.
+        writeEmbeddedReviewFlaggedNotes(documentRef.current, flaggedNotes);
+        return { ...prev, flaggedNotes };
+      });
       commit();
     },
-    [setExtra, commit],
+    [setExtra, commit, documentRef],
   );
 
   // The checkmark button reports the renderer id it was drawn at; resolve it
@@ -1468,7 +1490,7 @@ export function Editor() {
         setRedistributeOpen(false);
         return;
       }
-      setImportReview((prev) => {
+      setExtra((prev) => {
         if (!prev) {
           return prev;
         }
@@ -1491,7 +1513,7 @@ export function Editor() {
       setRedistributeOpen(false);
       commit();
     },
-    [editable, documentRef, commit, importReview],
+    [editable, documentRef, commit, importReview, setExtra],
   );
 
   // Delete the measures [range.lo, range.hi] and reselect the slot that now
@@ -2820,7 +2842,10 @@ export function Editor() {
           {reviewVisible && importReview !== null ? (
             <>
               <ImportReviewPanel
-                review={importReview}
+                review={{
+                  ...importReview,
+                  flaggedNotes: resolvableFlaggedNotes,
+                }}
                 selectedMeasure={slotInfo?.measureIndex ?? null}
                 onSelectMeasure={selectMeasureStart}
                 flaggedTargetCount={flaggedTargets.length}
