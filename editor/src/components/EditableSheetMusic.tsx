@@ -134,6 +134,8 @@ export function EditableSheetMusic({
   focusRange,
   focusColor,
   overfullBars,
+  flaggedNoteIds,
+  onDismissFlag,
 }: {
   musicxml: string;
   noteHighlights?: ReadonlyArray<NoteHighlight>;
@@ -184,6 +186,11 @@ export function EditableSheetMusic({
     partIndex: number;
     beats: number;
   }>;
+  /** Note render-info ids to draw a floating "mark reviewed" checkmark button
+   *  next to — the OMR cleanup mode's low-confidence flags. */
+  flaggedNoteIds?: ReadonlyArray<string>;
+  /** Called with a flagged note's id when its checkmark button is clicked. */
+  onDismissFlag?: (id: string) => void;
 }) {
   // Whether the in-progress gesture is a Shift-held drag (set at pointerdown,
   // cleared at pointerup) — gates whether pointermove/up forward to
@@ -214,6 +221,8 @@ export function EditableSheetMusic({
       focusRange={focusRange}
       focusColor={focusColor}
       overfullBars={overfullBars}
+      flaggedNoteIds={flaggedNoteIds}
+      onDismissFlag={onDismissFlag}
       // Allow horizontal pan: a plain drag scrolls rather than edits.
       containerStyle={{
         touchAction: "pan-x",

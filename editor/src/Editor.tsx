@@ -638,12 +638,13 @@ export function Editor() {
   // Whether the import-review panel is showing (drives layout + highlights).
   const reviewVisible = reviewOpen && importReview !== null;
 
-  // Low-confidence highlights: while reviewing an OMR import, tint the notes
-  // the decoder was least sure about so the user knows what to check against
-  // the source. Flags address notes by measure + <note> element index — the
-  // handle shape — so they survive pitch/accidental fixes in place (and detach
-  // once a structural edit reorders the measure's note elements).
-  const confidenceHighlights: NoteHighlight[] = useMemo(() => {
+  // Flagged notes resolved to renderer ids, paired with the handle needed to
+  // dismiss each one. Shared by the amber tint and the floating "mark
+  // reviewed" checkmark button below. Flags address notes by measure + <note>
+  // element index — the handle shape — so they survive pitch/accidental fixes
+  // in place (and detach once a structural edit reorders the measure's note
+  // elements).
+  const flaggedNoteEntries = useMemo(() => {
     if (!reviewVisible || importReview === null) {
       return [];
     }
@@ -656,17 +657,34 @@ export function Editor() {
         // Grace notes are not pickable (no beat of their own) but still render
         // with ids — and the dense grace runs are exactly where the recognizer
         // is least sure, so fall back to the grace lookup.
-        return idForHandle(score, handle) ?? idForGraceHandle(score, handle);
+        const id =
+          idForHandle(score, handle) ?? idForGraceHandle(score, handle);
+        return id ? { id, handle } : null;
       })
-      .filter((id): id is string => id !== null)
-      .map((id) => ({
+      .filter(
+        (entry): entry is { id: string; handle: NoteHandle } => entry !== null,
+      );
+  }, [reviewVisible, importReview, score]);
+
+  // Low-confidence highlights: while reviewing an OMR import, tint the notes
+  // the decoder was least sure about so the user knows what to check against
+  // the source.
+  const confidenceHighlights: NoteHighlight[] = useMemo(
+    () =>
+      flaggedNoteEntries.map(({ id }) => ({
         kind: "score" as const,
         id,
         color: FLAG_COLOR,
         title:
           "Low-confidence: the recognizer was least sure about this note. Check it against the source image.",
-      }));
-  }, [reviewVisible, importReview, score]);
+      })),
+    [flaggedNoteEntries],
+  );
+
+  const flaggedNoteIds = useMemo(
+    () => flaggedNoteEntries.map((entry) => entry.id),
+    [flaggedNoteEntries],
+  );
 
   // Selection highlights: at Level 2 the focused note draws strong and its
   // chord-mates light; a slot selection tints all its members across every
@@ -933,6 +951,18 @@ export function Editor() {
       commit();
     },
     [setExtra, commit],
+  );
+
+  // The checkmark button reports the renderer id it was drawn at; resolve it
+  // back to the handle dismissFlaggedNote needs.
+  const dismissFlaggedNoteId = useCallback(
+    (id: string) => {
+      const entry = flaggedNoteEntries.find((candidate) => candidate.id === id);
+      if (entry) {
+        dismissFlaggedNote(entry.handle);
+      }
+    },
+    [flaggedNoteEntries, dismissFlaggedNote],
   );
 
   // Staff-step (or octave-step) a specific note, keeping its onset. Returns to
@@ -2273,11 +2303,6 @@ export function Editor() {
 
   // Context-menu items act on the current selection.
   const canNudge = focused !== null;
-  const focusedIsFlagged =
-    reviewVisible &&
-    focused !== null &&
-    importReview !== null &&
-    importReview.flaggedNotes.some((flagged) => sameHandle(flagged, focused));
   const isMeasureRangeSelection = selection?.kind === "measureRange";
   const canDelete =
     isMeasureRangeSelection ||
@@ -2306,21 +2331,6 @@ export function Editor() {
       onSelect: () => addNoteAtSlot(),
       disabled: !slotInfo,
     },
-    // Only present while reviewing an OMR import, and only when the focused
-    // note is actually flagged — this is the user confirming a specific
-    // amber note is correct, not a general-purpose toggle.
-    ...(focusedIsFlagged
-      ? [
-          {
-            label: "Mark reviewed",
-            onSelect: () => {
-              if (focused) {
-                dismissFlaggedNote(focused);
-              }
-            },
-          },
-        ]
-      : []),
     // Time shifts move the selected chord and everything after it in the
     // measure as a block, by the chord's own duration (see
     // `shiftSelectionInTime`).
@@ -2738,6 +2748,8 @@ export function Editor() {
               focusRange={measureFocusRange}
               focusColor={COLORS.accentHighlight}
               overfullBars={overfullBars}
+              flaggedNoteIds={flaggedNoteIds}
+              onDismissFlag={dismissFlaggedNoteId}
             />
           </div>
           {reviewVisible && importReview !== null ? (
