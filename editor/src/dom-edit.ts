@@ -1292,13 +1292,11 @@ export function shiftNotesInTime(
   if (!measureEl || !target) {
     return null;
   }
-  const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+  const { divisions } = measureMetrics(doc);
   const deltaDivisions = Math.round(deltaBeats * divisions);
   if (deltaDivisions === 0) {
     return null;
   }
-  const measureLength =
-    measureContentDivisions(measureEl) || divisionsPerMeasure;
   const sc = staffCountOf(doc);
   const targetStaff = sc > 1 ? staffOf(target) : 0;
   const notes = readRealNotes(measureEl, divisions);
@@ -1310,10 +1308,6 @@ export function shiftNotesInTime(
     targetStaff === 0 || staffOf(note.element) === targetStaff;
   const shifted = notes.filter(
     (note) => inStaff(note) && note.onsetDivisions >= anchor.onsetDivisions,
-  );
-  const blockEnd = shifted.reduce(
-    (max, note) => Math.max(max, note.onsetDivisions + note.durationDivisions),
-    0,
   );
   // A left shift may not cross the real notes before the anchor, nor the bar
   // start — either would overlap content (broken), not just lengthen the bar.
@@ -1333,10 +1327,20 @@ export function shiftNotesInTime(
   for (const note of shifted) {
     note.onsetDivisions += deltaDivisions;
   }
-  // A right shift past the current bar end grows the measure to fit rather than
-  // being blocked; writeMeasure pads the other staves to the new length.
-  const grownLength = Math.max(measureLength, blockEnd + deltaDivisions);
-  writeMeasure(doc, measureEl, notes, grownLength, divisions, sc);
+  // The bar is rebuilt to whatever its real notes (across every staff) now
+  // need, not the pre-shift length: a right shift past the old bar end still
+  // grows it (writeMeasure pads the other staves to match), but a left shift
+  // that frees space no staff's real notes need any more lets the bar shrink
+  // back down, instead of pinning it at its old — possibly over-full —
+  // length forever with the freed space just relocated into a fresh trailing
+  // rest. Rests never anchored a bar's length in the first place (that's the
+  // same "real notes only" rule `measureStaffNoteExtents` uses for the
+  // over-full badge); `notes` already excludes them.
+  const newLength = notes.reduce(
+    (max, note) => Math.max(max, note.onsetDivisions + note.durationDivisions),
+    0,
+  );
+  writeMeasure(doc, measureEl, notes, newLength, divisions, sc);
   return handleFor(measuresOf(doc), handle.measureIndex, target);
 }
 

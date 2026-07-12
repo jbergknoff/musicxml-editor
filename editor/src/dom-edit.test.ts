@@ -1839,6 +1839,22 @@ describe("shiftNotesInTime", () => {
     expect(fill.staffBeats[0]).toBe(5);
   });
 
+  test("a left shift that frees the space an earlier right shift grew shrinks the bar back down", () => {
+    const { doc, first } = docWithRun();
+    // Grow the bar to 5 beats (see the over-full test above), then shift the
+    // same block back left by 1: nothing needs beat 4 any more, so the bar
+    // should shrink back to 4 beats rather than leaving a stray trailing rest.
+    const grown = shiftNotesInTime(doc, first, 3) as NoteHandle;
+    const back = shiftNotesInTime(doc, grown, -1);
+    expect(back).not.toBeNull();
+    const score = reparse(doc);
+    const onsets = chords(score).map((entry) => entry.onsetBeat);
+    expect(onsets).toEqual([2, 3]);
+    const fill = measureFillReport(doc)[0];
+    expect(fill.staffBeats[0]).toBe(4);
+    expect(fill.nominalBeats).toBe(4);
+  });
+
   test("refuses a left shift that would collide with the previous note", () => {
     const { doc } = docWithRun();
     const second = handleOfNoteAt(doc, 1);
