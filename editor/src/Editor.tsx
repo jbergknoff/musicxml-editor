@@ -1311,7 +1311,14 @@ export function Editor() {
         commit();
       }
     },
-    [editable, score, measureStartBeats, documentRef, commit, dropFlagsInMeasure],
+    [
+      editable,
+      score,
+      measureStartBeats,
+      documentRef,
+      commit,
+      dropFlagsInMeasure,
+    ],
   );
 
   const addLetter = useCallback(
