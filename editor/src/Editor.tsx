@@ -1490,7 +1490,7 @@ export function Editor() {
         setRedistributeOpen(false);
         return;
       }
-      setImportReview((prev) => {
+      setExtra((prev) => {
         if (!prev) {
           return prev;
         }
@@ -1513,7 +1513,7 @@ export function Editor() {
       setRedistributeOpen(false);
       commit();
     },
-    [editable, documentRef, commit, importReview],
+    [editable, documentRef, commit, importReview, setExtra],
   );
 
   // Delete the measures [range.lo, range.hi] and reselect the slot that now
