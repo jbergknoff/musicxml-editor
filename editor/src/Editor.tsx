@@ -709,8 +709,11 @@ export function Editor() {
   );
 
   // Selection highlights: at Level 2 the focused note draws strong and its
-  // chord-mates light; a slot selection tints all its members across every
-  // staff (none for a rest — the beat-box chrome marks a rest instead).
+  // chord-mates light; a slot selection tints every staff's slot that begins on
+  // this exact beat (a selected rest has no notehead to recolor — the
+  // renderer's rest-highlight chrome marks it instead). `inspector.allSlots` is
+  // already this same onset-exact set (see `allSlotsAtBeat`), so the inspector
+  // panel and the score highlight always agree on what's selected.
   // Confidence flags go first so the selection recolor draws over them.
   const noteHighlights: NoteHighlight[] = useMemo(() => {
     if (!selection || !slotInfo) {
@@ -748,6 +751,15 @@ export function Editor() {
   // Selection chrome geometry: the beat column to highlight and (at Level 2) the
   // specific note to ring. Both are passed straight through to the renderer.
   const selectionBeat = slotInfo?.onsetBeat ?? null;
+  // A selected rest has no notehead to recolor, so the renderer draws a
+  // highlight box around the rest glyph on its own staff instead.
+  const restSelection = useMemo(
+    () =>
+      slotInfo?.isRest
+        ? { partIndex: slotInfo.partIndex, beat: slotInfo.onsetBeat }
+        : null,
+    [slotInfo],
+  );
   const focusNoteId = useMemo(() => {
     if (selection?.kind !== "note") {
       return null;
@@ -1356,11 +1368,8 @@ export function Editor() {
   // chord slot it stacks a chord member (default a third above the top, via
   // `addNoteToChord`); on a rest slot it inserts a quarter note (`addNote` fits
   // the duration and rebalances). `pitch` is required for a rest.
-  // `overrideOnsetBeat` lets the caller insert into a covering rest at a
-  // specific beat rather than at the rest's own onset — used when adding a note
-  // to an adjacent staff whose rest spans the selected beat.
   const addNoteAtSlot = useCallback(
-    (pitch?: Pitch, targetSlot?: SlotInfo, overrideOnsetBeat?: number) => {
+    (pitch?: Pitch, targetSlot?: SlotInfo) => {
       const slot = targetSlot ?? slotInfoRef.current;
       if (!editable || !slot) {
         return;
@@ -1368,10 +1377,9 @@ export function Editor() {
       if (slot.isRest) {
         const clef = score.parts[slot.partIndex]?.clef;
         const measureStart = measureStartBeats[slot.measureIndex] ?? 0;
-        const onsetBeat = overrideOnsetBeat ?? slot.onsetBeat;
         const added = addNote(documentRef.current, {
           measureIndex: slot.measureIndex,
-          onsetBeatInMeasure: onsetBeat - measureStart,
+          onsetBeatInMeasure: slot.onsetBeat - measureStart,
           durationBeats: 1,
           pitch: pitch ?? staffReferencePitch(clef),
           // 1-based staff; addNote ignores it for single-staff documents.
@@ -2828,6 +2836,7 @@ export function Editor() {
               isPlaying={listen.playing}
               scrollLocked={listen.playing}
               selectionBeat={selectionBeat}
+              restSelection={restSelection}
               focusNoteId={focusNoteId}
               snapBeatRef={snapBeatRef}
               snapGeneration={snapGeneration}
@@ -2908,13 +2917,13 @@ export function Editor() {
             }
           }}
           onAddNote={(partIndex) => {
+            // `allSlots` is onset-exact, so this staff's row (and its Add-note
+            // button) only exists when it truly has an onset at the selected
+            // beat — the target slot's own onset is always that beat already.
             const targetSlot = inspector?.allSlots.find(
               (s) => s.partIndex === partIndex,
             );
-            // When the target staff's covering slot started before the selected
-            // beat (e.g. a whole rest at beat 0 while beat 1 is selected), pass
-            // the selected beat so the note lands at the right rhythmic position.
-            addNoteAtSlot(undefined, targetSlot, slotInfo?.onsetBeat);
+            addNoteAtSlot(undefined, targetSlot);
           }}
           onGraceAccidental={(index, alter) => {
             const handle = inspector?.graceHandles[index];
