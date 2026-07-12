@@ -16,6 +16,9 @@ const GRAND_STAFF_LEDGER = fileURLToPath(
 const GRAND_STAFF_SPINE = fileURLToPath(
   new URL("./fixtures/grand-staff-spine.musicxml", import.meta.url),
 );
+const GRAND_STAFF_SHIFT_SPINE = fileURLToPath(
+  new URL("./fixtures/grand-staff-shift-spine.musicxml", import.meta.url),
+);
 const GRAND_STAFF = fileURLToPath(
   new URL("./fixtures/grand-staff.musicxml", import.meta.url),
 );
@@ -156,4 +159,40 @@ test("→ walks the shared spine, crossing to the other staff mid-note", async (
   await page.keyboard.press("ArrowRight");
   await expect(inspector.getByText("Measure 1 · Beat 3")).toBeVisible();
   await expect(inspector.getByText("B2", { exact: true })).toBeVisible();
+});
+
+test("shift-right lands a quarter note on a half-beat-offset target on another staff", async ({
+  page,
+}) => {
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles(GRAND_STAFF_SHIFT_SPINE);
+  const inspector = page.locator("aside");
+
+  // The treble's final quarter note (F5, n3 — the fixture's three eighth notes
+  // ahead of it are n0-n2) lands on beat 2.5 — the eighths in its own staff
+  // shifted it off the beat grid the bass (plain quarters) sits on. Stepping
+  // by the note's own duration (1 beat) would only ever visit other
+  // half-beats (1.5, 3.5, ...) and never reach beat 3, where the bass's final
+  // quarter (A2, n1) lands.
+  await clickNotehead(page, "#p0-m1-n3-v0");
+  await expect(inspector.getByText("F5", { exact: true })).toBeVisible();
+
+  await page.keyboard.press(".");
+
+  // No badge: the shifted quarter fits exactly into the bar's remaining
+  // space rather than growing an over-full bar.
+  await expect(page.getByText(/beats$/)).toHaveCount(0);
+
+  // Re-select via the bass note now at the same onset: both F5 and A2 show up
+  // together as one shared-beat position, confirming the two staves' onsets
+  // now coincide exactly (not merely close).
+  await clickNotehead(page, "#p1-m1-n1-v0");
+  await expect(inspector.getByText("F5", { exact: true })).toBeVisible();
+  await expect(inspector.getByText("A2", { exact: true })).toBeVisible();
+
+  const xml = await exportXml(page);
+  expect(xml).toMatch(/<step>F<\/step>\s*<octave>5<\/octave>/);
+  expect(xml).toMatch(/<step>A<\/step>\s*<octave>2<\/octave>/);
 });
