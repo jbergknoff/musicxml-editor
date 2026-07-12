@@ -342,8 +342,11 @@ function toolbarButtonStyle(enabled: boolean) {
 export function Editor() {
   // Undo/redo + dirty tracking own the live document, the version counter, and
   // commit. The document is still mutated in place; commit snapshots it.
-  const history = useHistory(createBlankDocument);
-  const { documentRef, version, commit } = history;
+  const history = useHistory<ImportReview | null>(
+    createBlankDocument,
+    () => null,
+  );
+  const { documentRef, version, commit, setExtra } = history;
   const [selection, setSelection] = useState<Selection>(null);
   // Mirrors `selection`, but updated synchronously in the render body rather
   // than via an effect. The global keydown listener is re-subscribed by a
@@ -360,8 +363,9 @@ export function Editor() {
   const [metadataOpen, setMetadataOpen] = useState(false);
   const imageImport = useImageImport();
   // Source-image review data from the most recent OMR import (session-only —
-  // not part of the document), and whether its cleanup panel is showing.
-  const [importReview, setImportReview] = useState<ImportReview | null>(null);
+  // not part of the document, but undoable in lockstep with it via
+  // `history`'s `extra`), and whether its cleanup panel is showing.
+  const importReview = history.extra;
   const [reviewOpen, setReviewOpen] = useState(false);
   // A MIDI file awaiting confirmation (track selection, quantization grid,
   // etc.) via MidiImportDialog before it's actually converted. `mode` tracks
@@ -634,12 +638,13 @@ export function Editor() {
   // Whether the import-review panel is showing (drives layout + highlights).
   const reviewVisible = reviewOpen && importReview !== null;
 
-  // Low-confidence highlights: while reviewing an OMR import, tint the notes
-  // the decoder was least sure about so the user knows what to check against
-  // the source. Flags address notes by measure + <note> element index — the
-  // handle shape — so they survive pitch/accidental fixes in place (and detach
-  // once a structural edit reorders the measure's note elements).
-  const confidenceHighlights: NoteHighlight[] = useMemo(() => {
+  // Flagged notes resolved to renderer ids, paired with the handle needed to
+  // dismiss each one. Shared by the amber tint and the floating "mark
+  // reviewed" checkmark button below. Flags address notes by measure + <note>
+  // element index — the handle shape — so they survive pitch/accidental fixes
+  // in place (and detach once a structural edit reorders the measure's note
+  // elements).
+  const flaggedNoteEntries = useMemo(() => {
     if (!reviewVisible || importReview === null) {
       return [];
     }
@@ -652,17 +657,34 @@ export function Editor() {
         // Grace notes are not pickable (no beat of their own) but still render
         // with ids — and the dense grace runs are exactly where the recognizer
         // is least sure, so fall back to the grace lookup.
-        return idForHandle(score, handle) ?? idForGraceHandle(score, handle);
+        const id =
+          idForHandle(score, handle) ?? idForGraceHandle(score, handle);
+        return id ? { id, handle } : null;
       })
-      .filter((id): id is string => id !== null)
-      .map((id) => ({
+      .filter(
+        (entry): entry is { id: string; handle: NoteHandle } => entry !== null,
+      );
+  }, [reviewVisible, importReview, score]);
+
+  // Low-confidence highlights: while reviewing an OMR import, tint the notes
+  // the decoder was least sure about so the user knows what to check against
+  // the source.
+  const confidenceHighlights: NoteHighlight[] = useMemo(
+    () =>
+      flaggedNoteEntries.map(({ id }) => ({
         kind: "score" as const,
         id,
         color: FLAG_COLOR,
         title:
           "Low-confidence: the recognizer was least sure about this note. Check it against the source image.",
-      }));
-  }, [reviewVisible, importReview, score]);
+      })),
+    [flaggedNoteEntries],
+  );
+
+  const flaggedNoteIds = useMemo(
+    () => flaggedNoteEntries.map((entry) => entry.id),
+    [flaggedNoteEntries],
+  );
 
   // Selection highlights: at Level 2 the focused note draws strong and its
   // chord-mates light; a slot selection tints all its members across every
@@ -894,18 +916,54 @@ export function Editor() {
   // confidence flags in that measure would drift onto the wrong notes. Drop
   // that measure's flags instead — a stale amber tint pointing at the wrong
   // note is worse than none.
-  const dropFlagsInMeasure = useCallback((measureIndex: number) => {
-    setImportReview((prev) =>
-      prev
-        ? {
-            ...prev,
-            flaggedNotes: prev.flaggedNotes.filter(
-              (flagged) => flagged.measureIndex !== measureIndex,
-            ),
-          }
-        : prev,
-    );
-  }, []);
+  const dropFlagsInMeasure = useCallback(
+    (measureIndex: number) => {
+      setExtra((prev) =>
+        prev
+          ? {
+              ...prev,
+              flaggedNotes: prev.flaggedNotes.filter(
+                (flagged) => flagged.measureIndex !== measureIndex,
+              ),
+            }
+          : prev,
+      );
+    },
+    [setExtra],
+  );
+
+  // User-initiated counterpart to dropFlagsInMeasure: the user looked at this
+  // one note and confirmed it's correct, so it stops drawing amber even
+  // though the rest of its measure may still hold other flags. Committed
+  // immediately so it lands on the undo stack like any other edit.
+  const dismissFlaggedNote = useCallback(
+    (handle: NoteHandle) => {
+      setExtra((prev) =>
+        prev
+          ? {
+              ...prev,
+              flaggedNotes: prev.flaggedNotes.filter(
+                (flagged) => !sameHandle(flagged, handle),
+              ),
+            }
+          : prev,
+      );
+      commit();
+    },
+    [setExtra, commit],
+  );
+
+  // The checkmark button reports the renderer id it was drawn at; resolve it
+  // back to the handle dismissFlaggedNote needs.
+  const dismissFlaggedNoteId = useCallback(
+    (id: string) => {
+      const entry = flaggedNoteEntries.find((candidate) => candidate.id === id);
+      if (entry) {
+        dismissFlaggedNote(entry.handle);
+      }
+    },
+    [flaggedNoteEntries, dismissFlaggedNote],
+  );
 
   // Staff-step (or octave-step) a specific note, keeping its onset. Returns to
   // Level 2 on the moved note and coalesces a rapid run into one undo entry.
@@ -2004,10 +2062,9 @@ export function Editor() {
       // otherwise, fall back to whatever review data the opened file itself
       // carries (from a previous session's "Embed review data" export).
       const restoredReview = review ?? readEmbeddedReview(doc);
-      history.reset(doc);
+      history.reset(doc, restoredReview);
       setSelection(null);
       setMenu(null);
-      setImportReview(restoredReview);
       setReviewOpen(restoredReview !== null);
     },
     [history],
@@ -2043,14 +2100,13 @@ export function Editor() {
           ),
         );
       }
-      commit();
-      setSelection(null);
-      setMenu(null);
       // Shift the appended import's review data (measure/page indices) past
       // whatever the document already had, then merge it into the existing
-      // review (if any) so cleanup can continue across every append.
+      // review (if any) so cleanup can continue across every append. Applied
+      // before `commit` so the append and its review data land in one undo
+      // entry.
       if (review) {
-        setImportReview((prev) => {
+        setExtra((prev) => {
           const pageOffset = prev?.pages.length ?? 0;
           return {
             pages: [...(prev?.pages ?? []), ...review.pages],
@@ -2075,6 +2131,9 @@ export function Editor() {
         });
         setReviewOpen(true);
       }
+      commit();
+      setSelection(null);
+      setMenu(null);
       // Jump the selection/scroll to the first appended measure so the user
       // lands on the new content rather than staying scrolled where they were.
       const freshScore = parseScore(serializeDocument(documentRef.current));
@@ -2094,7 +2153,7 @@ export function Editor() {
         setSnapGeneration((generation) => generation + 1);
       }
     },
-    [documentRef, commit],
+    [documentRef, commit, setExtra],
   );
 
   const onImport = useCallback(
@@ -2689,6 +2748,8 @@ export function Editor() {
               focusRange={measureFocusRange}
               focusColor={COLORS.accentHighlight}
               overfullBars={overfullBars}
+              flaggedNoteIds={flaggedNoteIds}
+              onDismissFlag={dismissFlaggedNoteId}
             />
           </div>
           {reviewVisible && importReview !== null ? (

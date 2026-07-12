@@ -582,6 +582,85 @@ const NoteRing = memo(function NoteRing({
   );
 });
 
+// Green; matches the editor theme's "green" playback color (the renderer is
+// standalone and does not import the theme).
+const FLAG_CHECK_COLOR = "#1f8a5b";
+// Neutral button chrome; matches the editor theme's button surface/border
+// (the renderer is standalone and does not import the theme).
+const FLAG_CHECK_BUTTON_FILL = "#dde0e3";
+const FLAG_CHECK_BUTTON_BORDER = "#a8adb3";
+
+// Floating "mark reviewed" button drawn at each flagged note's position (the
+// OMR cleanup mode's low-confidence flags) — clicking it clears that one
+// note's flag. Vertically centered on the notehead, just to its right, so it
+// stays clearly associated with the note without covering it.
+const FlagCheckButtons = memo(function FlagCheckButtons({
+  noteIds,
+  infos,
+  onDismiss,
+}: {
+  noteIds: ReadonlyArray<string>;
+  infos: Map<string, NoteRenderInfo>;
+  onDismiss: (id: string) => void;
+}) {
+  return (
+    <g>
+      {noteIds.map((id) => {
+        const info = infos.get(id);
+        if (!info) {
+          return null;
+        }
+        const r = info.staffSpace * 0.7;
+        const cx =
+          info.nx + info.staffSpace * NOTEHEAD_HALF_WIDTH_FACTOR + r + 8;
+        const cy = info.ny;
+        return (
+          <g
+            key={id}
+            transform={`translate(${cx}, ${cy})`}
+            // biome-ignore lint/a11y/useSemanticElements: SVG has no <button>; role+tabIndex+onKeyDown make it operable
+            role="button"
+            tabIndex={0}
+            aria-label="Mark reviewed"
+            style={{ cursor: "pointer" }}
+            onPointerDown={(event: PointerEvent) => event.stopPropagation()}
+            onClick={(event: MouseEvent) => {
+              event.stopPropagation();
+              onDismiss(id);
+            }}
+            onKeyDown={(event: KeyboardEvent) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onDismiss(id);
+              }
+            }}
+          >
+            <title>Mark reviewed — clears this low-confidence flag</title>
+            <rect
+              x={-r}
+              y={-r}
+              width={r * 2}
+              height={r * 2}
+              rx={r * 0.35}
+              fill={FLAG_CHECK_BUTTON_FILL}
+              stroke={FLAG_CHECK_BUTTON_BORDER}
+              stroke-width="1"
+            />
+            <path
+              d={`M ${-r * 0.45} 0 L ${-r * 0.1} ${r * 0.4} L ${r * 0.5} ${-r * 0.4}`}
+              fill="none"
+              stroke={FLAG_CHECK_COLOR}
+              stroke-width="1.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </g>
+        );
+      })}
+    </g>
+  );
+});
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 // Per-note geometry needed to draw (or recolor) a notehead. This is the single
@@ -1193,6 +1272,11 @@ interface SheetMusicDisplayProps {
    * one drives a custom drag gesture via `onStagePointerMove`/`Up`).
    */
   captureStagePointer?: boolean | ((event: PointerEvent) => boolean);
+  /** Note render-info ids to draw a floating "mark reviewed" checkmark button
+   *  next to — the OMR cleanup mode's low-confidence flags. */
+  flaggedNoteIds?: ReadonlyArray<string>;
+  /** Called with a flagged note's id when its checkmark button is clicked. */
+  onDismissFlag?: (id: string) => void;
 }
 
 /** Payload handed to the editor pointer-seam callbacks (see props above). */
@@ -1230,6 +1314,8 @@ export function SheetMusicDisplay({
   onStagePointerMove,
   onStagePointerUp,
   captureStagePointer = true,
+  flaggedNoteIds,
+  onDismissFlag,
 }: SheetMusicDisplayProps) {
   const result = useMemo(() => {
     try {
@@ -1859,6 +1945,13 @@ export function SheetMusicDisplay({
           {/* Note ring: drawn over the recolored notehead (Level 2 selection chrome) */}
           {focusNoteId != null && (
             <NoteRing noteId={focusNoteId} infos={noteInfos} />
+          )}
+          {flaggedNoteIds && flaggedNoteIds.length > 0 && onDismissFlag && (
+            <FlagCheckButtons
+              noteIds={flaggedNoteIds}
+              infos={noteInfos}
+              onDismiss={onDismissFlag}
+            />
           )}
           {markerEntries.length > 0 && (
             <PlayerMarkerOverlay
