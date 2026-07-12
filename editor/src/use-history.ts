@@ -7,6 +7,12 @@
 // document has already changed by then). Undo/redo swap the live document for a
 // clone and bump a version counter so the editor re-serializes and re-renders.
 //
+// Callers with session state that should undo/redo in lockstep with the
+// document (e.g. the editor's OMR review data) can thread it through as
+// `Extra`: `setExtra` applies immediately (for reactivity) while `commit`
+// snapshots whatever `Extra` value is current at commit time, alongside the
+// document.
+//
 // Dirty state is a string comparison against a baseline captured on load
 // (Import / New) and reset on save (Export): see `baselineXml` / `markSaved`.
 
@@ -17,7 +23,12 @@ import { serializeDocument } from "./dom-edit";
 // undo entry (e.g. a burst of arrow-key nudges).
 const COALESCE_WINDOW_MS = 500;
 
-export interface History {
+interface Snapshot<Extra> {
+  doc: Document;
+  extra: Extra;
+}
+
+export interface History<Extra = undefined> {
   /** The live document. Mutate `.current` in place, then call `commit`. */
   documentRef: { current: Document };
   /** Bumped on every state change; drive re-serialize / re-render off this. */
@@ -28,35 +39,55 @@ export interface History {
   undo: () => void;
   redo: () => void;
   /** Load a new document (Import / New): clears history and resets the dirty
-   *  baseline to the new document. */
-  reset: (doc: Document) => void;
+   *  baseline to the new document, along with `extra`. */
+  reset: (doc: Document, extra: Extra) => void;
   /** Reset the dirty baseline to the current document (e.g. after Export). */
   markSaved: () => void;
   canUndo: boolean;
   canRedo: boolean;
   /** Serialized baseline the editor compares against to decide if it's dirty. */
   baselineXml: string;
+  /** The companion state threaded through undo/redo alongside the document. */
+  extra: Extra;
+  /** Updates `extra` immediately (for reactivity); undoable once `commit` runs. */
+  setExtra: (updater: Extra | ((prev: Extra) => Extra)) => void;
 }
 
 function clone(doc: Document): Document {
   return doc.cloneNode(true) as Document;
 }
 
-export function useHistory(createInitial: () => Document): History {
+export function useHistory<Extra = undefined>(
+  createInitial: () => Document,
+  createInitialExtra: () => Extra = () => undefined as Extra,
+): History<Extra> {
   const documentRef = useRef<Document | null>(null);
   if (documentRef.current === null) {
     documentRef.current = createInitial();
   }
+  const extraRef = useRef<Extra>(createInitialExtra());
   // A pristine clone of the current committed state. `commit` pushes this (the
   // pre-edit snapshot) before refreshing it from the just-edited document.
   const committedRef = useRef<Document>(clone(documentRef.current));
-  const pastRef = useRef<Document[]>([]);
-  const futureRef = useRef<Document[]>([]);
+  const committedExtraRef = useRef<Extra>(extraRef.current);
+  const pastRef = useRef<Snapshot<Extra>[]>([]);
+  const futureRef = useRef<Snapshot<Extra>[]>([]);
   const lastCommitRef = useRef<{ key: string; time: number } | null>(null);
   const baselineRef = useRef<string>(serializeDocument(documentRef.current));
   const [version, setVersion] = useState(0);
 
   const bump = useCallback(() => setVersion((v) => v + 1), []);
+
+  const setExtra = useCallback(
+    (updater: Extra | ((prev: Extra) => Extra)) => {
+      extraRef.current =
+        typeof updater === "function"
+          ? (updater as (prev: Extra) => Extra)(extraRef.current)
+          : updater;
+      bump();
+    },
+    [bump],
+  );
 
   const commit = useCallback(
     (options?: { coalesce?: string }) => {
@@ -68,10 +99,14 @@ export function useHistory(createInitial: () => Document): History {
         now - lastCommitRef.current.time < COALESCE_WINDOW_MS;
       if (!coalesce) {
         // The previous committed snapshot becomes an undo step.
-        pastRef.current.push(committedRef.current);
+        pastRef.current.push({
+          doc: committedRef.current,
+          extra: committedExtraRef.current,
+        });
       }
       futureRef.current = [];
       committedRef.current = clone(documentRef.current as Document);
+      committedExtraRef.current = extraRef.current;
       lastCommitRef.current = key !== undefined ? { key, time: now } : null;
       bump();
     },
@@ -84,9 +119,14 @@ export function useHistory(createInitial: () => Document): History {
       return;
     }
     // The current state moves to the redo stack; restore the popped one.
-    futureRef.current.push(committedRef.current);
-    documentRef.current = previous;
-    committedRef.current = clone(previous);
+    futureRef.current.push({
+      doc: committedRef.current,
+      extra: committedExtraRef.current,
+    });
+    documentRef.current = previous.doc;
+    committedRef.current = clone(previous.doc);
+    extraRef.current = previous.extra;
+    committedExtraRef.current = previous.extra;
     lastCommitRef.current = null;
     bump();
   }, [bump]);
@@ -96,17 +136,24 @@ export function useHistory(createInitial: () => Document): History {
     if (!next) {
       return;
     }
-    pastRef.current.push(committedRef.current);
-    documentRef.current = next;
-    committedRef.current = clone(next);
+    pastRef.current.push({
+      doc: committedRef.current,
+      extra: committedExtraRef.current,
+    });
+    documentRef.current = next.doc;
+    committedRef.current = clone(next.doc);
+    extraRef.current = next.extra;
+    committedExtraRef.current = next.extra;
     lastCommitRef.current = null;
     bump();
   }, [bump]);
 
   const reset = useCallback(
-    (doc: Document) => {
+    (doc: Document, extra: Extra) => {
       documentRef.current = doc;
       committedRef.current = clone(doc);
+      extraRef.current = extra;
+      committedExtraRef.current = extra;
       pastRef.current = [];
       futureRef.current = [];
       lastCommitRef.current = null;
@@ -132,5 +179,7 @@ export function useHistory(createInitial: () => Document): History {
     canUndo: pastRef.current.length > 0,
     canRedo: futureRef.current.length > 0,
     baselineXml: baselineRef.current,
+    extra: extraRef.current,
+    setExtra,
   };
 }

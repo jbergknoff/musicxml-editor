@@ -141,7 +141,7 @@ describe("useHistory", () => {
     expect(get().canUndo).toBe(true);
 
     const loaded = parseDocument(serializeDocument(createBlankDocument()));
-    act(() => get().reset(loaded));
+    act(() => get().reset(loaded, undefined));
     expect(get().canUndo).toBe(false);
     expect(get().canRedo).toBe(false);
     expect(noteCount(get().documentRef.current)).toBe(0);

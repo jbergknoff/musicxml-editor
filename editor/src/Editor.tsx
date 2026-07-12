@@ -342,8 +342,11 @@ function toolbarButtonStyle(enabled: boolean) {
 export function Editor() {
   // Undo/redo + dirty tracking own the live document, the version counter, and
   // commit. The document is still mutated in place; commit snapshots it.
-  const history = useHistory(createBlankDocument);
-  const { documentRef, version, commit } = history;
+  const history = useHistory<ImportReview | null>(
+    createBlankDocument,
+    () => null,
+  );
+  const { documentRef, version, commit, setExtra } = history;
   const [selection, setSelection] = useState<Selection>(null);
   // Mirrors `selection`, but updated synchronously in the render body rather
   // than via an effect. The global keydown listener is re-subscribed by a
@@ -360,8 +363,9 @@ export function Editor() {
   const [metadataOpen, setMetadataOpen] = useState(false);
   const imageImport = useImageImport();
   // Source-image review data from the most recent OMR import (session-only —
-  // not part of the document), and whether its cleanup panel is showing.
-  const [importReview, setImportReview] = useState<ImportReview | null>(null);
+  // not part of the document, but undoable in lockstep with it via
+  // `history`'s `extra`), and whether its cleanup panel is showing.
+  const importReview = history.extra;
   const [reviewOpen, setReviewOpen] = useState(false);
   // A MIDI file awaiting confirmation (track selection, quantization grid,
   // etc.) via MidiImportDialog before it's actually converted. `mode` tracks
@@ -894,34 +898,42 @@ export function Editor() {
   // confidence flags in that measure would drift onto the wrong notes. Drop
   // that measure's flags instead — a stale amber tint pointing at the wrong
   // note is worse than none.
-  const dropFlagsInMeasure = useCallback((measureIndex: number) => {
-    setImportReview((prev) =>
-      prev
-        ? {
-            ...prev,
-            flaggedNotes: prev.flaggedNotes.filter(
-              (flagged) => flagged.measureIndex !== measureIndex,
-            ),
-          }
-        : prev,
-    );
-  }, []);
+  const dropFlagsInMeasure = useCallback(
+    (measureIndex: number) => {
+      setExtra((prev) =>
+        prev
+          ? {
+              ...prev,
+              flaggedNotes: prev.flaggedNotes.filter(
+                (flagged) => flagged.measureIndex !== measureIndex,
+              ),
+            }
+          : prev,
+      );
+    },
+    [setExtra],
+  );
 
   // User-initiated counterpart to dropFlagsInMeasure: the user looked at this
   // one note and confirmed it's correct, so it stops drawing amber even
-  // though the rest of its measure may still hold other flags.
-  const dismissFlaggedNote = useCallback((handle: NoteHandle) => {
-    setImportReview((prev) =>
-      prev
-        ? {
-            ...prev,
-            flaggedNotes: prev.flaggedNotes.filter(
-              (flagged) => !sameHandle(flagged, handle),
-            ),
-          }
-        : prev,
-    );
-  }, []);
+  // though the rest of its measure may still hold other flags. Committed
+  // immediately so it lands on the undo stack like any other edit.
+  const dismissFlaggedNote = useCallback(
+    (handle: NoteHandle) => {
+      setExtra((prev) =>
+        prev
+          ? {
+              ...prev,
+              flaggedNotes: prev.flaggedNotes.filter(
+                (flagged) => !sameHandle(flagged, handle),
+              ),
+            }
+          : prev,
+      );
+      commit();
+    },
+    [setExtra, commit],
+  );
 
   // Staff-step (or octave-step) a specific note, keeping its onset. Returns to
   // Level 2 on the moved note and coalesces a rapid run into one undo entry.
@@ -2020,10 +2032,9 @@ export function Editor() {
       // otherwise, fall back to whatever review data the opened file itself
       // carries (from a previous session's "Embed review data" export).
       const restoredReview = review ?? readEmbeddedReview(doc);
-      history.reset(doc);
+      history.reset(doc, restoredReview);
       setSelection(null);
       setMenu(null);
-      setImportReview(restoredReview);
       setReviewOpen(restoredReview !== null);
     },
     [history],
@@ -2059,14 +2070,13 @@ export function Editor() {
           ),
         );
       }
-      commit();
-      setSelection(null);
-      setMenu(null);
       // Shift the appended import's review data (measure/page indices) past
       // whatever the document already had, then merge it into the existing
-      // review (if any) so cleanup can continue across every append.
+      // review (if any) so cleanup can continue across every append. Applied
+      // before `commit` so the append and its review data land in one undo
+      // entry.
       if (review) {
-        setImportReview((prev) => {
+        setExtra((prev) => {
           const pageOffset = prev?.pages.length ?? 0;
           return {
             pages: [...(prev?.pages ?? []), ...review.pages],
@@ -2091,6 +2101,9 @@ export function Editor() {
         });
         setReviewOpen(true);
       }
+      commit();
+      setSelection(null);
+      setMenu(null);
       // Jump the selection/scroll to the first appended measure so the user
       // lands on the new content rather than staying scrolled where they were.
       const freshScore = parseScore(serializeDocument(documentRef.current));
@@ -2110,7 +2123,7 @@ export function Editor() {
         setSnapGeneration((generation) => generation + 1);
       }
     },
-    [documentRef, commit],
+    [documentRef, commit, setExtra],
   );
 
   const onImport = useCallback(
