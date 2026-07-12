@@ -16,8 +16,12 @@
 // still just reports one `onTap`, unaffected.
 
 import { useRef } from "preact/hooks";
-import type { NoteHandle } from "../dom-edit";
-import { beatFromX, pickNote, pitchFromY } from "../hit-test";
+import {
+  beatFromX,
+  type NoteheadHit,
+  pickNoteAtPoint,
+  pitchFromY,
+} from "../hit-test";
 import {
   type NoteHighlight,
   type Pitch,
@@ -30,11 +34,15 @@ export interface EditorGesture {
   beat: number;
   /** Pitch under the pointer, snapped to the nearest half staff-space. */
   pitch: Pitch;
-  /** The note the pointer is over, if any (id for highlight, handle for edits). */
-  hit: { id: string; handle: NoteHandle } | null;
-  /** The parsed part (staff) nearest the click — 0 for a single staff, or the
-   *  treble (0) / bass (1) staff of a grand staff. Lets a tap select/add on the
-   *  staff the user actually clicked rather than always the top one. */
+  /** The notehead under the pointer, if any — picked in screen space across
+   *  every staff, so it is authoritative about which note (and which staff)
+   *  was clicked even for ledger-line notes between two staves. */
+  hit: NoteheadHit | null;
+  /** The parsed part (staff) the tap belongs to: the hit note's own staff when
+   *  a notehead was clicked, else the staff whose vertical band is nearest.
+   *  0 for a single staff, or the treble (0) / bass (1) staff of a grand
+   *  staff. Lets a tap select/add on the staff the user actually clicked
+   *  rather than always the top one. */
   partIndex: number;
   /** True when the click landed well clear of every staff (vertically) — a tap
    *  in the empty margin, which clears the selection rather than selecting. */
@@ -47,12 +55,16 @@ export interface EditorGesture {
 const OFF_STAFF_MARGIN_SPACES = 4;
 
 /** A right-click / long-press request: a beat (and 1-indexed measure) plus the
- *  viewport coordinates to anchor a context menu at. */
+ *  viewport coordinates to anchor a context menu at. `gesture` carries the
+ *  staff/notehead resolution of the pointer-down that opened the menu (when
+ *  one landed on the staff SVG), so the menu can select the right staff's
+ *  slot — the renderer's own context-menu payload knows only the x axis. */
 export interface ContextMenuRequest {
   measureNumber: number;
   beat: number;
   clientX: number;
   clientY: number;
+  gesture: EditorGesture | null;
 }
 
 function resolveGesture(info: StagePointerInfo): EditorGesture {
@@ -62,12 +74,17 @@ function resolveGesture(info: StagePointerInfo): EditorGesture {
     info.layout,
     info.measureStartBeats,
   );
+  // The notehead under the pointer, picked in screen space across every staff.
+  // When one is found it decides the staff: a bass note on ledger lines
+  // between the staves belongs to the bass staff even if the treble staff's
+  // band is vertically closer to the pointer.
+  const hit = pickNoteAtPoint(info.score, info.layout, info.svgX, info.svgY);
   // For grand staff there are multiple parts (one per staff), each at a
   // different Y. Find the staff whose vertical extent is nearest the click: for
   // a click within a staff the distance is zero; for a click between staves it
   // resolves to whichever staff is closest. This ensures clicking the bass staff
   // yields bass-range pitches rather than treble-range ones.
-  let partIndex = 0;
+  let nearestPartIndex = 0;
   let minDist = Number.POSITIVE_INFINITY;
   for (let i = 0; i < info.layout.staffBottomYs.length; i++) {
     const bottomY = info.layout.staffBottomYs[i] ?? 0;
@@ -76,9 +93,10 @@ function resolveGesture(info: StagePointerInfo): EditorGesture {
     const dist = Math.abs(clampedY - info.svgY);
     if (dist < minDist) {
       minDist = dist;
-      partIndex = i;
+      nearestPartIndex = i;
     }
   }
+  const partIndex = hit?.partIndex ?? nearestPartIndex;
   const clef = info.score.parts[partIndex]?.clef ?? {
     sign: "G" as const,
     line: 2,
@@ -90,14 +108,11 @@ function resolveGesture(info: StagePointerInfo): EditorGesture {
     info.layout.staffSpace,
     clef,
   );
-  const offStaff = minDist > OFF_STAFF_MARGIN_SPACES * info.layout.staffSpace;
-  return {
-    beat,
-    pitch,
-    hit: pickNote(info.score, beat, pitch),
-    partIndex,
-    offStaff,
-  };
+  // A click on a notehead is never "off staff", no matter how many ledger
+  // lines out the note sits.
+  const offStaff =
+    hit === null && minDist > OFF_STAFF_MARGIN_SPACES * info.layout.staffSpace;
+  return { beat, pitch, hit, partIndex, offStaff };
 }
 
 export function EditableSheetMusic({
@@ -118,6 +133,7 @@ export function EditableSheetMusic({
   fitContent = false,
   focusRange,
   focusColor,
+  overfullBars,
 }: {
   musicxml: string;
   noteHighlights?: ReadonlyArray<NoteHighlight>;
@@ -159,12 +175,28 @@ export function EditableSheetMusic({
   focusRange?: { from: number; to: number } | null;
   /** Fill color for `focusRange`. */
   focusColor?: string;
+  /** Per-staff over-full flags: each (0-based measure index, 0-based staff/part
+   *  index) whose content exceeds the time signature, with its content length
+   *  in beats. The renderer marks each with an amber badge above that staff so
+   *  over-full bars (e.g. a too-long OMR duration) are visible at a glance. */
+  overfullBars?: ReadonlyArray<{
+    measureIndex: number;
+    partIndex: number;
+    beats: number;
+  }>;
 }) {
   // Whether the in-progress gesture is a Shift-held drag (set at pointerdown,
   // cleared at pointerup) — gates whether pointermove/up forward to
   // `onRangeSelectMove` rather than falling through to the container's
   // drag-to-scroll.
   const rangeDraggingRef = useRef(false);
+  // The most recent pointer-down's resolved gesture (any button), kept briefly
+  // so a context-menu request — whose own payload has no y axis — can reuse
+  // the staff/notehead resolution of the right-click that opened it.
+  const lastDownGestureRef = useRef<{
+    gesture: EditorGesture;
+    at: number;
+  } | null>(null);
 
   return (
     <SheetMusicDisplay
@@ -181,6 +213,7 @@ export function EditableSheetMusic({
       snapGeneration={snapGeneration}
       focusRange={focusRange}
       focusColor={focusColor}
+      overfullBars={overfullBars}
       // Allow horizontal pan: a plain drag scrolls rather than edits.
       containerStyle={{
         touchAction: "pan-x",
@@ -193,13 +226,15 @@ export function EditableSheetMusic({
       // container's drag-to-scroll.
       captureStagePointer={(event) => event.shiftKey}
       onStagePointerDown={(info, event) => {
-        // Ignore non-primary buttons here — right-click is handled by the
-        // context-menu seam, which also fires its own pointerdown.
+        const gesture = resolveGesture(info);
+        lastDownGestureRef.current = { gesture, at: performance.now() };
+        // Non-primary buttons stop here — right-click is handled by the
+        // context-menu seam, which reads the stashed gesture above.
         if (event.button !== 0) {
           return;
         }
         rangeDraggingRef.current = event.shiftKey;
-        onTap?.(resolveGesture(info), event);
+        onTap?.(gesture, event);
       }}
       onStagePointerMove={(info) => {
         if (rangeDraggingRef.current) {
@@ -212,7 +247,16 @@ export function EditableSheetMusic({
         }
         rangeDraggingRef.current = false;
       }}
-      onSheetContextMenu={onContextMenu}
+      onSheetContextMenu={(request) => {
+        // Attach the right-click's own staff/notehead resolution when its
+        // pointer-down reached the staff SVG moments ago; a context menu
+        // opened from outside the SVG carries no gesture.
+        const down = lastDownGestureRef.current;
+        // 1.5s covers a touch long-press's hold between its pointer-down and
+        // the contextmenu event it raises.
+        const fresh = down !== null && performance.now() - down.at < 1500;
+        onContextMenu?.({ ...request, gesture: fresh ? down.gesture : null });
+      }}
     />
   );
 }

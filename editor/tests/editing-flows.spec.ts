@@ -4,16 +4,20 @@ import { type Page, expect, test } from "@playwright/test";
 
 // Editing-flow integration tests for the editor. The design contract under test:
 // tapping the staff only selects (it never inserts a note), tapping empty space
-// clears the selection, a selected note can be deleted/undone, a multi-voice
+// clears the selection, a selected note can be deleted/undone, a multi-part
 // score is view-only, and the dirty indicator behaves.
 
 const SINGLE_STAFF = fileURLToPath(
   new URL("./fixtures/single-staff.musicxml", import.meta.url),
 );
 // A minimal single-staff score with two voices (backup element present) —
-// the editor treats multi-voice documents as view-only.
+// editable: writeMeasure rebuilds multi-voice measures faithfully.
 const MULTI_VOICE = fileURLToPath(
   new URL("./fixtures/multi-voice.musicxml", import.meta.url),
+);
+// Two separate parts — outside the editor's single-part model, so view-only.
+const TWO_PARTS = fileURLToPath(
+  new URL("./fixtures/two-parts.musicxml", import.meta.url),
 );
 // Two half notes, both C5, back to back — the minimal case for tying one
 // chord to the next.
@@ -194,15 +198,16 @@ test("the dirty indicator appears on edit and clears on export", async ({
   page,
 }) => {
   await loadSingleStaff(page);
-  // A freshly imported document is clean.
-  await expect(page.getByText("Unsaved")).toHaveCount(0);
+  // A freshly imported document is clean. The chip stays in the DOM (it
+  // reserves its space so the toolbar doesn't reflow) but is hidden.
+  await expect(page.getByText("Unsaved")).toBeHidden();
 
   await page.locator("#p0-m1-n0-v0").click();
   await page.getByRole("button", { name: "Delete" }).click();
   await expect(page.getByText("Unsaved")).toBeVisible();
 
   await exportXml(page);
-  await expect(page.getByText("Unsaved")).toHaveCount(0);
+  await expect(page.getByText("Unsaved")).toBeHidden();
 });
 
 test("an imported single-staff file is editable", async ({ page }) => {
@@ -211,11 +216,58 @@ test("an imported single-staff file is editable", async ({ page }) => {
   await expect(page.getByText(/view-only/i)).toHaveCount(0);
 });
 
-test("a multi-voice score is view-only", async ({ page }) => {
+test("a multi-voice single-part score is editable", async ({ page }) => {
   await importFile(page, MULTI_VOICE);
+  await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
+  await expect(page.getByText(/view-only/i)).toHaveCount(0);
+});
+
+test("a multi-part score is view-only", async ({ page }) => {
+  await importFile(page, TWO_PARTS);
   await expect(page.getByText(/view-only/i)).toBeVisible();
 
   // Undo/redo have nothing to act on; editing controls are inert.
   await expect(page.getByRole("button", { name: "Undo" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Redo" })).toBeDisabled();
+});
+
+test("a selected run shifts in time with , and .", async ({ page }) => {
+  await loadSingleStaff(page);
+  // Select the first note; "." shifts it and everything after it one quarter
+  // later, absorbing the bar's trailing rest.
+  await page.locator("#p0-m1-n0-v0").click();
+  await page.keyboard.press(".");
+  expect(noteSequence(await exportXml(page))).toEqual([
+    "REST",
+    "C5",
+    "E5",
+    "G5",
+  ]);
+  // "," pulls the block back to the start of the bar.
+  await page.keyboard.press(",");
+  expect(noteSequence(await exportXml(page))).toEqual([
+    "C5",
+    "E5",
+    "G5",
+    "REST",
+  ]);
+});
+
+test("shifting past the bar end grows an over-full bar and flags it", async ({
+  page,
+}) => {
+  await loadSingleStaff(page);
+  // No over-full badge on a well-formed 4/4 bar.
+  await expect(page.getByText(/beats$/)).toHaveCount(0);
+
+  // C5 E5 G5 REST — shift the whole run right by one quarter. There's a
+  // trailing rest to absorb it, so the bar stays exactly full (no badge).
+  await page.locator("#p0-m1-n0-v0").click();
+  await page.keyboard.press(".");
+  await expect(page.getByText(/beats$/)).toHaveCount(0);
+
+  // Shift again: now there is no trailing rest, so the bar grows to 5 beats
+  // rather than refusing — and the over-full badge appears.
+  await page.keyboard.press(".");
+  await expect(page.getByText("5 beats", { exact: true })).toBeVisible();
 });

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   addNote,
+  addStaff,
   createBlankDocument,
   type NoteHandle,
   serializeDocument,
@@ -11,6 +12,7 @@ import {
   idForHandle,
   locateBeat,
   pickNote,
+  pickNoteAtPoint,
   pitchForHandle,
   pitchFromY,
   slotAt,
@@ -263,5 +265,100 @@ describe("stepPitch", () => {
       alter: 0,
       octave: 5,
     });
+  });
+});
+
+describe("pickNoteAtPoint", () => {
+  // A grand staff whose bass staff holds a D4 — ledger lines above the bass
+  // staff, vertically nearer the treble staff's band than the bass one. The
+  // screen-space picker must still resolve it to the bass staff.
+  function grandStaffWithHighBassNote() {
+    const doc = createBlankDocument();
+    addStaff(doc);
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "G", alter: 0, octave: 4 },
+      staff: 1,
+    });
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 2,
+      durationBeats: 1,
+      pitch: { step: "D", alter: 0, octave: 4 },
+      staff: 2,
+    });
+    const score = parseScore(serializeDocument(doc));
+    const layout = resolveLayout(score);
+    return { score, layout };
+  }
+
+  // The rendered center of the first note drawn at `onsetBeat` on `partIndex`.
+  function renderedNoteCenter(
+    score: ReturnType<typeof parseScore>,
+    layout: ReturnType<typeof resolveLayout>,
+    partIndex: number,
+    measureIndex: number,
+    onsetBeat: number,
+    pitch: Pitch,
+  ): { x: number; y: number } {
+    const x = computeCursorX(
+      onsetBeat,
+      score,
+      layout,
+      computeMeasureStartBeats(score),
+    );
+    if (x === null) {
+      throw new Error("expected a cursor x for the note's beat");
+    }
+    const clef = score.parts[partIndex].clef ?? { sign: "G" as const };
+    const y = noteY(
+      pitch,
+      clef,
+      layout.staffBottomYs[partIndex],
+      layout.staffSpace,
+    );
+    return { x, y };
+  }
+
+  test("resolves a ledger-line bass note to the bass staff even when the click is nearer the treble staff band", () => {
+    const { score, layout } = grandStaffWithHighBassNote();
+    const { x, y } = renderedNoteCenter(score, layout, 1, 0, 2, {
+      step: "D",
+      alter: 0,
+      octave: 4,
+    });
+    // Click the upper half of the notehead — even closer to the treble staff.
+    const hit = pickNoteAtPoint(score, layout, x, y - layout.staffSpace * 0.4);
+    expect(hit).not.toBeNull();
+    expect(hit?.partIndex).toBe(1);
+  });
+
+  test("picks the treble note when the click is on its own notehead", () => {
+    const { score, layout } = grandStaffWithHighBassNote();
+    const { x, y } = renderedNoteCenter(score, layout, 0, 0, 0, {
+      step: "G",
+      alter: 0,
+      octave: 4,
+    });
+    const hit = pickNoteAtPoint(score, layout, x, y);
+    expect(hit).not.toBeNull();
+    expect(hit?.partIndex).toBe(0);
+  });
+
+  test("returns null away from any notehead", () => {
+    const { score, layout } = grandStaffWithHighBassNote();
+    const { x, y } = renderedNoteCenter(score, layout, 1, 0, 2, {
+      step: "D",
+      alter: 0,
+      octave: 4,
+    });
+    // Two staff-spaces above the notehead: past the vertical tolerance.
+    expect(
+      pickNoteAtPoint(score, layout, x, y - layout.staffSpace * 2),
+    ).toBeNull();
+    // A beat away horizontally with nothing there.
+    expect(pickNoteAtPoint(score, layout, x + 200, y)).toBeNull();
   });
 });

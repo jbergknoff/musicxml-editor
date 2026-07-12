@@ -1125,6 +1125,15 @@ interface SheetMusicDisplayProps {
   focusRange?: { from: number; to: number } | null;
   /** Fill color for the focus range highlight. */
   focusColor?: string;
+  /** Per-staff over-full flags: each (0-based measure index, 0-based staff/part
+   *  index) whose content exceeds the time signature, with its content length
+   *  in beats. Each gets an amber badge above that staff so an irregular bar is
+   *  visible — and attributable to the right staff — without counting beats. */
+  overfullBars?: ReadonlyArray<{
+    measureIndex: number;
+    partIndex: number;
+    beats: number;
+  }>;
   /** Called when the user finishes dragging a focus boundary handle. */
   onFocusRangeChange?: (range: { from: number; to: number }) => void;
   /** Ref written by the caller before each jump (reset/seek/mode change).
@@ -1207,6 +1216,7 @@ export function SheetMusicDisplay({
   containerStyle,
   focusRange,
   focusColor,
+  overfullBars,
   onFocusRangeChange,
   snapBeatRef,
   snapGeneration,
@@ -1838,6 +1848,13 @@ export function SheetMusicDisplay({
               staffSpace={layout.staffSpace}
             />
           )}
+          {overfullBars && overfullBars.length > 0 && (
+            <OverfullBadges
+              bars={overfullBars}
+              layout={layout}
+              textFontFamily={textFontFamily}
+            />
+          )}
           <NoteColorOverlay infos={noteInfos} entries={scoreEntries} />
           {/* Note ring: drawn over the recolored notehead (Level 2 selection chrome) */}
           {focusNoteId != null && (
@@ -2059,6 +2076,85 @@ const Staff = memo(function Staff({
     </g>
   );
 });
+
+// ── Over-full bar badges ──────────────────────────────────────────────────────
+
+// Amber; matches the editor theme's warningDot (the renderer is standalone and
+// does not import the theme).
+const OVERFULL_BADGE_COLOR = "#f59e0b";
+
+// A beat count for the badge label: an integer when whole, else trimmed to at
+// most two decimals (beats here are multiples of a 16th = 0.25).
+function formatBeatCount(beats: number): string {
+  return Number.isInteger(beats)
+    ? String(beats)
+    : beats.toFixed(2).replace(/\.?0+$/, "");
+}
+
+// An amber "N beats" pill above each *staff* whose content overruns its time
+// signature, so an over-full bar is visible at a glance — and attributed to the
+// staff that overflows — with a tooltip on how to fix it. One badge per
+// over-full (measure, staff), positioned just above that staff's top line.
+function OverfullBadges({
+  bars,
+  layout,
+  textFontFamily,
+}: {
+  bars: ReadonlyArray<{
+    measureIndex: number;
+    partIndex: number;
+    beats: number;
+  }>;
+  layout: ResolvedLayout;
+  textFontFamily: string;
+}) {
+  const { measureXs, measureWidths, staffBottomYs, staffSpace } = layout;
+  const fontSize = Math.max(9, staffSpace * 0.95);
+  const pillHeight = fontSize + 5;
+  return (
+    <g>
+      {bars.map(({ measureIndex, partIndex, beats }) => {
+        const x = measureXs[measureIndex];
+        const staffBottomY = staffBottomYs[partIndex];
+        if (x === undefined || staffBottomY === undefined) {
+          return null;
+        }
+        const width = measureWidths[measureIndex] ?? 0;
+        const label = `${formatBeatCount(beats)} beats`;
+        const pillWidth = label.length * fontSize * 0.58 + 14;
+        const left = x + width / 2 - pillWidth / 2;
+        // Just above this staff's top line; for the top staff this sits in the
+        // header margin, for lower staves in the inter-staff gap.
+        const top = staffBottomY - 4 * staffSpace - pillHeight - 5;
+        return (
+          <g key={`${measureIndex}:${partIndex}`}>
+            <title>
+              {`Over-full staff: ${formatBeatCount(beats)} beats where the time signature calls for fewer. Shorten a note, or shift content earlier.`}
+            </title>
+            <rect
+              x={left}
+              y={top}
+              width={pillWidth}
+              height={pillHeight}
+              rx={pillHeight / 2}
+              fill={OVERFULL_BADGE_COLOR}
+            />
+            <text
+              x={x + width / 2}
+              y={top + pillHeight * 0.72}
+              fill="#ffffff"
+              font-size={fontSize}
+              font-family={textFontFamily}
+              text-anchor="middle"
+            >
+              {label}
+            </text>
+          </g>
+        );
+      })}
+    </g>
+  );
+}
 
 // ── Staff Lines ───────────────────────────────────────────────────────────────
 

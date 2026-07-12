@@ -144,9 +144,10 @@ A MusicXML `<part>` with `<staves>2</staves>` is split into TWO entries in
 and `ChordSelection` all carry a `partIndex` field that maps directly to this array.
 When editing grand-staff scores, propagate `partIndex` through selection state and
 pass `slotInfo.partIndex + 1` (1-based) as the MusicXML `<staff>` number to
-`addNote`. The editability gate is `isEditableDocument()` in `dom-edit.ts` — a
-grand staff with ≤1 `<backup>` per measure is editable; more than one `<backup>`
-per measure → view-only.
+`addNote`. The editability gate is `isEditableDocument()` in `dom-edit.ts` —
+a document with exactly one `<part>` is editable (any number of staves and
+voices; `writeMeasure` rebuilds the backup structure faithfully); multi-part
+scores are view-only.
 
 `addStaff(doc)` / `removeStaff(doc, staff?)` (`dom-edit.ts`, toolbar "+ Staff" /
 "− Staff") grow and shrink that staff array in place: `addStaff` appends a staff
@@ -178,9 +179,42 @@ under `bun test`.
 runs — rerun once before treating it as a regression.
 
 **Selection / gesture types:**
-`EditorGesture` carries `partIndex` (which parsed staff the tap landed on) and
-`offStaff` (true if the tap is >4 staff-spaces from every staff, used to clear
-selection). The `slot` variant of the `Selection` union also carries `partIndex`.
-`sameSlot()` compares `partIndex`. The `slots()`, `slotAt()`, and `slotAtBeat()`
-functions in `hit-test.ts` accept an optional `partIndex` to restrict results to
-one staff.
+`EditorGesture` carries `hit` (the notehead under the pointer, picked in screen
+space across every staff by `pickNoteAtPoint()` in `hit-test.ts`), `partIndex`
+(the hit note's own staff when a notehead was clicked, else the staff whose
+vertical band is nearest), and `offStaff` (true if the tap has no hit and is >4
+staff-spaces from every staff, used to clear selection). When a tap hits a
+notehead, `handleTap` selects that note's exact slot via `chordForHandle` —
+never a beat/staff-band estimate — so ledger-line notes between two staves
+select correctly. A tap while drilled to note level stays at note level. The
+`slot` variant of the `Selection` union also carries `partIndex`. `sameSlot()`
+compares `partIndex`. The `slots()`, `slotAt()`, and `slotAtBeat()` functions in
+`hit-test.ts` accept an optional `partIndex` to restrict results to one staff.
+
+`←/→` navigation (`navBeat`), by contrast, is **not** staff-bound: it walks the
+*shared* rhythm spine — the union of every staff's onsets — so it reaches a beat
+that only another staff subdivides rather than skipping to the current staff's
+own next onset. On landing it keeps the current staff when that staff has an
+onset at the destination beat, and otherwise crosses to the staff that does
+(note-bearing staff first, then topmost). Editing ops that must target a staff
+(add-note, `shiftNotesInTime`) stay staff-aware via the landed slot's `partIndex`.
+
+**Shift in time (`shiftNotesInTime` / `shiftSelectionInTime`):** `,` / `.` move
+the selected chord and everything after it in its measure/staff as a block, by
+the chord's own duration, absorbing/emitting rest space at the bar ends. A right
+shift with no trailing rest to absorb it **grows the bar into an over-full bar**
+rather than refusing — intermediate states during OMR cleanup are allowed to be
+irregular, and the over-full badge (below) makes them visible. A **left** shift
+is still refused when it would overlap a real note before the anchor (or the bar
+start): that is a genuine collision, not merely a long bar, and the editor
+surfaces a transient `editHint` in the transport bar.
+
+**Over-full badges (`measureFillReport` in `dom-edit.ts` → `OverfullBadges` in
+the renderer):** an amber "N beats" pill is drawn above any *staff* whose notes
+reach past its time signature. It is **per staff**, not per measure:
+`measureFillReport` measures how far each staff's *notes* extend (rests and the
+trailing padding `writeMeasure` adds to align staves are excluded, or every
+staff of an over-full bar would read as over-full), so a grand staff whose bass
+overflows while the treble is fine badges only the bass. `staffBeats[i]` is
+index-aligned with `score.parts[i]`. Under-full bars (pickups, final bars) are
+legitimate and never flagged.

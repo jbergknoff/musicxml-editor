@@ -4,11 +4,18 @@ import { type Page, expect, test } from "@playwright/test";
 
 // A grand staff (piano: treble + bass, one voice each) is editable, and — the
 // behaviour under test — a note can be added onto the *bass* staff, not just the
-// treble. Selection is staff-aware: clicking the bass note selects a bass slot,
-// ←/→ walks the bass staff, and typing a letter fills a bass rest with a note
-// carrying <staff>2</staff>. Without staff-aware selection every add landed on
-// the top staff.
+// treble. Clicking the bass note selects a bass slot, and typing a letter fills
+// a bass rest with a note carrying <staff>2</staff>. ←/→ walks the shared rhythm
+// spine (the union of both staves' onsets), staying on the current staff when it
+// has an onset at the destination beat and crossing to the other when it does
+// not — so navigation reaches every beat, not just the current staff's onsets.
 
+const GRAND_STAFF_LEDGER = fileURLToPath(
+  new URL("./fixtures/grand-staff-ledger.musicxml", import.meta.url),
+);
+const GRAND_STAFF_SPINE = fileURLToPath(
+  new URL("./fixtures/grand-staff-spine.musicxml", import.meta.url),
+);
 const GRAND_STAFF = fileURLToPath(
   new URL("./fixtures/grand-staff.musicxml", import.meta.url),
 );
@@ -78,10 +85,12 @@ test("a note can be added onto the bass staff of a grand staff", async ({
   await clickNotehead(page, "#p1-m1-n0-v0");
   await expect(inspector.getByText("G2", { exact: true })).toBeVisible();
 
-  // → walks the bass staff to its beat-2 rest (staff-aware navigation).
+  // → advances along the spine to beat 2; the bass has its own onset there, so
+  // the selection stays on the bass staff.
   await page.keyboard.press("ArrowRight");
   await expect(inspector.getByText("Measure 1 · Beat 2")).toBeVisible();
-  await expect(inspector.getByText("Rest · quarter")).toBeVisible();
+  // Both staves rest at beat 2 — the inspector shows one group per staff.
+  await expect(inspector.getByText("Rest · quarter")).toHaveCount(2);
 
   // Typing a letter fills that bass rest with a note on the bass staff.
   await page.keyboard.press("e");
@@ -93,4 +102,58 @@ test("a note can be added onto the bass staff of a grand staff", async ({
   expect(pitchedNotesOnStaff(after, 2)).toBe(2);
   // It was placed near the bass staff (an E in octave 2–3), not treble range.
   expect(after).toMatch(/<step>E<\/step>\s*<octave>[23]<\/octave>/);
+});
+
+test("a ledger-line bass note selects the bass staff even when the click is nearer the treble staff", async ({
+  page,
+}) => {
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles(GRAND_STAFF_LEDGER);
+  // p1 is the bass staff; its D4 sits on ledger lines between the staves.
+  const head = page.locator("#p1-m1-n0-v0");
+  await expect(head).toBeVisible();
+  const box = await head.boundingBox();
+  if (!box) {
+    throw new Error("notehead has no bounding box");
+  }
+
+  // Click slightly ABOVE the notehead's center — vertically nearer the treble
+  // staff's band than the bass staff's. The screen-space notehead pick must
+  // still resolve the tap to the bass note's own slot, not the treble rest.
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2 - 4);
+  await expect(page.getByText("Sel: m.1 · 1 note")).toBeVisible();
+
+  // A repeat tap on the notehead drills into the note itself.
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2 - 4);
+  await expect(
+    page.locator("aside").getByText("Note", { exact: true }),
+  ).toBeVisible();
+});
+
+test("→ walks the shared spine, crossing to the other staff mid-note", async ({
+  page,
+}) => {
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles(GRAND_STAFF_SPINE);
+  const inspector = page.locator("aside");
+
+  // Select the treble half note at beat 1 (C5). The treble's own next onset is
+  // beat 3, but the bass subdivides beat 2 — so → must land on beat 2, crossing
+  // to the bass staff (the treble has no onset there).
+  await clickNotehead(page, "#p0-m1-n0-v0");
+  await expect(inspector.getByText("C5", { exact: true })).toBeVisible();
+
+  await page.keyboard.press("ArrowRight");
+  await expect(inspector.getByText("Measure 1 · Beat 2")).toBeVisible();
+  // The bass A2 onset at beat 2 is what we crossed to.
+  await expect(inspector.getByText("A2", { exact: true })).toBeVisible();
+
+  // → again reaches beat 3, where both staves have an onset; still on bass (B2).
+  await page.keyboard.press("ArrowRight");
+  await expect(inspector.getByText("Measure 1 · Beat 3")).toBeVisible();
+  await expect(inspector.getByText("B2", { exact: true })).toBeVisible();
 });

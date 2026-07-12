@@ -259,6 +259,106 @@ function measureContentDivisions(measureEl: Element): number {
   return maxExtent;
 }
 
+// The division extent reached by the *notes* (not rests) on each staff of a
+// measure, keyed by 1-based staff number. Rests advance the time cursor but are
+// not counted, because `writeMeasure` pads every staff with a trailing rest out
+// to the measure's (possibly over-full) length — counting that padding would
+// make every staff of an over-full bar look over-full. Measuring where a
+// staff's *notes* reach instead pins the overflow on the staff that actually
+// carries too much. (`<forward>` advances the shared cursor but belongs to no
+// staff, so it is not recorded — rare, only the odd manual-forward file.)
+function measureStaffNoteExtents(measureEl: Element): Map<number, number> {
+  const extents = new Map<number, number>();
+  let cursor = 0;
+  let lastOnset = 0;
+  for (const child of Array.from(measureEl.children)) {
+    const tag = child.tagName.toLowerCase();
+    if (tag === "note") {
+      if (child.querySelector("grace") !== null) {
+        continue;
+      }
+      const isChord = child.querySelector("chord") !== null;
+      const isRestNote = child.querySelector("rest") !== null;
+      const duration = Number.parseInt(
+        child.querySelector("duration")?.textContent ?? "0",
+        10,
+      );
+      const onset = isChord ? lastOnset : cursor;
+      if (!isRestNote) {
+        const staff = staffOf(child);
+        extents.set(staff, Math.max(extents.get(staff) ?? 0, onset + duration));
+      }
+      if (!isChord) {
+        lastOnset = cursor;
+        cursor += duration;
+      }
+    } else if (tag === "backup") {
+      cursor -= Number.parseInt(
+        child.querySelector("duration")?.textContent ?? "0",
+        10,
+      );
+    } else if (tag === "forward") {
+      cursor += Number.parseInt(
+        child.querySelector("duration")?.textContent ?? "0",
+        10,
+      );
+    }
+  }
+  return extents;
+}
+
+/** How far each staff's notes reach in a measure, against what its time
+ *  signature calls for, in quarter-note beats. `staffBeats[i]` is where staff
+ *  `i + 1`'s notes end (rests/padding excluded) — index-aligned with the
+ *  editor's `score.parts`, so a single over-full staff can be badged on its
+ *  own. `staffBeats[i] > nominalBeats` is an over-full staff (usually a
+ *  too-long OMR-recognized duration); a staff whose notes stop short of the bar
+ *  is fine (rests fill the rest) and not flagged. */
+export interface MeasureFill {
+  nominalBeats: number;
+  staffBeats: number[];
+}
+
+/** Per-measure fill report, in document order. Time signature and divisions are
+ *  carried forward across measures so a mid-piece time change is respected
+ *  rather than measured against the opening signature. */
+export function measureFillReport(doc: Document): MeasureFill[] {
+  let divisions = 4;
+  let beats = 4;
+  let beatType = 4;
+  return measuresOf(doc).map((measureEl) => {
+    const attrEl = measureEl.querySelector("attributes");
+    if (attrEl) {
+      divisions =
+        Number.parseInt(
+          attrEl.querySelector("divisions")?.textContent ?? "",
+          10,
+        ) || divisions;
+      beats =
+        Number.parseInt(
+          attrEl.querySelector("time > beats")?.textContent ?? "",
+          10,
+        ) || beats;
+      beatType =
+        Number.parseInt(
+          attrEl.querySelector("time > beat-type")?.textContent ?? "",
+          10,
+        ) || beatType;
+    }
+    const nominalDivisions = divisions * beats * (4 / beatType);
+    const extents = measureStaffNoteExtents(measureEl);
+    const staffCount = extents.size > 0 ? Math.max(...extents.keys()) : 1;
+    const staffBeats: number[] = [];
+    for (let staff = 1; staff <= staffCount; staff++) {
+      staffBeats.push((extents.get(staff) ?? 0) / divisions);
+    }
+    return {
+      nominalBeats: nominalDivisions / divisions,
+      staffBeats,
+    };
+  });
+}
+
 // A real (pitched) note in a measure, with its element and timing in divisions.
 interface RealNote {
   element: Element;
@@ -1165,6 +1265,79 @@ export function setNoteDuration(
     ctx.sc,
   );
   return true;
+}
+
+// Shift a staff's notes — from the anchor note's onset through the end of its
+// measure — later (positive `deltaBeats`) or earlier (negative) in time, as a
+// block. This is the OMR-cleanup "this entry came in a beat early/late" fix:
+// the run keeps its relative rhythm, and the freed/consumed time rebalances
+// into rests via `writeMeasure` (rest space shrinks at one end of the bar and
+// grows at the other). A right shift with no trailing rest to absorb it is
+// allowed to run past the bar end — the measure grows into an over-full bar
+// the user can see (the over-full badge) and fix — rather than being blocked;
+// cleanup is easier when intermediate states can be irregular. A LEFT shift,
+// by contrast, is refused when it would overlap a real note before the anchor
+// (or the bar start): that would produce two notes sounding at once in one
+// voice — genuinely broken, not merely long. Other staves are untouched.
+// Returns the anchor's new handle, or null when the shift is refused (or the
+// handle is bad).
+export function shiftNotesInTime(
+  doc: Document,
+  handle: NoteHandle,
+  deltaBeats: number,
+): NoteHandle | null {
+  const measures = measuresOf(doc);
+  const measureEl = measures[handle.measureIndex];
+  const target = elementForHandle(doc, handle);
+  if (!measureEl || !target) {
+    return null;
+  }
+  const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+  const deltaDivisions = Math.round(deltaBeats * divisions);
+  if (deltaDivisions === 0) {
+    return null;
+  }
+  const measureLength =
+    measureContentDivisions(measureEl) || divisionsPerMeasure;
+  const sc = staffCountOf(doc);
+  const targetStaff = sc > 1 ? staffOf(target) : 0;
+  const notes = readRealNotes(measureEl, divisions);
+  const anchor = notes.find((note) => note.element === target);
+  if (!anchor) {
+    return null;
+  }
+  const inStaff = (note: RealNote) =>
+    targetStaff === 0 || staffOf(note.element) === targetStaff;
+  const shifted = notes.filter(
+    (note) => inStaff(note) && note.onsetDivisions >= anchor.onsetDivisions,
+  );
+  const blockEnd = shifted.reduce(
+    (max, note) => Math.max(max, note.onsetDivisions + note.durationDivisions),
+    0,
+  );
+  // A left shift may not cross the real notes before the anchor, nor the bar
+  // start — either would overlap content (broken), not just lengthen the bar.
+  const priorEnd = notes.reduce(
+    (max, note) =>
+      inStaff(note) && note.onsetDivisions < anchor.onsetDivisions
+        ? Math.max(max, note.onsetDivisions + note.durationDivisions)
+        : max,
+    0,
+  );
+  if (
+    anchor.onsetDivisions + deltaDivisions < priorEnd ||
+    anchor.onsetDivisions + deltaDivisions < 0
+  ) {
+    return null;
+  }
+  for (const note of shifted) {
+    note.onsetDivisions += deltaDivisions;
+  }
+  // A right shift past the current bar end grows the measure to fit rather than
+  // being blocked; writeMeasure pads the other staves to the new length.
+  const grownLength = Math.max(measureLength, blockEnd + deltaDivisions);
+  writeMeasure(doc, measureEl, notes, grownLength, divisions, sc);
+  return handleFor(measuresOf(doc), handle.measureIndex, target);
 }
 
 // The largest standard duration (in quarter-note beats) that setNoteDuration

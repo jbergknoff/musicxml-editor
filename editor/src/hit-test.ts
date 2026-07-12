@@ -10,8 +10,10 @@ import {
   computeMeasureStartBeats,
   diatonicIndex,
   DIVISIONS,
+  eventXsFromSpine,
   isRest,
   keyAlterForStep,
+  noteY,
   type NoteType,
   type ParsedScore,
   type Pitch,
@@ -181,6 +183,88 @@ export function pickNote(
     }
   }
   return best ? { id: best.id, handle: best.handle } : null;
+}
+
+// ── Screen-space notehead picking ─────────────────────────────────────────────
+
+/** A notehead hit in screen (SVG) space: the note's renderer id, its source
+ *  handle, and which parsed part (staff) drew it. */
+export interface NoteheadHit {
+  id: string;
+  handle: NoteHandle;
+  partIndex: number;
+}
+
+// How far a click may land from a notehead's center and still pick it, in
+// staff-spaces: about one notehead width horizontally, a bit under one space
+// vertically (so a click on either half of the head hits, but the next
+// staff position over doesn't).
+const PICK_X_TOLERANCE_SPACES = 1.1;
+const PICK_Y_TOLERANCE_SPACES = 0.8;
+
+/**
+ * Pick the notehead nearest an SVG-space point, across every staff. Unlike
+ * `pickNote` (music-space, from one already-chosen staff's beat and pitch),
+ * this compares the pointer against each note's actual rendered position —
+ * x from the shared rhythm spine, y from its own staff's clef map — so a note
+ * on ledger lines between two staves resolves to the staff that drew it, not
+ * whichever staff band happens to be vertically closer to the pointer.
+ */
+export function pickNoteAtPoint(
+  score: ParsedScore,
+  layout: ResolvedLayout,
+  svgX: number,
+  svgY: number,
+): NoteheadHit | null {
+  const xTolerance = PICK_X_TOLERANCE_SPACES * layout.staffSpace;
+  const yTolerance = PICK_Y_TOLERANCE_SPACES * layout.staffSpace;
+  let best: NoteheadHit | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  score.parts.forEach((part, partIndex) => {
+    const clef = part.clef ?? { sign: "G" as const, line: 2 };
+    const staffBottomY = layout.staffBottomYs[partIndex] ?? 0;
+    part.measures.forEach((measure, measureIndex) => {
+      const spine = layout.measureSpines[measureIndex];
+      if (!spine) {
+        return;
+      }
+      // Same onset→x mapping the renderer uses, so hits line up with what was
+      // actually drawn (noteheads are centered on their spine x).
+      const eventXs = eventXsFromSpine(measure.events, spine);
+      measure.events.forEach((event, eventIndex) => {
+        if (isRest(event)) {
+          return;
+        }
+        const group = event as ChordGroup;
+        const x = eventXs[eventIndex];
+        const dx = Math.abs(x - svgX);
+        if (dx > xTolerance) {
+          return;
+        }
+        group.notes.forEach((note, voiceIndex) => {
+          if (!note.source) {
+            return;
+          }
+          const y = noteY(note.pitch, clef, staffBottomY, layout.staffSpace);
+          const dy = Math.abs(y - svgY);
+          if (dy > yTolerance) {
+            return;
+          }
+          // Normalized elliptical distance; nearest notehead wins.
+          const distance = (dx / xTolerance) ** 2 + (dy / yTolerance) ** 2;
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            best = {
+              id: `p${partIndex}-m${measure.number}-n${group.noteIndex}-v${voiceIndex}`,
+              handle: note.source,
+              partIndex,
+            };
+          }
+        });
+      });
+    });
+  });
+  return best;
 }
 
 // The renderer id + handle for a known note handle, used to keep a selection

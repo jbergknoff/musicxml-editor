@@ -64,6 +64,7 @@ import {
   insertMeasure,
   isEditableDocument,
   maxNoteDuration,
+  measureFillReport,
   moveNote,
   parseDocument,
   pasteMeasures,
@@ -77,6 +78,7 @@ import {
   setGracePitch,
   setGraceSlash,
   setNoteDuration,
+  shiftNotesInTime,
   toggleTie,
 } from "./dom-edit";
 import {
@@ -242,6 +244,34 @@ function measureRangeForSelection(
 
 const STEPS_ORDER: Pitch["step"][] = ["C", "D", "E", "F", "G", "A", "B"];
 
+// Inspector group labels for each staff, from its clef: a classic grand staff
+// reads "Treble"/"Bass"; staves sharing a clef get numbered ("Treble 1",
+// "Treble 2", "Bass") so a three-staff score doesn't label two different
+// staves identically. Single-staff scores show no label.
+export function staffGroupLabels(
+  parts: ReadonlyArray<{ clef?: { sign: "G" | "F" } }>,
+): string[] {
+  if (parts.length <= 1) {
+    return parts.map(() => "");
+  }
+  const names = parts.map((part) =>
+    part.clef?.sign === "F" ? "Bass" : "Treble",
+  );
+  const totals = new Map<string, number>();
+  for (const name of names) {
+    totals.set(name, (totals.get(name) ?? 0) + 1);
+  }
+  const seen = new Map<string, number>();
+  return names.map((name) => {
+    if ((totals.get(name) ?? 0) <= 1) {
+      return name;
+    }
+    const ordinal = (seen.get(name) ?? 0) + 1;
+    seen.set(name, ordinal);
+    return `${name} ${ordinal}`;
+  });
+}
+
 // A new note added onto a rest is placed near the staff's middle line for the
 // active clef (B4 treble, D3 bass) so it lands on the staff rather than far
 // above/below — the user nudges from there with ↑/↓.
@@ -373,6 +403,10 @@ export function Editor() {
   // Copy/cut/paste's in-memory clipboard (session-only, not the OS clipboard —
   // see `MeasureClipboard`'s doc comment).
   const [clipboard, setClipboard] = useState<MeasureClipboard | null>(null);
+  // A transient one-line explanation for an edit that couldn't apply (e.g. a
+  // time-shift refused because the bar is full), shown in the transport bar.
+  // Cleared on the next keypress/tap so it never lingers.
+  const [editHint, setEditHint] = useState<string | null>(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: version drives re-serialize after in-place mutations
   const musicxml = useMemo(
@@ -392,6 +426,28 @@ export function Editor() {
     () => isEditableDocument(documentRef.current),
     [version],
   );
+
+  // Over-full staves: each (measure, staff) whose content exceeds the time
+  // signature (a too-long OMR duration, or a mid-cleanup intermediate state),
+  // for the renderer's per-staff amber badge. Flagged per staff — a grand
+  // staff's bass can overflow while its treble is fine. Under-full bars
+  // (pickups, final bars) are legitimate and not flagged.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: version tracks the live document
+  const overfullBars = useMemo(() => {
+    const flagged: Array<{
+      measureIndex: number;
+      partIndex: number;
+      beats: number;
+    }> = [];
+    measureFillReport(documentRef.current).forEach((fill, measureIndex) => {
+      fill.staffBeats.forEach((beats, partIndex) => {
+        if (beats > fill.nominalBeats + 1e-6) {
+          flagged.push({ measureIndex, partIndex, beats });
+        }
+      });
+    });
+    return flagged;
+  }, [version]);
 
   // Score-level metadata, re-read from the live document on each commit. Cheap,
   // so recomputed eagerly rather than only when the dialog opens.
@@ -495,7 +551,7 @@ export function Editor() {
       slotInfo.measureIndex,
       slotInfo.onsetBeat,
     );
-    const numParts = score.parts.length;
+    const groupLabels = staffGroupLabels(score.parts);
     const flatHandles: NoteHandle[] = [];
     const flatGraceHandles: NoteHandle[] = [];
     const flatGracePitches: Pitch[] = [];
@@ -512,8 +568,7 @@ export function Editor() {
       }
       return {
         partIndex: staffSlot.partIndex,
-        label:
-          numParts > 1 ? (staffSlot.partIndex === 0 ? "Treble" : "Bass") : "",
+        label: groupLabels[staffSlot.partIndex] ?? "",
         durationLabel: staffSlot.type,
         durationBeats: BEATS_BY_TYPE[staffSlot.type],
         maxDurationBeats:
@@ -654,14 +709,28 @@ export function Editor() {
   const handleTap = useCallback(
     (gesture: EditorGesture, event: PointerEvent) => {
       setMenu(null);
+      setEditHint(null);
       if (!editable) {
         return;
       }
       // A tap clear of the staves (in the empty margin) clears the selection;
-      // it never selects or inserts.
+      // it never selects or inserts. A tap on a notehead selects that note's
+      // own slot — exact staff and onset — rather than whatever slot is
+      // nearest the tap's staff-band/beat estimate, which for ledger-line
+      // notes between two staves can be a different staff entirely.
+      const hitChord = gesture.hit
+        ? chordForHandle(score, gesture.hit.handle)
+        : null;
       const slot = gesture.offStaff
         ? null
-        : slotAtBeat(score, gesture.beat, 1.5, gesture.partIndex);
+        : hitChord
+          ? slotAt(
+              score,
+              hitChord.measureIndex,
+              hitChord.onsetBeat,
+              hitChord.partIndex,
+            )
+          : slotAtBeat(score, gesture.beat, 1.5, gesture.partIndex);
       if (!slot) {
         setSelection(null);
         anchorMeasureRef.current = null;
@@ -691,6 +760,13 @@ export function Editor() {
             slot.handles.some((handle) => sameHandle(handle, prev.handle)));
         // A repeat tap that landed on a notehead drills into that note.
         if (onThisSlot && gesture.hit) {
+          return { kind: "note", handle: gesture.hit.handle };
+        }
+        // Already drilled to note level: a tap on another notehead stays at
+        // note level (matching ←/→, which keeps the drill level while
+        // moving) instead of popping back out to the beat and demanding a
+        // second click on every note.
+        if (prev?.kind === "note" && gesture.hit) {
           return { kind: "note", handle: gesture.hit.handle };
         }
         return {
@@ -750,7 +826,21 @@ export function Editor() {
       // right-click that's visually inside a multi-measure selection reliably
       // read as inside it.
       const clickedMeasureIndex = request.measureNumber - 1;
-      const slot = slotAtBeat(score, request.beat);
+      // Resolve the slot with the right-click's own staff/notehead gesture
+      // when it landed on the staff SVG: a right-clicked notehead selects that
+      // note's exact slot, and a bare right-click stays on the staff under the
+      // pointer instead of whichever staff has the nearest onset.
+      const hitChord = request.gesture?.hit
+        ? chordForHandle(score, request.gesture.hit.handle)
+        : null;
+      const slot = hitChord
+        ? slotAt(
+            score,
+            hitChord.measureIndex,
+            hitChord.onsetBeat,
+            hitChord.partIndex,
+          )
+        : slotAtBeat(score, request.beat, 1.5, request.gesture?.partIndex);
       if (!slot) {
         setMenu(null);
         return;
@@ -791,6 +881,23 @@ export function Editor() {
   );
 
   // ── Editing operations ──────────────────────────────────────────────────────
+
+  // Structural edits rebuild a measure's <note> elements, so index-addressed
+  // confidence flags in that measure would drift onto the wrong notes. Drop
+  // that measure's flags instead — a stale amber tint pointing at the wrong
+  // note is worse than none.
+  const dropFlagsInMeasure = useCallback((measureIndex: number) => {
+    setImportReview((prev) =>
+      prev
+        ? {
+            ...prev,
+            flaggedNotes: prev.flaggedNotes.filter(
+              (flagged) => flagged.measureIndex !== measureIndex,
+            ),
+          }
+        : prev,
+    );
+  }, []);
 
   // Staff-step (or octave-step) a specific note, keeping its onset. Returns to
   // Level 2 on the moved note and coalesces a rapid run into one undo entry.
@@ -857,11 +964,12 @@ export function Editor() {
         return;
       }
       if (setNoteDuration(documentRef.current, handle, durationBeats)) {
+        dropFlagsInMeasure(handle.measureIndex);
         setSelection({ kind: "note", handle });
         commit();
       }
     },
-    [editable, documentRef, commit],
+    [editable, documentRef, commit, dropFlagsInMeasure],
   );
 
   // Resize a single chord member independently of its chord-mates — lets one
@@ -872,11 +980,12 @@ export function Editor() {
         return;
       }
       if (setChordMemberDuration(documentRef.current, handle, durationBeats)) {
+        dropFlagsInMeasure(handle.measureIndex);
         setSelection({ kind: "note", handle });
         commit();
       }
     },
-    [editable, documentRef, commit],
+    [editable, documentRef, commit, dropFlagsInMeasure],
   );
 
   // Grace note edits never move the host's onset, so the active slot selection
@@ -920,10 +1029,11 @@ export function Editor() {
         return;
       }
       if (removeGraceNote(documentRef.current, handle)) {
+        dropFlagsInMeasure(handle.measureIndex);
         commit();
       }
     },
-    [editable, documentRef, commit],
+    [editable, documentRef, commit, dropFlagsInMeasure],
   );
 
   const reorderGraceHandle = useCallback(
@@ -932,10 +1042,11 @@ export function Editor() {
         return;
       }
       if (reorderGrace(documentRef.current, handle, direction)) {
+        dropFlagsInMeasure(handle.measureIndex);
         commit();
       }
     },
-    [editable, documentRef, commit],
+    [editable, documentRef, commit, dropFlagsInMeasure],
   );
 
   const setGraceSlashOn = useCallback(
@@ -958,10 +1069,11 @@ export function Editor() {
         return;
       }
       if (addGraceNote(documentRef.current, handle)) {
+        dropFlagsInMeasure(handle.measureIndex);
         commit();
       }
     },
-    [editable, documentRef, commit],
+    [editable, documentRef, commit, dropFlagsInMeasure],
   );
 
   // Re-select the slot at `onsetBeat` after a mutation, resolving against the
@@ -990,6 +1102,61 @@ export function Editor() {
     [documentRef],
   );
 
+  // Shift the selected chord — and everything after it in its measure/staff —
+  // later (+1) or earlier (−1) in time by the chord's own duration, swallowing
+  // rest space at one end of the bar and emitting it at the other (see
+  // `shiftNotesInTime`). The OMR-cleanup fix for a run the recognizer placed a
+  // beat early or late: select its first note and nudge the whole block.
+  const shiftSelectionInTime = useCallback(
+    (direction: 1 | -1) => {
+      if (
+        !editable ||
+        !slotInfo ||
+        slotInfo.isRest ||
+        slotInfo.handles.length === 0
+      ) {
+        return;
+      }
+      const step = BEATS_BY_TYPE[slotInfo.type];
+      const moved = shiftNotesInTime(
+        documentRef.current,
+        slotInfo.handles[0],
+        direction * step,
+      );
+      if (!moved) {
+        // A right shift always fits now (the bar grows), so a refusal here is a
+        // left shift blocked by the note before it. Explain rather than
+        // dead-keying.
+        if (direction < 0) {
+          setEditHint(
+            "Can't shift earlier — a note (or the bar start) is in the way.",
+          );
+        }
+        return;
+      }
+      dropFlagsInMeasure(slotInfo.measureIndex);
+      setMenu(null);
+      commit();
+      // Follow the block to its new onset, keeping the drill level.
+      if (selectionRef.current?.kind === "note") {
+        setSelection({ kind: "note", handle: moved });
+      } else {
+        reselectSlotAt(
+          slotInfo.onsetBeat + direction * step,
+          slotInfo.partIndex,
+        );
+      }
+    },
+    [
+      editable,
+      slotInfo,
+      documentRef,
+      commit,
+      dropFlagsInMeasure,
+      reselectSlotAt,
+    ],
+  );
+
   // A pointer-down on the canvas around/below the staves (not on the staff
   // SVG) clears the selection; taps that reach the SVG are handleTap's.
   const clearSelectionOffStaff = useCallback((event: PointerEvent) => {
@@ -999,6 +1166,58 @@ export function Editor() {
       setMenu(null);
     }
   }, []);
+
+  // The flagged (low-confidence) notes that still resolve to selectable
+  // notes, in score order — the review panel's "next flagged" jump targets.
+  // Grace-note flags are skipped: graces have no beat to select.
+  const flaggedTargets = useMemo(() => {
+    if (!reviewVisible || importReview === null) {
+      return [];
+    }
+    const targets: Array<{
+      handle: NoteHandle;
+      partIndex: number;
+      onsetBeat: number;
+    }> = [];
+    for (const flagged of importReview.flaggedNotes) {
+      const handle = {
+        measureIndex: flagged.measureIndex,
+        noteElementIndex: flagged.noteElementIndex,
+      };
+      const info = chordInfoForHandle(score, handle);
+      if (info) {
+        targets.push({
+          handle,
+          partIndex: info.partIndex,
+          onsetBeat: info.onsetBeat,
+        });
+      }
+    }
+    return targets.sort(
+      (a, b) => a.onsetBeat - b.onsetBeat || a.partIndex - b.partIndex,
+    );
+  }, [reviewVisible, importReview, score]);
+
+  // Step the selection to the next flagged note after the current position
+  // (wrapping), drilled to note level so the fix-up tools are immediately
+  // live, and snap-scroll it into view.
+  const gotoNextFlagged = useCallback(() => {
+    if (flaggedTargets.length === 0) {
+      return;
+    }
+    const currentBeat = slotInfo?.onsetBeat ?? Number.NEGATIVE_INFINITY;
+    const currentPart = slotInfo?.partIndex ?? Number.NEGATIVE_INFINITY;
+    const next =
+      flaggedTargets.find(
+        (target) =>
+          target.onsetBeat > currentBeat + 1e-6 ||
+          (Math.abs(target.onsetBeat - currentBeat) < 1e-6 &&
+            target.partIndex > currentPart),
+      ) ?? flaggedTargets[0];
+    setSelection({ kind: "note", handle: next.handle });
+    snapBeatRef.current = next.onsetBeat;
+    setSnapGeneration((generation) => generation + 1);
+  }, [flaggedTargets, slotInfo]);
 
   // Jump the selection to a measure's first slot and scroll it into view —
   // the review panel's system stepping. Selection may fail on an unusual
@@ -1033,11 +1252,12 @@ export function Editor() {
       const info = chordInfoForHandle(score, handle);
       const onsetBeat = info?.onsetBeat ?? null;
       removeNotes(documentRef.current, [handle]);
+      dropFlagsInMeasure(handle.measureIndex);
       setMenu(null);
       commit();
       reselectSlotAt(onsetBeat, info?.partIndex ?? 0);
     },
-    [editable, score, documentRef, commit, reselectSlotAt],
+    [editable, score, documentRef, commit, reselectSlotAt, dropFlagsInMeasure],
   );
 
   // Add a note at the current slot (or `targetSlot` for a specific staff). On a
@@ -1066,6 +1286,7 @@ export function Editor() {
           staff: slot.partIndex + 1,
         });
         if (added) {
+          dropFlagsInMeasure(slot.measureIndex);
           setSelection({ kind: "note", handle: added });
           commit();
         }
@@ -1077,11 +1298,20 @@ export function Editor() {
         pitch,
       );
       if (added) {
+        dropFlagsInMeasure(slot.measureIndex);
         setSelection({ kind: "note", handle: added });
         commit();
       }
     },
-    [editable, slotInfo, score, measureStartBeats, documentRef, commit],
+    [
+      editable,
+      slotInfo,
+      score,
+      measureStartBeats,
+      documentRef,
+      commit,
+      dropFlagsInMeasure,
+    ],
   );
 
   const addLetter = useCallback(
@@ -1202,6 +1432,7 @@ export function Editor() {
     }
     const onsetBeat = slotInfo.onsetBeat;
     removeNotes(documentRef.current, handles);
+    dropFlagsInMeasure(slotInfo.measureIndex);
     setMenu(null);
     commit();
     reselectSlotAt(onsetBeat, slotInfo.partIndex);
@@ -1213,6 +1444,7 @@ export function Editor() {
     commit,
     documentRef,
     reselectSlotAt,
+    dropFlagsInMeasure,
   ]);
 
   // Copy the active measure range (an explicit measureRange selection, or the
@@ -1360,49 +1592,79 @@ export function Editor() {
     [score],
   );
 
-  // ←/→: move to the adjacent spine slot. Walks every slot (rests and empty
-  // measures included), not just note onsets — the core "next spot on the spine"
-  // behavior. Clamps at the piece ends.
+  // ←/→: move to the adjacent position on the *shared* rhythm spine — the union
+  // of every staff's onsets (chords and rests alike), in time order. Navigation
+  // is not staff-bound: pressing → from a note that spans a beat another staff
+  // subdivides advances to that subdivision rather than skipping to this staff's
+  // own next onset. On landing, the selection stays on the current staff when it
+  // has an onset at the destination beat, and otherwise crosses to the staff
+  // that does (a note-bearing staff first, then the topmost). Clamps at the ends.
   const navBeat = useCallback(
     (dir: number) => {
-      // Walk one staff at a time so ←/→ stays on the staff being edited.
-      const partIndex = slotInfo?.partIndex ?? 0;
-      const list = slots(score, partIndex);
-      if (list.length === 0) {
+      const allSlots = slots(score);
+      if (allSlots.length === 0) {
         return;
       }
+      // Distinct onset beats across all staves = the shared spine.
+      const beats = [...new Set(allSlots.map((slot) => slot.onsetBeat))].sort(
+        (a, b) => a - b,
+      );
       setSelection((prev) => {
-        let index: number;
-        if (!prev) {
-          index = dir > 0 ? 0 : list.length - 1;
-        } else {
-          const current =
-            prev.kind === "note"
-              ? list.findIndex((slot) =>
-                  slot.handles.some((handle) =>
-                    sameHandle(handle, prev.handle),
-                  ),
-                )
-              : list.findIndex((slot) => sameSlot(prev, slot));
-          index = current < 0 ? (dir > 0 ? 0 : list.length - 1) : current + dir;
+        // The current beat + staff, from either selection level.
+        let currentBeat: number | null = null;
+        let currentPart = 0;
+        if (prev?.kind === "note") {
+          const info = chordInfoForHandle(score, prev.handle);
+          if (info) {
+            currentBeat = info.onsetBeat;
+            currentPart = info.partIndex;
+          }
+        } else if (prev?.kind === "slot") {
+          currentBeat = prev.onsetBeat;
+          currentPart = prev.partIndex;
         }
-        if (index < 0 || index >= list.length) {
-          return prev; // clamp at the ends
+        const beatIndex =
+          currentBeat === null
+            ? dir > 0
+              ? -1
+              : beats.length
+            : beats.findIndex((beat) => Math.abs(beat - currentBeat) < 1e-6);
+        const nextIndex = beatIndex + dir;
+        if (nextIndex < 0 || nextIndex >= beats.length) {
+          return prev; // clamp at the piece ends
         }
-        const next = list[index];
+        const destBeat = beats[nextIndex];
+        const here = allSlots.filter(
+          (slot) => Math.abs(slot.onsetBeat - destBeat) < 1e-6,
+        );
+        // Keep the current staff when it has an onset here; otherwise cross to
+        // another staff, preferring one that actually holds a note.
+        const chosen =
+          here.find((slot) => slot.partIndex === currentPart) ??
+          [...here].sort(
+            (a, b) =>
+              Number(a.isRest) - Number(b.isRest) || a.partIndex - b.partIndex,
+          )[0];
+        if (!chosen) {
+          return prev;
+        }
         // Stay drilled to a note only when the destination actually holds one.
-        if (prev?.kind === "note" && !next.isRest && next.notes.length > 0) {
-          return { kind: "note", handle: topFirstNotes(next)[0].handle };
+        if (
+          prev?.kind === "note" &&
+          !chosen.isRest &&
+          chosen.notes.length > 0
+        ) {
+          return { kind: "note", handle: topFirstNotes(chosen)[0].handle };
         }
         return {
           kind: "slot",
-          partIndex: next.partIndex,
-          measureIndex: next.measureIndex,
-          onsetBeat: next.onsetBeat,
+          partIndex: chosen.partIndex,
+          measureIndex: chosen.measureIndex,
+          onsetBeat: chosen.onsetBeat,
         };
       });
     },
-    [score, slotInfo],
+    [score],
   );
 
   // Shift+←/→: grow or shrink a measure-range selection by one measure, away
@@ -1473,22 +1735,67 @@ export function Editor() {
     listen.toggle(slotInfo?.onsetBeat);
   }, [listen, slotInfo]);
 
+  // Undo/redo keep the user's place: re-resolve the selected position (its
+  // measure/beat/staff) against the restored document rather than dropping
+  // the selection entirely. Note-level selections collapse to their beat —
+  // a handle's element index may mean a different note after the restore.
+  const reselectAfterHistory = useCallback(
+    (position: { partIndex: number; onsetBeat: number } | null) => {
+      setMenu(null);
+      if (!position) {
+        setSelection(null);
+        return;
+      }
+      const freshScore = parseScore(serializeDocument(documentRef.current));
+      const slot = slotAtBeat(
+        freshScore,
+        position.onsetBeat,
+        0.5,
+        position.partIndex,
+      );
+      setSelection(
+        slot
+          ? {
+              kind: "slot",
+              partIndex: slot.partIndex,
+              measureIndex: slot.measureIndex,
+              onsetBeat: slot.onsetBeat,
+            }
+          : null,
+      );
+    },
+    [documentRef],
+  );
+
   const undo = useCallback(() => {
+    if (!history.canUndo) {
+      return;
+    }
+    const position = slotInfo
+      ? { partIndex: slotInfo.partIndex, onsetBeat: slotInfo.onsetBeat }
+      : null;
     history.undo();
-    setSelection(null);
-    setMenu(null);
-  }, [history]);
+    reselectAfterHistory(position);
+  }, [history, slotInfo, reselectAfterHistory]);
 
   const redo = useCallback(() => {
+    if (!history.canRedo) {
+      return;
+    }
+    const position = slotInfo
+      ? { partIndex: slotInfo.partIndex, onsetBeat: slotInfo.onsetBeat }
+      : null;
     history.redo();
-    setSelection(null);
-    setMenu(null);
-  }, [history]);
+    reselectAfterHistory(position);
+  }, [history, slotInfo, reselectAfterHistory]);
 
   // Global keyboard map. Modifier combos (undo/redo) are always active; the
   // single-key commands are ignored while typing in a form field.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // Any keypress clears a lingering edit hint (a refused shift below may set
+      // a fresh one within this same handler).
+      setEditHint(null);
       const mod = event.metaKey || event.ctrlKey;
       if (mod && (event.key === "z" || event.key === "Z")) {
         event.preventDefault();
@@ -1605,6 +1912,16 @@ export function Editor() {
           event.preventDefault();
           accidentalOnFocus(0);
           return;
+        case ",":
+        case "<":
+          event.preventDefault();
+          shiftSelectionInTime(-1);
+          return;
+        case ".":
+        case ">":
+          event.preventDefault();
+          shiftSelectionInTime(1);
+          return;
         default:
           break;
       }
@@ -1634,6 +1951,7 @@ export function Editor() {
     arrowPitch,
     accidentalOnFocus,
     addLetter,
+    shiftSelectionInTime,
     undo,
     redo,
     copyMeasureSelection,
@@ -1938,6 +2256,19 @@ export function Editor() {
       onSelect: () => addNoteAtSlot(),
       disabled: !slotInfo,
     },
+    // Time shifts move the selected chord and everything after it in the
+    // measure as a block, by the chord's own duration (see
+    // `shiftSelectionInTime`).
+    {
+      label: "Shift later in time",
+      onSelect: () => shiftSelectionInTime(1),
+      disabled: !slotInfo || slotInfo.isRest,
+    },
+    {
+      label: "Shift earlier in time",
+      onSelect: () => shiftSelectionInTime(-1),
+      disabled: !slotInfo || slotInfo.isRest,
+    },
     // Copy/Cut only appear for an explicit measure-range selection (shift-
     // click/drag or Shift+←/→) — not for an ordinary note/beat selection,
     // where "Cut measure(s)" acting on the whole containing measure would be
@@ -2170,29 +2501,31 @@ export function Editor() {
           − Staff
         </button>
         <span style={{ flex: 1 }} />
-        {dirty ? (
+        {/* Always rendered (hidden when clean) so the first edit doesn't
+            reflow the toolbar — a wrap here shifts the whole score canvas
+            mid-interaction. */}
+        <span
+          aria-label="Unsaved changes"
+          title="Unsaved changes"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: 13,
+            color: COLORS.warning,
+            visibility: dirty ? "visible" : "hidden",
+          }}
+        >
           <span
-            aria-label="Unsaved changes"
-            title="Unsaved changes"
             style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              fontSize: 13,
-              color: COLORS.warning,
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: COLORS.warningDot,
             }}
-          >
-            <span
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: "50%",
-                background: COLORS.warningDot,
-              }}
-            />
-            Unsaved
-          </span>
-        ) : null}
+          />
+          Unsaved
+        </span>
         {importReview !== null ? (
           <button
             type="button"
@@ -2263,7 +2596,7 @@ export function Editor() {
         <span>Enter: drill in · Esc: out</span>
         <span>↑↓: pitch (⇧ octave)</span>
         <span>←→: beat · ⇧←→: measures · Tab: cycle</span>
-        <span>A–G: add · −/=/0: ♭♯♮</span>
+        <span>A–G: add · −/=/0: ♭♯♮ · ,/.: shift in time</span>
         <span>⌘C/X/V: copy/cut/paste measures</span>
         <span>Space: listen</span>
       </div>
@@ -2339,6 +2672,7 @@ export function Editor() {
               fitContent={reviewVisible}
               focusRange={measureFocusRange}
               focusColor={COLORS.accentHighlight}
+              overfullBars={overfullBars}
             />
           </div>
           {reviewVisible && importReview !== null ? (
@@ -2347,6 +2681,8 @@ export function Editor() {
                 review={importReview}
                 selectedMeasure={slotInfo?.measureIndex ?? null}
                 onSelectMeasure={selectMeasureStart}
+                flaggedTargetCount={flaggedTargets.length}
+                onNextFlagged={gotoNextFlagged}
                 onClose={() => setReviewOpen(false)}
               />
               {/* Fill the leftover column height so clicks below the panel
@@ -2483,6 +2819,9 @@ export function Editor() {
           {listen.playing ? "⏸" : "▶"}
         </button>
         <span>♩ = {bpm}</span>
+        {editHint !== null ? (
+          <span style={{ color: COLORS.warning }}>{editHint}</span>
+        ) : null}
         <span style={{ flex: 1 }} />
         <span>{selectionReadout}</span>
       </div>

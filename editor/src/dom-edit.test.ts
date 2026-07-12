@@ -13,6 +13,7 @@ import {
   insertMeasure,
   isEditableDocument,
   maxNoteDuration,
+  measureFillReport,
   moveNote,
   parseDocument,
   pasteMeasures,
@@ -23,6 +24,7 @@ import {
   setAccidental,
   setChordMemberDuration,
   setNoteDuration,
+  shiftNotesInTime,
   toggleTie,
 } from "./dom-edit";
 import {
@@ -1773,3 +1775,200 @@ function sliceMeasure(xml: string, number: number): string {
   const close = xml.indexOf("</measure>", open) + "</measure>".length;
   return xml.slice(open, close);
 }
+
+describe("shiftNotesInTime", () => {
+  // C5 quarter at beat 0, E5 quarter at beat 1, rest of the bar empty.
+  function docWithRun(): { doc: Document; first: NoteHandle } {
+    const doc = createBlankDocument();
+    const first = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+    });
+    return { doc, first };
+  }
+
+  test("shifts the anchor and everything after it right, absorbing trailing rest", () => {
+    const { doc, first } = docWithRun();
+    const moved = shiftNotesInTime(doc, first, 1);
+    expect(moved).not.toBeNull();
+    const onsets = chords(reparse(doc)).map((entry) => entry.onsetBeat);
+    expect(onsets).toEqual([1, 2]);
+  });
+
+  test("shifts left back into the freed rest space", () => {
+    const { doc, first } = docWithRun();
+    const moved = shiftNotesInTime(doc, first, 1) as NoteHandle;
+    const back = shiftNotesInTime(doc, moved, -1);
+    expect(back).not.toBeNull();
+    const onsets = chords(reparse(doc)).map((entry) => entry.onsetBeat);
+    expect(onsets).toEqual([0, 1]);
+  });
+
+  test("shifting only the tail leaves earlier notes in place", () => {
+    const { doc } = docWithRun();
+    // Anchor on the E5 at beat 1; the C5 at beat 0 must not move.
+    const second = handleOfNoteAt(doc, 1);
+    const moved = shiftNotesInTime(doc, second, 2);
+    expect(moved).not.toBeNull();
+    const onsets = chords(reparse(doc)).map((entry) => entry.onsetBeat);
+    expect(onsets).toEqual([0, 3]);
+  });
+
+  test("a right shift past the bar end grows the measure into an over-full bar", () => {
+    const { doc, first } = docWithRun();
+    // C5(beat0) E5(beat1), beats 2-3 empty. Shift right by 3 beats: C5→beat3,
+    // E5→beat4, so the block runs past the barline and the bar grows rather
+    // than refusing.
+    const moved = shiftNotesInTime(doc, first, 3);
+    expect(moved).not.toBeNull();
+    const score = reparse(doc);
+    const onsets = chords(score).map((entry) => entry.onsetBeat);
+    expect(onsets).toEqual([3, 4]);
+    // The bar is now over-full: the staff's notes reach beat 5 (E5 ends), > 4.
+    const fill = measureFillReport(doc)[0];
+    expect(fill.staffBeats[0]).toBeGreaterThan(fill.nominalBeats);
+    expect(fill.staffBeats[0]).toBe(5);
+  });
+
+  test("refuses a left shift that would collide with the previous note", () => {
+    const { doc } = docWithRun();
+    const second = handleOfNoteAt(doc, 1);
+    const before = serializeDocument(doc);
+    expect(shiftNotesInTime(doc, second, -1)).toBeNull();
+    expect(serializeDocument(doc)).toBe(before);
+  });
+
+  test("on a grand staff, shifting one staff leaves the other untouched", () => {
+    const doc = createBlankDocument();
+    addStaff(doc);
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+      staff: 1,
+    });
+    const bass = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "G", alter: 0, octave: 2 },
+      staff: 2,
+    }) as NoteHandle;
+    expect(shiftNotesInTime(doc, bass, 1)).not.toBeNull();
+    const score = reparse(doc);
+    // Treble (parts[0]) still starts at beat 0; bass (parts[1]) moved to 1.
+    const partOnsets = score.parts.map((part) => {
+      let onsetBeat = 0;
+      const divisions = part.measures[0].divisions || 4;
+      for (const event of part.measures[0].events) {
+        if (!isRest(event)) {
+          return onsetBeat;
+        }
+        onsetBeat += event.duration / divisions;
+      }
+      return null;
+    });
+    expect(partOnsets).toEqual([0, 1]);
+  });
+
+  // The handle of the (single) non-rest note whose onset is `beat` in measure 1.
+  function handleOfNoteAt(doc: Document, beat: number): NoteHandle {
+    const noteEls = Array.from(
+      doc.querySelectorAll("measure")[0].querySelectorAll("note"),
+    );
+    let cursor = 0;
+    for (let index = 0; index < noteEls.length; index++) {
+      const el = noteEls[index];
+      const duration = Number.parseInt(
+        el.querySelector("duration")?.textContent ?? "0",
+        10,
+      );
+      const isRestEl = el.querySelector("rest") !== null;
+      if (!isRestEl && cursor === beat * 4) {
+        return { measureIndex: 0, noteElementIndex: index };
+      }
+      cursor += duration;
+    }
+    throw new Error(`no note at beat ${beat}`);
+  }
+});
+
+describe("measureFillReport", () => {
+  test("a well-formed 4/4 bar's notes reach exactly the bar length", () => {
+    const doc = createBlankDocument();
+    for (let beat = 0; beat < 4; beat++) {
+      addNote(doc, {
+        measureIndex: 0,
+        onsetBeatInMeasure: beat,
+        durationBeats: 1,
+        pitch: { step: "C", alter: 0, octave: 5 },
+      });
+    }
+    const fill = measureFillReport(doc)[0];
+    expect(fill.staffBeats[0]).toBe(4);
+    expect(fill.nominalBeats).toBe(4);
+    expect(fill.staffBeats[0]).not.toBeGreaterThan(fill.nominalBeats);
+  });
+
+  test("reports how far an over-full bar's notes reach", () => {
+    const doc = createBlankDocument();
+    const first = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    // Push the note out to beat 4, growing the bar to 5 beats.
+    shiftNotesInTime(doc, first, 4);
+    const fill = measureFillReport(doc)[0];
+    expect(fill.staffBeats[0]).toBe(5);
+    expect(fill.nominalBeats).toBe(4);
+    expect(fill.staffBeats[0]).toBeGreaterThan(fill.nominalBeats);
+  });
+
+  test("a blank document's empty bars are not flagged (notes reach 0)", () => {
+    const doc = createBlankDocument();
+    for (const fill of measureFillReport(doc)) {
+      // A whole-rest bar has no notes, so nothing overruns the bar.
+      expect(fill.staffBeats.every((b) => b <= fill.nominalBeats)).toBe(true);
+    }
+  });
+
+  test("attributes over-fullness to the specific staff on a grand staff", () => {
+    const doc = createBlankDocument();
+    addStaff(doc);
+    // Treble keeps a single beat-1 note (its notes reach beat 1, well within
+    // the bar); the bass note is pushed past the barline. writeMeasure pads
+    // the treble with trailing rests to match the grown bar, but those rests
+    // must NOT make the treble read as over-full — only the bass does.
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+      staff: 1,
+    });
+    const bass = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "G", alter: 0, octave: 2 },
+      staff: 2,
+    }) as NoteHandle;
+    shiftNotesInTime(doc, bass, 4);
+    const fill = measureFillReport(doc)[0];
+    // staffBeats index 0 = treble (staff 1), 1 = bass (staff 2).
+    expect(fill.staffBeats[0]).toBe(1); // treble: notes end at beat 1, not over-full
+    expect(fill.staffBeats[1]).toBe(5); // bass: notes reach beat 5, over-full
+    expect(fill.nominalBeats).toBe(4);
+  });
+});
