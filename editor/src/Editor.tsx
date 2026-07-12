@@ -899,6 +899,22 @@ export function Editor() {
     );
   }, []);
 
+  // User-initiated counterpart to dropFlagsInMeasure: the user looked at this
+  // one note and confirmed it's correct, so it stops drawing amber even
+  // though the rest of its measure may still hold other flags.
+  const dismissFlaggedNote = useCallback((handle: NoteHandle) => {
+    setImportReview((prev) =>
+      prev
+        ? {
+            ...prev,
+            flaggedNotes: prev.flaggedNotes.filter(
+              (flagged) => !sameHandle(flagged, handle),
+            ),
+          }
+        : prev,
+    );
+  }, []);
+
   // Staff-step (or octave-step) a specific note, keeping its onset. Returns to
   // Level 2 on the moved note and coalesces a rapid run into one undo entry.
   const stepHandle = useCallback(
@@ -2228,6 +2244,11 @@ export function Editor() {
 
   // Context-menu items act on the current selection.
   const canNudge = focused !== null;
+  const focusedIsFlagged =
+    reviewVisible &&
+    focused !== null &&
+    importReview !== null &&
+    importReview.flaggedNotes.some((flagged) => sameHandle(flagged, focused));
   const isMeasureRangeSelection = selection?.kind === "measureRange";
   const canDelete =
     isMeasureRangeSelection ||
@@ -2256,6 +2277,21 @@ export function Editor() {
       onSelect: () => addNoteAtSlot(),
       disabled: !slotInfo,
     },
+    // Only present while reviewing an OMR import, and only when the focused
+    // note is actually flagged — this is the user confirming a specific
+    // amber note is correct, not a general-purpose toggle.
+    ...(focusedIsFlagged
+      ? [
+          {
+            label: "Mark reviewed",
+            onSelect: () => {
+              if (focused) {
+                dismissFlaggedNote(focused);
+              }
+            },
+          },
+        ]
+      : []),
     // Time shifts move the selected chord and everything after it in the
     // measure as a block, by the chord's own duration (see
     // `shiftSelectionInTime`).
