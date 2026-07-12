@@ -486,6 +486,14 @@ export function Editor() {
       ? slotAt(score, info.measureIndex, info.onsetBeat, info.partIndex)
       : null;
   }, [selection, score]);
+  // Mirrors `slotInfo`, updated synchronously in the render body for the same
+  // reason as `selectionRef`: a keystroke fired immediately after one that
+  // moved the selection (e.g. → then a letter, back-to-back) can be handled by
+  // a keydown listener still closing over the pre-move `slotInfo`. addLetter /
+  // addNoteAtSlot read this ref instead so they always target the slot the
+  // *last completed render* selected, not the stale closure's.
+  const slotInfoRef = useRef<SlotInfo | null>(null);
+  slotInfoRef.current = slotInfo;
 
   // The single-note target for nudges/accidentals (null on a rest slot).
   const focused = useMemo(
@@ -1285,7 +1293,7 @@ export function Editor() {
   // to an adjacent staff whose rest spans the selected beat.
   const addNoteAtSlot = useCallback(
     (pitch?: Pitch, targetSlot?: SlotInfo, overrideOnsetBeat?: number) => {
-      const slot = targetSlot ?? slotInfo;
+      const slot = targetSlot ?? slotInfoRef.current;
       if (!editable || !slot) {
         return;
       }
@@ -1321,7 +1329,6 @@ export function Editor() {
     },
     [
       editable,
-      slotInfo,
       score,
       measureStartBeats,
       documentRef,
@@ -1332,19 +1339,21 @@ export function Editor() {
 
   const addLetter = useCallback(
     (step: Pitch["step"]) => {
-      if (!slotInfo) {
+      const slot = slotInfoRef.current;
+      if (!slot) {
         return;
       }
-      if (slotInfo.isRest) {
+      if (slot.isRest) {
         addNoteAtSlot(
-          placeLetterNearStaff(step, score.parts[slotInfo.partIndex]?.clef),
+          placeLetterNearStaff(step, score.parts[slot.partIndex]?.clef),
+          slot,
         );
       } else {
-        const top = topFirstNotes(slotInfo)[0].pitch;
-        addNoteAtSlot({ step, alter: 0, octave: top.octave });
+        const top = topFirstNotes(slot)[0].pitch;
+        addNoteAtSlot({ step, alter: 0, octave: top.octave }, slot);
       }
     },
-    [slotInfo, score, addNoteAtSlot],
+    [score, addNoteAtSlot],
   );
 
   const onInsertMeasure = useCallback(() => {
@@ -1617,7 +1626,14 @@ export function Editor() {
   // that does (a note-bearing staff first, then the topmost). Clamps at the ends.
   const navBeat = useCallback(
     (dir: number) => {
-      const allSlots = slots(score);
+      // Read the document fresh rather than the closed-over `score` memo: a
+      // ←/→ fired immediately after an edit that hasn't re-rendered yet (e.g.
+      // a letter key followed by another arrow) would otherwise walk a slot
+      // list from *before* that edit, fail to find the just-added note's
+      // handle, and silently reset instead of advancing (see `selectionRef`'s
+      // doc comment for the general pattern).
+      const freshScore = parseScore(serializeDocument(documentRef.current));
+      const allSlots = slots(freshScore);
       if (allSlots.length === 0) {
         return;
       }
@@ -1630,7 +1646,7 @@ export function Editor() {
         let currentBeat: number | null = null;
         let currentPart = 0;
         if (prev?.kind === "note") {
-          const info = chordInfoForHandle(score, prev.handle);
+          const info = chordInfoForHandle(freshScore, prev.handle);
           if (info) {
             currentBeat = info.onsetBeat;
             currentPart = info.partIndex;
@@ -1680,7 +1696,7 @@ export function Editor() {
         };
       });
     },
-    [score],
+    [documentRef],
   );
 
   // Shift+←/→: grow or shrink a measure-range selection by one measure, away
