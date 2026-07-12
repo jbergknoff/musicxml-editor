@@ -201,7 +201,20 @@ onset at the destination beat, and otherwise crosses to the staff that does
 
 **Shift in time (`shiftNotesInTime` / `shiftSelectionInTime`):** `,` / `.` move
 the selected chord and everything after it in its measure/staff as a block, by
-the chord's own duration, absorbing/emitting rest space at the bar ends. It is
-clamped to the measure and refuses (no-op) when the block can't fit — an
-over-full bar (a too-long OMR duration) has no room, so the editor surfaces a
-transient `editHint` in the transport bar rather than dead-keying.
+the chord's own duration, absorbing/emitting rest space at the bar ends. A right
+shift with no trailing rest to absorb it **grows the bar into an over-full bar**
+rather than refusing — intermediate states during OMR cleanup are allowed to be
+irregular, and the over-full badge (below) makes them visible. A **left** shift
+is still refused when it would overlap a real note before the anchor (or the bar
+start): that is a genuine collision, not merely a long bar, and the editor
+surfaces a transient `editHint` in the transport bar.
+
+**Over-full badges (`measureFillReport` in `dom-edit.ts` → `OverfullBadges` in
+the renderer):** an amber "N beats" pill is drawn above any *staff* whose notes
+reach past its time signature. It is **per staff**, not per measure:
+`measureFillReport` measures how far each staff's *notes* extend (rests and the
+trailing padding `writeMeasure` adds to align staves are excluded, or every
+staff of an over-full bar would read as over-full), so a grand staff whose bass
+overflows while the treble is fine badges only the bass. `staffBeats[i]` is
+index-aligned with `score.parts[i]`. Under-full bars (pickups, final bars) are
+legitimate and never flagged.

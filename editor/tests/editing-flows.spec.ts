@@ -252,3 +252,22 @@ test("a selected run shifts in time with , and .", async ({ page }) => {
     "REST",
   ]);
 });
+
+test("shifting past the bar end grows an over-full bar and flags it", async ({
+  page,
+}) => {
+  await loadSingleStaff(page);
+  // No over-full badge on a well-formed 4/4 bar.
+  await expect(page.getByText(/beats$/)).toHaveCount(0);
+
+  // C5 E5 G5 REST — shift the whole run right by one quarter. There's a
+  // trailing rest to absorb it, so the bar stays exactly full (no badge).
+  await page.locator("#p0-m1-n0-v0").click();
+  await page.keyboard.press(".");
+  await expect(page.getByText(/beats$/)).toHaveCount(0);
+
+  // Shift again: now there is no trailing rest, so the bar grows to 5 beats
+  // rather than refusing — and the over-full badge appears.
+  await page.keyboard.press(".");
+  await expect(page.getByText("5 beats", { exact: true })).toBeVisible();
+});

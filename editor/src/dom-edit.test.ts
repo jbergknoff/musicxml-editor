@@ -13,6 +13,7 @@ import {
   insertMeasure,
   isEditableDocument,
   maxNoteDuration,
+  measureFillReport,
   moveNote,
   parseDocument,
   pasteMeasures,
@@ -1821,11 +1822,20 @@ describe("shiftNotesInTime", () => {
     expect(onsets).toEqual([0, 3]);
   });
 
-  test("refuses a shift past the end of the measure", () => {
+  test("a right shift past the bar end grows the measure into an over-full bar", () => {
     const { doc, first } = docWithRun();
-    const before = serializeDocument(doc);
-    expect(shiftNotesInTime(doc, first, 3)).toBeNull();
-    expect(serializeDocument(doc)).toBe(before);
+    // C5(beat0) E5(beat1), beats 2-3 empty. Shift right by 3 beats: C5→beat3,
+    // E5→beat4, so the block runs past the barline and the bar grows rather
+    // than refusing.
+    const moved = shiftNotesInTime(doc, first, 3);
+    expect(moved).not.toBeNull();
+    const score = reparse(doc);
+    const onsets = chords(score).map((entry) => entry.onsetBeat);
+    expect(onsets).toEqual([3, 4]);
+    // The bar is now over-full: the staff's notes reach beat 5 (E5 ends), > 4.
+    const fill = measureFillReport(doc)[0];
+    expect(fill.staffBeats[0]).toBeGreaterThan(fill.nominalBeats);
+    expect(fill.staffBeats[0]).toBe(5);
   });
 
   test("refuses a left shift that would collide with the previous note", () => {
@@ -1890,4 +1900,75 @@ describe("shiftNotesInTime", () => {
     }
     throw new Error(`no note at beat ${beat}`);
   }
+});
+
+describe("measureFillReport", () => {
+  test("a well-formed 4/4 bar's notes reach exactly the bar length", () => {
+    const doc = createBlankDocument();
+    for (let beat = 0; beat < 4; beat++) {
+      addNote(doc, {
+        measureIndex: 0,
+        onsetBeatInMeasure: beat,
+        durationBeats: 1,
+        pitch: { step: "C", alter: 0, octave: 5 },
+      });
+    }
+    const fill = measureFillReport(doc)[0];
+    expect(fill.staffBeats[0]).toBe(4);
+    expect(fill.nominalBeats).toBe(4);
+    expect(fill.staffBeats[0]).not.toBeGreaterThan(fill.nominalBeats);
+  });
+
+  test("reports how far an over-full bar's notes reach", () => {
+    const doc = createBlankDocument();
+    const first = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    // Push the note out to beat 4, growing the bar to 5 beats.
+    shiftNotesInTime(doc, first, 4);
+    const fill = measureFillReport(doc)[0];
+    expect(fill.staffBeats[0]).toBe(5);
+    expect(fill.nominalBeats).toBe(4);
+    expect(fill.staffBeats[0]).toBeGreaterThan(fill.nominalBeats);
+  });
+
+  test("a blank document's empty bars are not flagged (notes reach 0)", () => {
+    const doc = createBlankDocument();
+    for (const fill of measureFillReport(doc)) {
+      // A whole-rest bar has no notes, so nothing overruns the bar.
+      expect(fill.staffBeats.every((b) => b <= fill.nominalBeats)).toBe(true);
+    }
+  });
+
+  test("attributes over-fullness to the specific staff on a grand staff", () => {
+    const doc = createBlankDocument();
+    addStaff(doc);
+    // Treble keeps a single beat-1 note (its notes reach beat 1, well within
+    // the bar); the bass note is pushed past the barline. writeMeasure pads
+    // the treble with trailing rests to match the grown bar, but those rests
+    // must NOT make the treble read as over-full — only the bass does.
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+      staff: 1,
+    });
+    const bass = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "G", alter: 0, octave: 2 },
+      staff: 2,
+    }) as NoteHandle;
+    shiftNotesInTime(doc, bass, 4);
+    const fill = measureFillReport(doc)[0];
+    // staffBeats index 0 = treble (staff 1), 1 = bass (staff 2).
+    expect(fill.staffBeats[0]).toBe(1); // treble: notes end at beat 1, not over-full
+    expect(fill.staffBeats[1]).toBe(5); // bass: notes reach beat 5, over-full
+    expect(fill.nominalBeats).toBe(4);
+  });
 });

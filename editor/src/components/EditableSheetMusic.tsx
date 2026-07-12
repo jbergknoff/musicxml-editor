@@ -133,6 +133,7 @@ export function EditableSheetMusic({
   fitContent = false,
   focusRange,
   focusColor,
+  overfullBars,
 }: {
   musicxml: string;
   noteHighlights?: ReadonlyArray<NoteHighlight>;
@@ -174,6 +175,15 @@ export function EditableSheetMusic({
   focusRange?: { from: number; to: number } | null;
   /** Fill color for `focusRange`. */
   focusColor?: string;
+  /** Per-staff over-full flags: each (0-based measure index, 0-based staff/part
+   *  index) whose content exceeds the time signature, with its content length
+   *  in beats. The renderer marks each with an amber badge above that staff so
+   *  over-full bars (e.g. a too-long OMR duration) are visible at a glance. */
+  overfullBars?: ReadonlyArray<{
+    measureIndex: number;
+    partIndex: number;
+    beats: number;
+  }>;
 }) {
   // Whether the in-progress gesture is a Shift-held drag (set at pointerdown,
   // cleared at pointerup) — gates whether pointermove/up forward to
@@ -203,6 +213,7 @@ export function EditableSheetMusic({
       snapGeneration={snapGeneration}
       focusRange={focusRange}
       focusColor={focusColor}
+      overfullBars={overfullBars}
       // Allow horizontal pan: a plain drag scrolls rather than edits.
       containerStyle={{
         touchAction: "pan-x",

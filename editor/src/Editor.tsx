@@ -64,6 +64,7 @@ import {
   insertMeasure,
   isEditableDocument,
   maxNoteDuration,
+  measureFillReport,
   moveNote,
   parseDocument,
   pasteMeasures,
@@ -425,6 +426,28 @@ export function Editor() {
     () => isEditableDocument(documentRef.current),
     [version],
   );
+
+  // Over-full staves: each (measure, staff) whose content exceeds the time
+  // signature (a too-long OMR duration, or a mid-cleanup intermediate state),
+  // for the renderer's per-staff amber badge. Flagged per staff — a grand
+  // staff's bass can overflow while its treble is fine. Under-full bars
+  // (pickups, final bars) are legitimate and not flagged.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: version tracks the live document
+  const overfullBars = useMemo(() => {
+    const flagged: Array<{
+      measureIndex: number;
+      partIndex: number;
+      beats: number;
+    }> = [];
+    measureFillReport(documentRef.current).forEach((fill, measureIndex) => {
+      fill.staffBeats.forEach((beats, partIndex) => {
+        if (beats > fill.nominalBeats + 1e-6) {
+          flagged.push({ measureIndex, partIndex, beats });
+        }
+      });
+    });
+    return flagged;
+  }, [version]);
 
   // Score-level metadata, re-read from the live document on each commit. Cheap,
   // so recomputed eagerly rather than only when the dialog opens.
@@ -1101,14 +1124,14 @@ export function Editor() {
         direction * step,
       );
       if (!moved) {
-        // No room in the bar — tell the user rather than dead-keying. An
-        // over-full bar (a too-long OMR duration) is the usual cause; fixing
-        // that note's duration frees the room.
-        setEditHint(
-          direction > 0
-            ? "No room to shift later — this bar is full on that staff."
-            : "No room to shift earlier — no rest before it on that staff.",
-        );
+        // A right shift always fits now (the bar grows), so a refusal here is a
+        // left shift blocked by the note before it. Explain rather than
+        // dead-keying.
+        if (direction < 0) {
+          setEditHint(
+            "Can't shift earlier — a note (or the bar start) is in the way.",
+          );
+        }
         return;
       }
       dropFlagsInMeasure(slotInfo.measureIndex);
@@ -2649,6 +2672,7 @@ export function Editor() {
               fitContent={reviewVisible}
               focusRange={measureFocusRange}
               focusColor={COLORS.accentHighlight}
+              overfullBars={overfullBars}
             />
           </div>
           {reviewVisible && importReview !== null ? (
