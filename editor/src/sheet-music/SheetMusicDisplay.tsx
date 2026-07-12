@@ -587,8 +587,8 @@ const NoteRing = memo(function NoteRing({
 const FLAG_CHECK_COLOR = "#1f8a5b";
 // Neutral button chrome; matches the editor theme's button surface/border
 // (the renderer is standalone and does not import the theme).
-const FLAG_CHECK_BUTTON_FILL = "#f5f6f7";
-const FLAG_CHECK_BUTTON_BORDER = "#c8ccd0";
+const FLAG_CHECK_BUTTON_FILL = "#dde0e3";
+const FLAG_CHECK_BUTTON_BORDER = "#a8adb3";
 
 // Floating "mark reviewed" button drawn at each flagged note's position (the
 // OMR cleanup mode's low-confidence flags) — clicking it clears that one
@@ -610,9 +610,9 @@ const FlagCheckButtons = memo(function FlagCheckButtons({
         if (!info) {
           return null;
         }
-        const r = info.staffSpace * 0.55;
+        const r = info.staffSpace * 0.7;
         const cx =
-          info.nx + info.staffSpace * NOTEHEAD_HALF_WIDTH_FACTOR + r + 2;
+          info.nx + info.staffSpace * NOTEHEAD_HALF_WIDTH_FACTOR + r + 8;
         const cy = info.ny;
         return (
           <g
