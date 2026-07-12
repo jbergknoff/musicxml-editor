@@ -1207,10 +1207,19 @@ export function Editor() {
   );
 
   // Shift the selected chord — and everything after it in its measure/staff —
-  // later (+1) or earlier (−1) in time by the chord's own duration, swallowing
-  // rest space at one end of the bar and emitting it at the other (see
-  // `shiftNotesInTime`). The OMR-cleanup fix for a run the recognizer placed a
-  // beat early or late: select its first note and nudge the whole block.
+  // later (+1) or earlier (−1) in time, swallowing rest space at one end of
+  // the bar and emitting it at the other (see `shiftNotesInTime`). The OMR-
+  // cleanup fix for a run the recognizer placed a beat early or late: select
+  // its first note and nudge the whole block. The step is the distance to the
+  // neighboring position on the *shared* rhythm spine (the union of every
+  // staff's onsets in this measure, chords and rests alike — same spine
+  // `navBeat` walks), not the chord's own duration: a chord's own value
+  // doesn't always evenly divide the gap to another staff's onset (e.g. a
+  // quarter note shifting across a staff with an eighth-note pickup), so
+  // stepping by it can overshoot or undershoot a beat forever without ever
+  // landing there. Falls back to the chord's own duration past either end of
+  // the measure's onsets, where `shiftNotesInTime` is expected to grow the
+  // bar rather than land on an existing onset.
   const shiftSelectionInTime = useCallback(
     (direction: 1 | -1) => {
       if (
@@ -1221,7 +1230,23 @@ export function Editor() {
       ) {
         return;
       }
-      const step = BEATS_BY_TYPE[slotInfo.type];
+      const freshScore = parseScore(serializeDocument(documentRef.current));
+      const measureBeats = [
+        ...new Set(
+          slots(freshScore)
+            .filter((slot) => slot.measureIndex === slotInfo.measureIndex)
+            .map((slot) => slot.onsetBeat),
+        ),
+      ].sort((a, b) => a - b);
+      const currentIndex = measureBeats.findIndex(
+        (beat) => Math.abs(beat - slotInfo.onsetBeat) < 1e-6,
+      );
+      const neighborBeat =
+        currentIndex >= 0 ? measureBeats[currentIndex + direction] : undefined;
+      const step =
+        neighborBeat === undefined
+          ? BEATS_BY_TYPE[slotInfo.type]
+          : Math.abs(neighborBeat - slotInfo.onsetBeat);
       const moved = shiftNotesInTime(
         documentRef.current,
         slotInfo.handles[0],
