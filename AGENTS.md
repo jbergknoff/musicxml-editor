@@ -175,8 +175,17 @@ under `bun test`.
 **Editor Playwright tests:**
 `make editor-integration-test` runs `editor/tests/*.spec.ts`. Narrow the run with
 `ARGS="filename.spec.ts"` or `ARGS="filename.spec.ts:lineNumber"`.
-`spine-selection.spec.ts` has a pre-existing occasional timing flake in parallel
-runs — rerun once before treating it as a regression.
+
+Test flakiness is not tolerated: a flaky test is a real bug, not a rerun-until-green
+situation. In this codebase flaky Playwright failures have consistently traced back
+to a stale-closure race in `Editor.tsx` — a keyboard shortcut fired immediately after
+one that changed `selection`/the document gets handled by a `keydown` listener that
+hasn't been re-subscribed yet, so it acts on pre-edit state (see `selectionRef`'s and
+`slotInfoRef`'s doc comments for the fix pattern: read a ref kept current in the
+render body, or reparse a fresh score from `documentRef.current`, instead of closing
+over the memoized `selection`/`score`/`slotInfo`). Reproduce a suspected flake with
+`--repeat-each` under `--workers` > 1 to force the race, fix the root cause, then
+confirm with a large `--repeat-each` before treating it as resolved.
 
 **Selection / gesture types:**
 `EditorGesture` carries `hit` (the notehead under the pointer, picked in screen
