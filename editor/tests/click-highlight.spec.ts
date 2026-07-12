@@ -18,6 +18,13 @@ const SINGLE_STAFF = fileURLToPath(
   new URL("./fixtures/single-staff.musicxml", import.meta.url),
 );
 
+// Grand staff: treble = quarter C5 (beat 1), quarter rest (beat 2), quarter E5
+// (beat 3), quarter G5 (beat 4); bass = half chord C3+E3 (beats 1-2) then half
+// G2 (beats 3-4). Used to pin the onset-exact highlight rule across staves.
+const GRAND_STAFF_REST_COVER = fileURLToPath(
+  new URL("./fixtures/grand-staff-rest-cover.musicxml", import.meta.url),
+);
+
 // Mirrors Editor.tsx's CHORD_TINT: a Level-1 (whole-beat) selection tints its
 // notehead glyphs this color on the score. The highlight is drawn as a separate
 // recolored glyph wrapped in `<g data-color-id="{noteId}">` (NoteColorOverlay),
@@ -163,4 +170,59 @@ test("clicking a rest selects the rest slot", async ({ page }) => {
   // spine slot and selects it — no note is tinted, but the rest is now selected.
   await page.mouse.click(c2.x + beatSpan, c2.y);
   await expectRestSelected(page, { beat: 4, duration: "quarter" });
+});
+
+async function loadGrandStaffRestCover(page: Page): Promise<void> {
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles(GRAND_STAFF_REST_COVER);
+  await expect(page.locator("#p0-m1-n0-v0")).toBeVisible(); // treble C5
+  await expect(page.locator("#p1-m1-n0-v0")).toBeVisible(); // bass chord
+}
+
+test("a beat-sharing chord on another staff tints with the selection", async ({
+  page,
+}) => {
+  await loadGrandStaffRestCover(page);
+
+  // Clicking treble C5 (beat 1) selects that beat's slot. The bass half-chord
+  // begins on the same beat, so both its notes tint alongside C5.
+  const c5 = await noteheadCenter(page, "#p0-m1-n0-v0");
+  await page.mouse.click(c5.x, c5.y);
+  await expect(page.locator('g[data-color-id="p0-m1-n0-v0"]')).toHaveCount(1);
+  await expect(page.locator('g[data-color-id="p1-m1-n0-v0"]')).toHaveCount(1);
+  await expect(page.locator('g[data-color-id="p1-m1-n0-v1"]')).toHaveCount(1);
+  // No rest is selected, so no rest-highlight box is drawn.
+  await expect(page.locator("rect[data-rest-highlight]")).toHaveCount(0);
+});
+
+test("selecting a rest does not tint a chord merely sounding through it", async ({
+  page,
+}) => {
+  await loadGrandStaffRestCover(page);
+
+  // Onsets are a quarter apart on the treble staff; measure the span from two
+  // adjacent treble noteheads (E5 beat 3 → G5 beat 4) to reach the beat-2 rest,
+  // which sits one quarter after C5 (beat 1) and has no notehead of its own.
+  // Rests carry no noteIndex, so the treble noteheads are n0 (C5), n1 (E5),
+  // n2 (G5) — the beat-2 rest between C5 and E5 is skipped in the numbering.
+  const c5 = await noteheadCenter(page, "#p0-m1-n0-v0"); // beat 1
+  const e5 = await noteheadCenter(page, "#p0-m1-n1-v0"); // beat 3
+  const g5 = await noteheadCenter(page, "#p0-m1-n2-v0"); // beat 4
+  const beatSpan = g5.x - e5.x;
+
+  await page.mouse.click(c5.x + beatSpan, c5.y);
+
+  // The rest slot is selected: the inspector names its beat and shows the rest.
+  const aside = page.locator("aside");
+  await expect(aside.getByText("Measure 1 · Beat 2")).toBeVisible();
+  await expect(aside.getByText("Rest · quarter")).toBeVisible();
+  // No notehead is tinted on the score — in particular the bass half-chord
+  // (onset beat 1, covering beat 2) is NOT tinted, because the score highlight
+  // tracks only slots that begin on the selected beat. (The inspector still
+  // lists that chord separately; it answers "what is sounding here.")
+  await expect(page.locator("g[data-color-id]")).toHaveCount(0);
+  // The selected rest gets its own highlight box instead.
+  await expect(page.locator("rect[data-rest-highlight]")).toHaveCount(1);
 });

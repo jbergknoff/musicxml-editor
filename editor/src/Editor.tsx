@@ -709,8 +709,9 @@ export function Editor() {
   );
 
   // Selection highlights: at Level 2 the focused note draws strong and its
-  // chord-mates light; a slot selection tints all its members across every
-  // staff (none for a rest — the beat-box chrome marks a rest instead).
+  // chord-mates light; a slot selection tints the members of every staff's slot
+  // that begins on this exact beat (a selected rest has no notehead to recolor —
+  // the renderer's rest-highlight chrome marks it instead).
   // Confidence flags go first so the selection recolor draws over them.
   const noteHighlights: NoteHighlight[] = useMemo(() => {
     if (!selection || !slotInfo) {
@@ -732,7 +733,14 @@ export function Editor() {
       }
       return out;
     }
-    const slots = inspector?.allSlots ?? [slotInfo];
+    // Onset-exact companions only: tint chords on other staves that begin on
+    // this exact beat, not ones that merely sound through it from an earlier
+    // onset. (The inspector's `allSlots` keeps those covering slots so its panel
+    // can show what is sounding; the highlight deliberately drops them, so a
+    // selected rest lights up only itself and its true vertical alignments.)
+    const slots = (inspector?.allSlots ?? [slotInfo]).filter(
+      (slot) => Math.abs(slot.onsetBeat - slotInfo.onsetBeat) < 1e-6,
+    );
     return [
       ...confidenceHighlights,
       ...slots
@@ -748,6 +756,15 @@ export function Editor() {
   // Selection chrome geometry: the beat column to highlight and (at Level 2) the
   // specific note to ring. Both are passed straight through to the renderer.
   const selectionBeat = slotInfo?.onsetBeat ?? null;
+  // A selected rest has no notehead to recolor, so the renderer draws a
+  // highlight box around the rest glyph on its own staff instead.
+  const restSelection = useMemo(
+    () =>
+      slotInfo?.isRest
+        ? { partIndex: slotInfo.partIndex, beat: slotInfo.onsetBeat }
+        : null,
+    [slotInfo],
+  );
   const focusNoteId = useMemo(() => {
     if (selection?.kind !== "note") {
       return null;
@@ -2828,6 +2845,7 @@ export function Editor() {
               isPlaying={listen.playing}
               scrollLocked={listen.playing}
               selectionBeat={selectionBeat}
+              restSelection={restSelection}
               focusNoteId={focusNoteId}
               snapBeatRef={snapBeatRef}
               snapGeneration={snapGeneration}

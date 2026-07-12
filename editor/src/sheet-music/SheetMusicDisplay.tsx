@@ -557,6 +557,49 @@ const BeatBox = memo(function BeatBox({
   );
 });
 
+// Box drawn around a selected rest's glyph — the rest's counterpart to the
+// notehead recolor, on its own staff (a rest carries no notehead to tint).
+const RestHighlight = memo(function RestHighlight({
+  beat,
+  partIndex,
+  score,
+  layout,
+  measureStartBeats,
+}: {
+  beat: number;
+  partIndex: number;
+  score: ParsedScore;
+  layout: ResolvedLayout;
+  measureStartBeats: number[];
+}) {
+  const col = beatColumnGeometry(beat, score, layout, measureStartBeats);
+  const { staffBottomYs, staffSpace } = layout;
+  const bottomY = staffBottomYs[partIndex];
+  if (!col || bottomY == null) {
+    return null;
+  }
+  // Centre on the beat column and on the staff's middle line (where RestEl
+  // anchors its glyph, 2 staff-spaces above the bottom line).
+  const cx = (col.left + col.right) / 2;
+  const cy = bottomY - 2 * staffSpace;
+  const halfWidth = staffSpace * 1.1;
+  const halfHeight = staffSpace * 1.7;
+  return (
+    <rect
+      data-rest-highlight="true"
+      x={cx - halfWidth}
+      y={cy - halfHeight}
+      width={halfWidth * 2}
+      height={halfHeight * 2}
+      fill="rgba(42,111,219,0.14)"
+      stroke="rgba(42,111,219,0.60)"
+      stroke-width="1.5"
+      rx={4}
+      style={{ pointerEvents: "none" }}
+    />
+  );
+});
+
 // Ring drawn around the drilled note — Level 2 selection chrome.
 const NoteRing = memo(function NoteRing({
   noteId,
@@ -1247,6 +1290,12 @@ interface SheetMusicDisplayProps {
    * around the drilled notehead (Level 2).
    */
   selectionBeat?: number | null;
+  /**
+   * Staff + absolute beat of a selected rest. A rest has no notehead to recolor
+   * through `noteHighlights`, so the renderer draws a highlight box around the
+   * rest glyph on this staff to mark it as the selection.
+   */
+  restSelection?: { partIndex: number; beat: number } | null;
   /** Note render-info id for the Level 2 drilled note ring. */
   focusNoteId?: string | null;
   /**
@@ -1309,6 +1358,7 @@ export function SheetMusicDisplay({
   getLiveBeat,
   isPlaying = false,
   selectionBeat,
+  restSelection,
   focusNoteId,
   onStagePointerDown,
   onStagePointerMove,
@@ -1908,6 +1958,17 @@ export function SheetMusicDisplay({
             <BeatBox
               beat={selectionBeat}
               isLevel2={focusNoteId != null}
+              score={score}
+              layout={layout}
+              measureStartBeats={measureStartBeats}
+            />
+          )}
+          {/* Rest-selection chrome: a box around the selected rest's glyph on
+              its own staff (rests have no notehead for the recolor overlay). */}
+          {restSelection != null && (
+            <RestHighlight
+              beat={restSelection.beat}
+              partIndex={restSelection.partIndex}
               score={score}
               layout={layout}
               measureStartBeats={measureStartBeats}

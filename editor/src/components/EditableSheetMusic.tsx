@@ -127,6 +127,7 @@ export function EditableSheetMusic({
   isPlaying,
   scrollLocked,
   selectionBeat,
+  restSelection,
   focusNoteId,
   snapBeatRef,
   snapGeneration,
@@ -160,6 +161,9 @@ export function EditableSheetMusic({
   scrollLocked?: boolean;
   /** Absolute quarter-note beat for the Level 1 beat-box selection chrome. */
   selectionBeat?: number | null;
+  /** Staff + absolute beat of a selected rest, so the renderer can draw a
+   *  highlight box around the rest glyph (rests have no notehead to recolor). */
+  restSelection?: { partIndex: number; beat: number } | null;
   /** Note id (from noteInfos) for the Level 2 note-ring chrome. */
   focusNoteId?: string | null;
   /** Beat to instant-scroll to when `snapGeneration` changes (see renderer). */
@@ -215,6 +219,7 @@ export function EditableSheetMusic({
       isPlaying={isPlaying}
       scrollLocked={scrollLocked}
       selectionBeat={selectionBeat}
+      restSelection={restSelection}
       focusNoteId={focusNoteId}
       snapBeatRef={snapBeatRef}
       snapGeneration={snapGeneration}
