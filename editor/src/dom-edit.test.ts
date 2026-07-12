@@ -17,6 +17,7 @@ import {
   moveNote,
   parseDocument,
   pasteMeasures,
+  redistributeStaves,
   removeNote,
   removeNotes,
   removeStaff,
@@ -1970,5 +1971,138 @@ describe("measureFillReport", () => {
     expect(fill.staffBeats[0]).toBe(1); // treble: notes end at beat 1, not over-full
     expect(fill.staffBeats[1]).toBe(5); // bass: notes reach beat 5, over-full
     expect(fill.nominalBeats).toBe(4);
+  });
+});
+
+describe("redistributeStaves", () => {
+  // A single-staff score with a high melody note (C5) and a low note (G2) in the
+  // same measure, plus a second measure, to prove the split works per measure.
+  const SINGLE_STAFF_MIXED = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>4</divisions>
+        <key><fifths>0</fifths><mode>major</mode></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <note><pitch><step>C</step><octave>5</octave></pitch><duration>8</duration><type>half</type></note>
+      <note><pitch><step>G</step><octave>2</octave></pitch><duration>8</duration><type>half</type></note>
+    </measure>
+    <measure number="2">
+      <note><pitch><step>E</step><octave>5</octave></pitch><duration>8</duration><type>half</type></note>
+      <note><pitch><step>C</step><octave>3</octave></pitch><duration>8</duration><type>half</type></note>
+    </measure>
+  </part>
+</score-partwise>`;
+
+  test("splits a single-staff score into a treble/bass grand staff by pitch", () => {
+    const doc = parseDocument(SINGLE_STAFF_MIXED);
+    const count = redistributeStaves(doc, 60);
+    expect(count).toBe(2);
+
+    const score = reparse(doc);
+    expect(score.parts.length).toBe(2);
+    // Treble carries the high notes (C5, E5); bass carries the low ones (G2, C3).
+    expect(score.parts[0].clef?.sign).toBe("G");
+    expect(score.parts[1].clef?.sign).toBe("F");
+
+    const trebleSteps = score.parts[0].measures.flatMap((m) =>
+      m.events.flatMap((e) =>
+        isRest(e) ? [] : (e as ChordGroup).notes.map((n) => n.pitch.step),
+      ),
+    );
+    const bassSteps = score.parts[1].measures.flatMap((m) =>
+      m.events.flatMap((e) =>
+        isRest(e) ? [] : (e as ChordGroup).notes.map((n) => n.pitch.step),
+      ),
+    );
+    expect(trebleSteps.sort()).toEqual(["C", "E"]);
+    expect(bassSteps.sort()).toEqual(["C", "G"]);
+    // Declares two staves and stays editable.
+    expect(doc.querySelector("staves")?.textContent).toBe("2");
+    expect(isEditableDocument(doc)).toBe(true);
+  });
+
+  test("a chord straddling the split is divided note-by-note", () => {
+    // One quarter-note chord C3+E3+C5+G5 at beat 0. Split at middle C (60):
+    // C5/G5 (>= 60) → treble, C3/E3 (< 60) → bass.
+    const CHORD = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>M</part-name></score-part></part-list>
+  <part id="P1"><measure number="1">
+    <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type>
+      <clef><sign>G</sign><line>2</line></clef></attributes>
+    <note><pitch><step>C</step><octave>3</octave></pitch><duration>4</duration><type>quarter</type></note>
+    <note><chord/><pitch><step>E</step><octave>3</octave></pitch><duration>4</duration><type>quarter</type></note>
+    <note><chord/><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type></note>
+    <note><chord/><pitch><step>G</step><octave>5</octave></pitch><duration>4</duration><type>quarter</type></note>
+  </measure></part></score-partwise>`;
+    const doc = parseDocument(CHORD);
+    redistributeStaves(doc, 60);
+    const score = reparse(doc);
+
+    // Treble beat 0: C5 + G5.
+    expect(chordPitches(score, 0, 0).sort()).toEqual(["C5", "G5"]);
+    // Bass beat 0: C3 + E3.
+    expect(chordPitches(score, 1, 0).sort()).toEqual(["C3", "E3"]);
+  });
+
+  test("collapses a grand staff and re-splits by pitch", () => {
+    // GRAND_STAFF_XML: E5 on staff 1, G2 on staff 2. A very low split (below
+    // both) sends everything to the treble staff; the bass becomes rests.
+    const doc = parseDocument(GRAND_STAFF_XML);
+    redistributeStaves(doc, 21);
+    const score = reparse(doc);
+    const trebleSteps = score.parts[0].measures[0].events.flatMap((e) =>
+      isRest(e) ? [] : (e as ChordGroup).notes.map((n) => n.pitch.step),
+    );
+    expect(trebleSteps.sort()).toEqual(["E", "G"]);
+    expect(score.parts[1].measures[0].events.every(isRest)).toBe(true);
+  });
+
+  test("redistributes a multi-voice score onto two staves without overfilling", () => {
+    // MULTI_VOICE_XML: staff 1 has voice 1 (D5 half, C5+D5 quarters) and voice 2
+    // (B4+G4 quarters); staff 2 has voice 5 (G3 half). All the >= 60 pitches
+    // (D5/C5/B4/G4) land on the treble staff, G3 on the bass. Voices are kept,
+    // so the overlapping treble voices don't collapse into one over-full run.
+    const doc = parseDocument(MULTI_VOICE_XML);
+    redistributeStaves(doc, 60);
+    const score = reparse(doc);
+    expect(score.parts.length).toBe(2);
+
+    const trebleSteps = new Set<string>(
+      score.parts[0].measures[0].events.flatMap((e) =>
+        isRest(e) ? [] : (e as ChordGroup).notes.map((n) => n.pitch.step),
+      ),
+    );
+    for (const step of ["D", "C", "B", "G"]) {
+      expect(trebleSteps.has(step)).toBe(true);
+    }
+    const bassSteps = new Set<string>(
+      score.parts[1].measures[0].events.flatMap((e) =>
+        isRest(e) ? [] : (e as ChordGroup).notes.map((n) => n.pitch.step),
+      ),
+    );
+    expect(bassSteps.has("G")).toBe(true);
+
+    // Neither staff is over-full: the preserved voices keep the treble at its
+    // true 4 beats rather than serializing the two voices end-to-end.
+    const fill = measureFillReport(doc)[0];
+    expect(fill.nominalBeats).toBe(4);
+    for (const beats of fill.staffBeats) {
+      expect(beats).toBeLessThanOrEqual(fill.nominalBeats + 1e-6);
+    }
+    expect(isEditableDocument(doc)).toBe(true);
+  });
+
+  test("returns null when there is nothing to act on", () => {
+    const empty = new DOMParser().parseFromString(
+      `<score-partwise version="3.1"><part-list><score-part id="P1"><part-name>M</part-name></score-part></part-list><part id="P1"></part></score-partwise>`,
+      "text/xml",
+    );
+    expect(redistributeStaves(empty, 60)).toBeNull();
   });
 });

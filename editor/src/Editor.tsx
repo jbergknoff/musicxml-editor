@@ -49,6 +49,7 @@ import {
   type MidiImportChoice,
   MidiImportDialog,
 } from "./components/MidiImportDialog";
+import { RedistributeStavesDialog } from "./components/RedistributeStavesDialog";
 import { ScoreHeader } from "./components/ScoreHeader";
 import {
   type MeasureClipboard,
@@ -68,6 +69,7 @@ import {
   moveNote,
   parseDocument,
   pasteMeasures,
+  redistributeStaves,
   removeGraceNote,
   removeNotes,
   removeStaff,
@@ -358,6 +360,8 @@ export function Editor() {
   selectionRef.current = selection;
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [metadataOpen, setMetadataOpen] = useState(false);
+  // Whether the "Redistribute across staves" confirmation modal is showing.
+  const [redistributeOpen, setRedistributeOpen] = useState(false);
   const imageImport = useImageImport();
   // Source-image review data from the most recent OMR import (session-only —
   // not part of the document), and whether its cleanup panel is showing.
@@ -1379,6 +1383,27 @@ export function Editor() {
     setMenu(null);
     commit();
   }, [editable, staffCount, slotInfo, documentRef, commit]);
+
+  // Redistribute every note onto a two-staff grand staff split at `splitPoint`
+  // (a MIDI note number). Structural rebuild of the whole part, so any
+  // index-addressed OMR confidence flags are dropped and the selection cleared.
+  const onRedistribute = useCallback(
+    (splitPoint: number) => {
+      if (!editable) {
+        return;
+      }
+      if (redistributeStaves(documentRef.current, splitPoint) === null) {
+        setRedistributeOpen(false);
+        return;
+      }
+      setImportReview((prev) => (prev ? { ...prev, flaggedNotes: [] } : prev));
+      setSelection(null);
+      setMenu(null);
+      setRedistributeOpen(false);
+      commit();
+    },
+    [editable, documentRef, commit],
+  );
 
   // Delete the measures [range.lo, range.hi] and reselect the slot that now
   // occupies that position (shared tail of both delete-measure and cut).
@@ -2516,6 +2541,15 @@ export function Editor() {
         >
           − Staff
         </button>
+        <button
+          type="button"
+          onClick={() => setRedistributeOpen(true)}
+          disabled={!editable}
+          title="Redistribute all notes onto a treble + bass grand staff by pitch"
+          style={toolbarButtonStyle(editable)}
+        >
+          Redistribute
+        </button>
         <span style={{ flex: 1 }} />
         {/* Always rendered (hidden when clean) so the first edit doesn't
             reflow the toolbar — a wrap here shifts the whole score canvas
@@ -2876,6 +2910,14 @@ export function Editor() {
           defaultChoice={imageImportChoice}
           onConfirm={onImageImportConfirm}
           onCancel={() => setPendingImage(null)}
+        />
+      ) : null}
+
+      {redistributeOpen ? (
+        <RedistributeStavesDialog
+          staffCount={staffCount}
+          onConfirm={onRedistribute}
+          onCancel={() => setRedistributeOpen(false)}
         />
       ) : null}
     </div>
