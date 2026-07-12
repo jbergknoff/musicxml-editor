@@ -103,6 +103,7 @@ import {
   offsetEmbeddedReviewPayload,
   readEmbeddedReview,
   writeEmbeddedReview,
+  writeEmbeddedReviewFlaggedNotes,
 } from "./import-review-persistence";
 import {
   type EditableMetadata,
@@ -918,18 +919,20 @@ export function Editor() {
   // note is worse than none.
   const dropFlagsInMeasure = useCallback(
     (measureIndex: number) => {
-      setExtra((prev) =>
-        prev
-          ? {
-              ...prev,
-              flaggedNotes: prev.flaggedNotes.filter(
-                (flagged) => flagged.measureIndex !== measureIndex,
-              ),
-            }
-          : prev,
-      );
+      setExtra((prev) => {
+        if (!prev) {
+          return prev;
+        }
+        const flaggedNotes = prev.flaggedNotes.filter(
+          (flagged) => flagged.measureIndex !== measureIndex,
+        );
+        // Keep the document's embedded copy (if any) in sync so an export
+        // taken after this edit doesn't resurrect the dropped flags.
+        writeEmbeddedReviewFlaggedNotes(documentRef.current, flaggedNotes);
+        return { ...prev, flaggedNotes };
+      });
     },
-    [setExtra],
+    [setExtra, documentRef],
   );
 
   // User-initiated counterpart to dropFlagsInMeasure: the user looked at this
@@ -938,19 +941,21 @@ export function Editor() {
   // immediately so it lands on the undo stack like any other edit.
   const dismissFlaggedNote = useCallback(
     (handle: NoteHandle) => {
-      setExtra((prev) =>
-        prev
-          ? {
-              ...prev,
-              flaggedNotes: prev.flaggedNotes.filter(
-                (flagged) => !sameHandle(flagged, handle),
-              ),
-            }
-          : prev,
-      );
+      setExtra((prev) => {
+        if (!prev) {
+          return prev;
+        }
+        const flaggedNotes = prev.flaggedNotes.filter(
+          (flagged) => !sameHandle(flagged, handle),
+        );
+        // Keep the document's embedded copy (if any) in sync so an export
+        // taken after this edit doesn't resurrect the dismissed flag.
+        writeEmbeddedReviewFlaggedNotes(documentRef.current, flaggedNotes);
+        return { ...prev, flaggedNotes };
+      });
       commit();
     },
-    [setExtra, commit],
+    [setExtra, commit, documentRef],
   );
 
   // The checkmark button reports the renderer id it was drawn at; resolve it

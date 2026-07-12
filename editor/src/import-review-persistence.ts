@@ -201,6 +201,28 @@ export function writeEmbeddedReview(
   writeMiscField(doc, IMPORT_REVIEW_FIELD_NAME, JSON.stringify(merged));
 }
 
+/**
+ * Overwrite the embedded payload's flagged-notes list in place — used when the
+ * user dismisses a flag (or a structural edit drops one) so the export
+ * actually reflects it; a merge (as `writeEmbeddedReview` does for appends)
+ * would resurrect the ones just removed. No-op if `doc` carries no embedded
+ * review data yet (nothing to reconcile until an import embeds one).
+ */
+export function writeEmbeddedReviewFlaggedNotes(
+  doc: Document,
+  flaggedNotes: ReviewFlaggedNote[],
+): void {
+  const existing = readEmbeddedReviewPayload(doc);
+  if (!existing) {
+    return;
+  }
+  writeMiscField(
+    doc,
+    IMPORT_REVIEW_FIELD_NAME,
+    JSON.stringify({ ...existing, flaggedNotes: [...flaggedNotes] }),
+  );
+}
+
 /** Reconstruct a live `ImportReview` (real image Blobs) from a document's embedded data, if any. */
 export function readEmbeddedReview(doc: Document): ImportReview | null {
   const payload = readEmbeddedReviewPayload(doc);
