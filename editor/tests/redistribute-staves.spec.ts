@@ -11,6 +11,12 @@ import { type Page, expect, test } from "@playwright/test";
 const REDISTRIBUTE_SOURCE = fileURLToPath(
   new URL("./fixtures/redistribute-source.musicxml", import.meta.url),
 );
+// Carries one embedded low-confidence flag on its first note (measure 1,
+// note-element index 0) and no <staves> — a single treble staff of C5/E5/G5
+// quarter notes plus a rest, all on staff 1 (part index 0) once loaded.
+const REVIEW_DATA_EMBEDDED = fileURLToPath(
+  new URL("./fixtures/review-data-embedded.musicxml", import.meta.url),
+);
 
 async function exportXml(page: Page): Promise<string> {
   const [download] = await Promise.all([
@@ -86,4 +92,33 @@ test("Redistribute can be cancelled without changing the score", async ({
   // Still a single staff — nothing changed.
   const xml = await exportXml(page);
   expect(xml).not.toMatch(/<staves>/);
+});
+
+test("an OMR low-confidence (amber) flag follows its note across redistribution", async ({
+  page,
+}) => {
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles(REVIEW_DATA_EMBEDDED);
+  await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
+  // Loading a file with embedded review data auto-opens the review panel, so
+  // the amber overlay is already rendered — the flagged note (C5, part 0).
+  await expect(page.locator('[data-color-id="p0-m1-n0-v0"]')).toHaveCount(1);
+
+  // Split high enough that every note in the fixture (C5/E5/G5) moves onto
+  // the bass staff (part index 1).
+  await page.getByRole("button", { name: "Redistribute" }).click();
+  const dialog = page.getByRole("dialog", {
+    name: "Redistribute across staves",
+  });
+  await expect(dialog).toBeVisible();
+  await dialog.locator('input[type="range"]').fill("90");
+  await dialog.getByRole("button", { name: "Redistribute" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.locator("#p1-m1-n0-v0")).toBeVisible();
+
+  // The amber flag followed its note onto the new staff instead of vanishing.
+  await expect(page.locator('[data-color-id="p0-m1-n0-v0"]')).toHaveCount(0);
+  await expect(page.locator('[data-color-id="p1-m1-n0-v0"]')).toHaveCount(1);
 });

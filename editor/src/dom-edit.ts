@@ -2351,17 +2351,31 @@ function noteMidiNumber(noteEl: Element): number {
 // the inter-group `<backup>` structure. The staff attributes are rebuilt into
 // exactly a treble clef on staff 1 and a bass clef on staff 2, dropping any prior
 // `<staves>`/`<clef>` (including mid-piece clef changes, which reference the old
-// staff numbering). Returns the new staff count (2), or null when there is no
-// part/measures to act on.
+// staff numbering). Returns the new staff count (2) plus, for each handle in
+// `trackHandles`, its handle in the rebuilt document — every note element is
+// reused (never dropped or cloned) by this rewrite, only reassigned a `<staff>`
+// and moved within its measure, so an existing handle (e.g. an OMR
+// low-confidence flag) can be resolved forward through the rewrite by element
+// identity rather than discarded. Returns null when there is no part/measures
+// to act on.
+export interface RedistributeStavesResult {
+  staffCount: number;
+  trackedHandles: Array<NoteHandle | null>;
+}
+
 export function redistributeStaves(
   doc: Document,
   splitMidiNote: number,
-): number | null {
+  trackHandles: NoteHandle[] = [],
+): RedistributeStavesResult | null {
   const attributes = firstAttributes(doc);
   const measures = measuresOf(doc);
   if (!attributes || measures.length === 0) {
     return null;
   }
+  const trackedElements = trackHandles.map((handle) =>
+    elementForHandle(doc, handle),
+  );
   const { divisions, divisionsPerMeasure } = measureMetrics(doc);
 
   // Strip every measure's clefs and staff count, then rebuild the first
@@ -2393,7 +2407,13 @@ export function redistributeStaves(
     }
     writeMeasure(doc, measureEl, notes, measureLength, divisions, 2, [1, 2]);
   }
-  return 2;
+
+  const trackedHandles = trackedElements.map((element, i) =>
+    element
+      ? handleFor(measuresOf(doc), trackHandles[i].measureIndex, element)
+      : null,
+  );
+  return { staffCount: 2, trackedHandles };
 }
 
 // Remove a staff from the (single) part. `staff` defaults to the bottom staff.

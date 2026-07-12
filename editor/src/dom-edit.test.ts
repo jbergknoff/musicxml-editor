@@ -2000,8 +2000,8 @@ describe("redistributeStaves", () => {
 
   test("splits a single-staff score into a treble/bass grand staff by pitch", () => {
     const doc = parseDocument(SINGLE_STAFF_MIXED);
-    const count = redistributeStaves(doc, 60);
-    expect(count).toBe(2);
+    const result = redistributeStaves(doc, 60);
+    expect(result?.staffCount).toBe(2);
 
     const score = reparse(doc);
     expect(score.parts.length).toBe(2);
@@ -2104,5 +2104,36 @@ describe("redistributeStaves", () => {
       "text/xml",
     );
     expect(redistributeStaves(empty, 60)).toBeNull();
+  });
+
+  test("resolves tracked handles (e.g. OMR confidence flags) across the rewrite", () => {
+    // G2 is note element index 1 in measure 0 before the split. After the split
+    // it's the sole real note on the new bass staff, following the treble
+    // staff's C5-plus-fill-rest run — so its element survives (reused, not
+    // regenerated) at a new index.
+    const doc = parseDocument(SINGLE_STAFF_MIXED);
+    const g2Handle: NoteHandle = { measureIndex: 0, noteElementIndex: 1 };
+    const result = redistributeStaves(doc, 60, [g2Handle]);
+    expect(result).not.toBeNull();
+    const [tracked] = result?.trackedHandles ?? [];
+    expect(tracked).not.toBeNull();
+    expect(tracked?.measureIndex).toBe(0);
+
+    // The tracked handle really does still point at the G2 note.
+    const measureEl = Array.from(
+      doc.querySelectorAll("part > measure"),
+    )[0] as Element;
+    const noteEls = Array.from(measureEl.querySelectorAll("note"));
+    const resolved = tracked ? noteEls[tracked.noteElementIndex] : undefined;
+    expect(resolved?.querySelector("pitch step")?.textContent).toBe("G");
+    expect(resolved?.querySelector("pitch octave")?.textContent).toBe("2");
+  });
+
+  test("a tracked handle for a note that no longer exists resolves to null", () => {
+    const doc = parseDocument(SINGLE_STAFF_MIXED);
+    // No note element index 5 exists in measure 0 — a stale/bad handle.
+    const badHandle: NoteHandle = { measureIndex: 0, noteElementIndex: 5 };
+    const result = redistributeStaves(doc, 60, [badHandle]);
+    expect(result?.trackedHandles).toEqual([null]);
   });
 });

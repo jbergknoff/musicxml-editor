@@ -1385,24 +1385,55 @@ export function Editor() {
   }, [editable, staffCount, slotInfo, documentRef, commit]);
 
   // Redistribute every note onto a two-staff grand staff split at `splitPoint`
-  // (a MIDI note number). Structural rebuild of the whole part, so any
-  // index-addressed OMR confidence flags are dropped and the selection cleared.
+  // (a MIDI note number). A structural rebuild of the whole part, but
+  // `redistributeStaves` reuses every note element rather than regenerating
+  // it, so OMR low-confidence flags are carried through by resolving their
+  // handles across the rewrite (rather than dropped, as other structural edits
+  // that actually remove/reorder note elements do via `dropFlagsInMeasure`).
   const onRedistribute = useCallback(
     (splitPoint: number) => {
       if (!editable) {
         return;
       }
-      if (redistributeStaves(documentRef.current, splitPoint) === null) {
+      const flaggedHandles: NoteHandle[] = (
+        importReview?.flaggedNotes ?? []
+      ).map((flagged) => ({
+        measureIndex: flagged.measureIndex,
+        noteElementIndex: flagged.noteElementIndex,
+      }));
+      const result = redistributeStaves(
+        documentRef.current,
+        splitPoint,
+        flaggedHandles,
+      );
+      if (result === null) {
         setRedistributeOpen(false);
         return;
       }
-      setImportReview((prev) => (prev ? { ...prev, flaggedNotes: [] } : prev));
+      setImportReview((prev) => {
+        if (!prev) {
+          return prev;
+        }
+        const flaggedNotes = prev.flaggedNotes.flatMap((flagged, i) => {
+          const handle = result.trackedHandles[i];
+          return handle
+            ? [
+                {
+                  ...flagged,
+                  measureIndex: handle.measureIndex,
+                  noteElementIndex: handle.noteElementIndex,
+                },
+              ]
+            : [];
+        });
+        return { ...prev, flaggedNotes };
+      });
       setSelection(null);
       setMenu(null);
       setRedistributeOpen(false);
       commit();
     },
-    [editable, documentRef, commit],
+    [editable, documentRef, commit, importReview],
   );
 
   // Delete the measures [range.lo, range.hi] and reselect the slot that now
