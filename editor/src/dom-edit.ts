@@ -2317,6 +2317,105 @@ export function addStaff(doc: Document): number | null {
   return newCount;
 }
 
+// Set (or create) a note/rest element's `<staff>` child. Reused by
+// `redistributeStaves` when reassigning notes to a pitch-split staff.
+function setStaffNumber(doc: Document, noteEl: Element, staff: number): void {
+  const existing = noteEl.querySelector("staff");
+  if (existing) {
+    existing.textContent = String(staff);
+  } else {
+    noteEl.appendChild(child(doc, "staff", String(staff)));
+  }
+}
+
+// A note element's pitch as a MIDI note number (middle C = C4 = 60), matching
+// midi-to-musicxml's convention so the redistribute threshold lines up with the
+// MIDI import dialog's split point. `pitchHeight` uses C4 = 48 (octave × 12),
+// which sits 12 below the MIDI value.
+function noteMidiNumber(noteEl: Element): number {
+  return pitchHeight(noteEl) + 12;
+}
+
+// Redistribute every note in the (single) part onto two pitch-split staves,
+// replacing whatever staff/voice layout the part had — the editor-side analogue
+// of the MIDI import's "arrange into one piano part" option. Notes at or above
+// `splitMidiNote` (a MIDI note number, middle C = 60) go to a treble staff
+// (staff 1); notes below go to a bass staff (staff 2). This collapses a
+// single-staff, multi-voice, or many-staff part into a clean grand staff by
+// pitch: chords straddling the split are divided note-by-note (each member lands
+// on the staff its own pitch calls for), grace notes travel with their host, and
+// every measure's rhythm is preserved (rests are rebuilt to fit). Existing voice
+// numbers are kept, so genuinely polyphonic content stays laid out as separate
+// voices (collapsing overlapping voices into one would push notes later and grow
+// the bar) — `writeMeasure` re-groups the notes by (staff, voice) and rebuilds
+// the inter-group `<backup>` structure. The staff attributes are rebuilt into
+// exactly a treble clef on staff 1 and a bass clef on staff 2, dropping any prior
+// `<staves>`/`<clef>` (including mid-piece clef changes, which reference the old
+// staff numbering). Returns the new staff count (2) plus, for each handle in
+// `trackHandles`, its handle in the rebuilt document — every note element is
+// reused (never dropped or cloned) by this rewrite, only reassigned a `<staff>`
+// and moved within its measure, so an existing handle (e.g. an OMR
+// low-confidence flag) can be resolved forward through the rewrite by element
+// identity rather than discarded. Returns null when there is no part/measures
+// to act on.
+export interface RedistributeStavesResult {
+  staffCount: number;
+  trackedHandles: Array<NoteHandle | null>;
+}
+
+export function redistributeStaves(
+  doc: Document,
+  splitMidiNote: number,
+  trackHandles: NoteHandle[] = [],
+): RedistributeStavesResult | null {
+  const attributes = firstAttributes(doc);
+  const measures = measuresOf(doc);
+  if (!attributes || measures.length === 0) {
+    return null;
+  }
+  const trackedElements = trackHandles.map((handle) =>
+    elementForHandle(doc, handle),
+  );
+  const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+
+  // Strip every measure's clefs and staff count, then rebuild the first
+  // measure's attributes into a canonical two-staff grand staff.
+  for (const measureEl of measures) {
+    const attrs = measureEl.querySelector("attributes");
+    if (!attrs) {
+      continue;
+    }
+    for (const clefEl of Array.from(attrs.querySelectorAll("clef"))) {
+      clefEl.remove();
+    }
+    attrs.querySelector("staves")?.remove();
+  }
+  setStavesCount(doc, attributes, 2);
+  insertClef(doc, attributes, 1, "G", 2);
+  insertClef(doc, attributes, 2, "F", 4);
+
+  for (const measureEl of measures) {
+    const measureLength =
+      measureContentDivisions(measureEl) || divisionsPerMeasure;
+    const notes = readRealNotes(measureEl, divisions);
+    for (const note of notes) {
+      const targetStaff = noteMidiNumber(note.element) >= splitMidiNote ? 1 : 2;
+      setStaffNumber(doc, note.element, targetStaff);
+      for (const grace of note.graces) {
+        setStaffNumber(doc, grace, targetStaff);
+      }
+    }
+    writeMeasure(doc, measureEl, notes, measureLength, divisions, 2, [1, 2]);
+  }
+
+  const trackedHandles = trackedElements.map((element, i) =>
+    element
+      ? handleFor(measuresOf(doc), trackHandles[i].measureIndex, element)
+      : null,
+  );
+  return { staffCount: 2, trackedHandles };
+}
+
 // Remove a staff from the (single) part. `staff` defaults to the bottom staff.
 // Every note/rest on that staff is dropped, staves below it slide up by one, and
 // the matching `<clef>` is removed (remaining clefs renumbered). Removing the

@@ -49,6 +49,7 @@ import {
   type MidiImportChoice,
   MidiImportDialog,
 } from "./components/MidiImportDialog";
+import { RedistributeStavesDialog } from "./components/RedistributeStavesDialog";
 import { ScoreHeader } from "./components/ScoreHeader";
 import {
   type MeasureClipboard,
@@ -68,6 +69,7 @@ import {
   moveNote,
   parseDocument,
   pasteMeasures,
+  redistributeStaves,
   removeGraceNote,
   removeNotes,
   removeStaff,
@@ -362,6 +364,8 @@ export function Editor() {
   selectionRef.current = selection;
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [metadataOpen, setMetadataOpen] = useState(false);
+  // Whether the "Redistribute across staves" confirmation modal is showing.
+  const [redistributeOpen, setRedistributeOpen] = useState(false);
   const imageImport = useImageImport();
   // Source-image review data from the most recent OMR import (session-only —
   // not part of the document, but undoable in lockstep with it via
@@ -1459,6 +1463,58 @@ export function Editor() {
     setMenu(null);
     commit();
   }, [editable, staffCount, slotInfo, documentRef, commit]);
+
+  // Redistribute every note onto a two-staff grand staff split at `splitPoint`
+  // (a MIDI note number). A structural rebuild of the whole part, but
+  // `redistributeStaves` reuses every note element rather than regenerating
+  // it, so OMR low-confidence flags are carried through by resolving their
+  // handles across the rewrite (rather than dropped, as other structural edits
+  // that actually remove/reorder note elements do via `dropFlagsInMeasure`).
+  const onRedistribute = useCallback(
+    (splitPoint: number) => {
+      if (!editable) {
+        return;
+      }
+      const flaggedHandles: NoteHandle[] = (
+        importReview?.flaggedNotes ?? []
+      ).map((flagged) => ({
+        measureIndex: flagged.measureIndex,
+        noteElementIndex: flagged.noteElementIndex,
+      }));
+      const result = redistributeStaves(
+        documentRef.current,
+        splitPoint,
+        flaggedHandles,
+      );
+      if (result === null) {
+        setRedistributeOpen(false);
+        return;
+      }
+      setImportReview((prev) => {
+        if (!prev) {
+          return prev;
+        }
+        const flaggedNotes = prev.flaggedNotes.flatMap((flagged, i) => {
+          const handle = result.trackedHandles[i];
+          return handle
+            ? [
+                {
+                  ...flagged,
+                  measureIndex: handle.measureIndex,
+                  noteElementIndex: handle.noteElementIndex,
+                },
+              ]
+            : [];
+        });
+        return { ...prev, flaggedNotes };
+      });
+      setSelection(null);
+      setMenu(null);
+      setRedistributeOpen(false);
+      commit();
+    },
+    [editable, documentRef, commit, importReview],
+  );
 
   // Delete the measures [range.lo, range.hi] and reselect the slot that now
   // occupies that position (shared tail of both delete-measure and cut).
@@ -2597,6 +2653,15 @@ export function Editor() {
         >
           − Staff
         </button>
+        <button
+          type="button"
+          onClick={() => setRedistributeOpen(true)}
+          disabled={!editable}
+          title="Redistribute all notes onto a treble + bass grand staff by pitch"
+          style={toolbarButtonStyle(editable)}
+        >
+          Redistribute
+        </button>
         <span style={{ flex: 1 }} />
         {/* Always rendered (hidden when clean) so the first edit doesn't
             reflow the toolbar — a wrap here shifts the whole score canvas
@@ -2962,6 +3027,14 @@ export function Editor() {
           defaultChoice={imageImportChoice}
           onConfirm={onImageImportConfirm}
           onCancel={() => setPendingImage(null)}
+        />
+      ) : null}
+
+      {redistributeOpen ? (
+        <RedistributeStavesDialog
+          staffCount={staffCount}
+          onConfirm={onRedistribute}
+          onCancel={() => setRedistributeOpen(false)}
         />
       ) : null}
     </div>
