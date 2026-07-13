@@ -947,6 +947,10 @@ export function addNote(
     pitch: Pitch;
     /** Grand-staff only: which staff to insert into (1 = treble, 2 = bass). */
     staff?: number;
+    /** Which voice to insert into (defaults to 1). Gap-detection and the fill
+     *  rests are scoped to this voice, so a note added into voice 2 fits against
+     *  voice 2's neighbours and leaves voice 1 untouched. */
+    voice?: number;
   },
 ): NoteHandle | null {
   const measures = measuresOf(doc);
@@ -968,14 +972,18 @@ export function addNote(
 
   const sc = staffCountOf(doc);
   const targetStaff = sc > 1 ? (options.staff ?? 1) : 0;
+  const targetVoice = options.voice ?? 1;
 
-  // For gap-detection, only look at notes in the same staff.
+  // For gap-detection, only look at notes in the same staff AND voice — a note
+  // added into one voice must not have its duration clamped by another voice's
+  // onsets (the voices sound simultaneously, not in sequence).
   const notes = readRealNotes(measureEl, divisions);
-  const staffNotes =
-    targetStaff > 0
-      ? notes.filter((n) => staffOf(n.element) === targetStaff)
-      : notes;
-  const nextOnset = staffNotes.reduce(
+  const voiceNotes = notes.filter(
+    (n) =>
+      (targetStaff === 0 || staffOf(n.element) === targetStaff) &&
+      n.voice === targetVoice,
+  );
+  const nextOnset = voiceNotes.reduce(
     (min, note) =>
       note.onsetDivisions > onsetDivisions
         ? Math.min(min, note.onsetDivisions)
@@ -993,13 +1001,14 @@ export function addNote(
     octave: options.pitch.octave,
     durationDivisions: fit,
     staff: targetStaff > 0 ? targetStaff : undefined,
+    voice: targetVoice > 1 ? targetVoice : undefined,
     divisionsPerQuarter: divisions,
   });
   notes.push({
     element,
     onsetDivisions,
     durationDivisions: fit,
-    voice: 1,
+    voice: targetVoice,
     graces: [],
   });
   writeMeasure(doc, measureEl, notes, measureLength, divisions, sc);
@@ -1306,10 +1315,15 @@ export function shiftNotesInTime(
   if (!anchor) {
     return null;
   }
-  const inStaff = (note: RealNote) =>
-    targetStaff === 0 || staffOf(note.element) === targetStaff;
+  // Shift the anchor's own (staff, voice) line only — the other voices sharing
+  // the staff sound simultaneously, so their notes must stay put when this
+  // voice slides. Restricting to the voice is what lets the moving inner line
+  // be nudged without dragging the sustained voice with it.
+  const inGroup = (note: RealNote) =>
+    (targetStaff === 0 || staffOf(note.element) === targetStaff) &&
+    note.voice === anchor.voice;
   const shifted = notes.filter(
-    (note) => inStaff(note) && note.onsetDivisions >= anchor.onsetDivisions,
+    (note) => inGroup(note) && note.onsetDivisions >= anchor.onsetDivisions,
   );
   const blockEnd = shifted.reduce(
     (max, note) => Math.max(max, note.onsetDivisions + note.durationDivisions),
@@ -1319,7 +1333,7 @@ export function shiftNotesInTime(
   // start — either would overlap content (broken), not just lengthen the bar.
   const priorEnd = notes.reduce(
     (max, note) =>
-      inStaff(note) && note.onsetDivisions < anchor.onsetDivisions
+      inGroup(note) && note.onsetDivisions < anchor.onsetDivisions
         ? Math.max(max, note.onsetDivisions + note.durationDivisions)
         : max,
     0,
@@ -1338,6 +1352,126 @@ export function shiftNotesInTime(
   const grownLength = Math.max(measureLength, blockEnd + deltaDivisions);
   writeMeasure(doc, measureEl, notes, grownLength, divisions, sc);
   return handleFor(measuresOf(doc), handle.measureIndex, target);
+}
+
+// Set (or clear) a note element's `<voice>`. Voice 1 is the MusicXML default,
+// so it is written as a bare element with no `<voice>` child (matching how
+// createNoteElement and the single-voice writer emit it); voices ≥ 2 carry an
+// explicit `<voice>N`. Placed after `<duration>`/`<type>` if newly added.
+function setVoiceOnElement(
+  doc: Document,
+  noteEl: Element,
+  voice: number,
+): void {
+  const existing = noteEl.querySelector("voice");
+  if (voice <= 1) {
+    existing?.remove();
+    return;
+  }
+  if (existing) {
+    existing.textContent = String(voice);
+  } else {
+    noteEl.appendChild(child(doc, "voice", String(voice)));
+  }
+}
+
+// The distinct voice numbers present on a staff of a measure, ascending. Staff 0
+// (single-staff documents) considers every note. Used by the editor to find a
+// staff's existing second voice (or that there is none yet).
+export function voicesInMeasure(
+  doc: Document,
+  measureIndex: number,
+  staff = 0,
+): number[] {
+  const measureEl = measuresOf(doc)[measureIndex];
+  if (!measureEl) {
+    return [];
+  }
+  const { divisions } = measureMetrics(doc);
+  const voices = new Set<number>();
+  for (const note of readRealNotes(measureEl, divisions)) {
+    if (staff === 0 || staffOf(note.element) === staff) {
+      voices.add(note.voice);
+    }
+  }
+  return [...voices].sort((a, b) => a - b);
+}
+
+// Reassign notes (a whole chord, or a single chord member) to a different voice
+// within the same staff, then rebuild the measure so the voice's stream is
+// re-grouped and its rests refilled. A landing that shares an onset with a note
+// already in the target voice merges into a chord; the move is refused (returns
+// null) when it would instead make two notes *overlap* within the target voice
+// (one starting partway through another) — genuinely broken polyphony, the same
+// rule `shiftNotesInTime` enforces for a blocked left shift. Returns the moved
+// notes' fresh handles, or null on refusal or a bad handle.
+export function setNotesVoice(
+  doc: Document,
+  handles: NoteHandle[],
+  targetVoice: number,
+): NoteHandle[] | null {
+  const measureIndex = handles[0]?.measureIndex;
+  if (measureIndex === undefined) {
+    return null;
+  }
+  const measureEl = measuresOf(doc)[measureIndex];
+  if (!measureEl) {
+    return null;
+  }
+  const targets = handles
+    .map((handle) => elementForHandle(doc, handle))
+    .filter((element): element is Element => element !== null);
+  if (targets.length === 0) {
+    return null;
+  }
+  const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+  const measureLength =
+    measureContentDivisions(measureEl) || divisionsPerMeasure;
+  const sc = staffCountOf(doc);
+  const notes = readRealNotes(measureEl, divisions);
+  const targetSet = new Set(targets);
+  const moving = notes.filter((note) => targetSet.has(note.element));
+  if (
+    moving.length === 0 ||
+    moving.some((note) => note.voice === targetVoice)
+  ) {
+    // Nothing to do (bad handles, or already in the target voice).
+    return moving.length === 0 ? null : handles;
+  }
+  const staff = sc > 1 ? staffOf(moving[0].element) : 0;
+
+  // The time spans the moving notes will occupy in the target voice.
+  const movingSpans = moving.map((note) => ({
+    start: note.onsetDivisions,
+    end: note.onsetDivisions + note.durationDivisions,
+  }));
+  // A conflict is a target-voice note (not itself moving) whose span overlaps a
+  // moving span at a *different* onset — same-onset stacking is a legal chord.
+  const conflict = notes.some((note) => {
+    if (
+      note.voice !== targetVoice ||
+      (staff !== 0 && staffOf(note.element) !== staff) ||
+      targetSet.has(note.element)
+    ) {
+      return false;
+    }
+    const start = note.onsetDivisions;
+    const end = start + note.durationDivisions;
+    return movingSpans.some(
+      (span) => start < span.end && span.start < end && start !== span.start,
+    );
+  });
+  if (conflict) {
+    return null;
+  }
+
+  for (const note of moving) {
+    setVoiceOnElement(doc, note.element, targetVoice);
+    note.voice = targetVoice;
+  }
+  writeMeasure(doc, measureEl, notes, measureLength, divisions, sc);
+  const rebuilt = measuresOf(doc);
+  return targets.map((element) => handleFor(rebuilt, measureIndex, element));
 }
 
 // The largest standard duration (in quarter-note beats) that setNoteDuration

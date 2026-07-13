@@ -25,8 +25,10 @@ import {
   setAccidental,
   setChordMemberDuration,
   setNoteDuration,
+  setNotesVoice,
   shiftNotesInTime,
   toggleTie,
+  voicesInMeasure,
 } from "./dom-edit";
 import {
   type ChordGroup,
@@ -2141,5 +2143,114 @@ describe("redistributeStaves", () => {
     const badHandle: NoteHandle = { measureIndex: 0, noteElementIndex: 5 };
     const result = redistributeStaves(doc, 60, [badHandle]);
     expect(result?.trackedHandles).toEqual([null]);
+  });
+});
+
+describe("voices", () => {
+  // Two notes at the same onset in one bar, added as one chord (both voice 1).
+  function docWithChord(): { doc: Document; handles: NoteHandle[] } {
+    const doc = createBlankDocument();
+    const low = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 4,
+      pitch: { step: "E", alter: 0, octave: 4 },
+    }) as NoteHandle;
+    const high = addNoteToChord(doc, low, {
+      step: "G",
+      alter: 0,
+      octave: 4,
+    }) as NoteHandle;
+    return { doc, handles: [low, high] };
+  }
+
+  test("addNote into voice 2 fits against that voice only, leaving voice 1 whole", () => {
+    const { doc } = docWithChord(); // voice 1: whole-note E4+G4 chord (4 beats)
+    // Add a quarter note into voice 2 at beat 0. Its duration must NOT be
+    // clamped by voice 1's whole note — the voices sound at once.
+    const added = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 4 },
+      voice: 2,
+    });
+    expect(added).not.toBeNull();
+    const measure = reparse(doc).parts[0].measures[0];
+    expect(measure.voices.length).toBe(2);
+    // Voice 1 still holds its 4-beat whole note; voice 2 opens with a quarter.
+    const v1 = measure.voices[0].events[0] as ChordGroup;
+    expect(v1.duration).toBe(16);
+    const v2 = measure.voices[1].events[0] as ChordGroup;
+    expect(v2.duration).toBe(4);
+    expect(v2.notes[0].pitch.step).toBe("C");
+  });
+
+  test("setNotesVoice moves a chord member to a new voice", () => {
+    const { doc, handles } = docWithChord();
+    // Move just the top note (G4) to voice 2; E4 stays in voice 1.
+    const moved = setNotesVoice(doc, [handles[1]], 2);
+    expect(moved).not.toBeNull();
+    expect(voicesInMeasure(doc, 0)).toEqual([1, 2]);
+    const measure = reparse(doc).parts[0].measures[0];
+    expect(measure.voices.length).toBe(2);
+    const v1Pitches = (measure.voices[0].events[0] as ChordGroup).notes.map(
+      (n) => n.pitch.step,
+    );
+    const v2Pitches = (measure.voices[1].events[0] as ChordGroup).notes.map(
+      (n) => n.pitch.step,
+    );
+    expect(v1Pitches).toEqual(["E"]);
+    expect(v2Pitches).toEqual(["G"]);
+  });
+
+  test("setNotesVoice refuses a move that would overlap a note in the target voice", () => {
+    const doc = createBlankDocument();
+    // Voice 1: a whole note spanning the whole bar.
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 4,
+      pitch: { step: "E", alter: 0, octave: 4 },
+    });
+    // Voice 2: a quarter note at beat 1 (mid-bar).
+    const inner = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 4 },
+      voice: 2,
+    }) as NoteHandle;
+    const before = serializeDocument(doc);
+    // Moving the voice-2 quarter (onset beat 1) back into voice 1 would land it
+    // partway through voice 1's whole note — an overlap, not a chord. Refused.
+    expect(setNotesVoice(doc, [inner], 1)).toBeNull();
+    expect(serializeDocument(doc)).toBe(before);
+  });
+
+  test("shiftNotesInTime moves only the anchor's voice", () => {
+    const doc = createBlankDocument();
+    // Voice 1: whole note (holds the whole bar).
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 4,
+      pitch: { step: "E", alter: 0, octave: 4 },
+    });
+    // Voice 2: a quarter note at beat 0.
+    const inner = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 4 },
+      voice: 2,
+    }) as NoteHandle;
+    // Shift the voice-2 quarter right by one beat; voice 1 must not move.
+    expect(shiftNotesInTime(doc, inner, 1)).not.toBeNull();
+    const measure = reparse(doc).parts[0].measures[0];
+    // Voice 1 whole note still starts at beat 0.
+    expect((measure.voices[0].events[0] as ChordGroup).duration).toBe(16);
+    // Voice 2 now opens with a rest (the quarter moved to beat 1).
+    expect(isRest(measure.voices[1].events[0])).toBe(true);
   });
 });

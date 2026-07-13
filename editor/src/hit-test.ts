@@ -682,29 +682,39 @@ function pickableSlots(score: ParsedScore): SlotInfo[] {
 
 // Every slot in onset order — drives ←/→ navigation, including rests and empty
 // measures (not just note onsets). Pass `partIndex` to walk one staff of a grand
-// staff (so ←/→ stays on the staff the user is editing).
-export function slots(score: ParsedScore, partIndex?: number): SlotInfo[] {
-  const all = pickableSlots(score);
-  return partIndex === undefined
-    ? all
-    : all.filter((slot) => slot.partIndex === partIndex);
+// staff (so ←/→ stays on the staff the user is editing), and `voiceIndex` to
+// restrict further to one voice on that staff.
+export function slots(
+  score: ParsedScore,
+  partIndex?: number,
+  voiceIndex?: number,
+): SlotInfo[] {
+  return pickableSlots(score).filter(
+    (slot) =>
+      (partIndex === undefined || slot.partIndex === partIndex) &&
+      (voiceIndex === undefined || slot.voiceIndex === voiceIndex),
+  );
 }
 
 // Re-resolve a selected slot (a position) to fresh data after an edit. Matched
 // by measure + onset beat so it survives rebuilds — including rests, which carry
 // no handle. `partIndex` disambiguates the two staves of a grand staff (without
 // it, the first matching staff wins — back-compatible for single-staff scores).
+// `voiceIndex` further disambiguates two voices sharing a staff at one onset
+// (without it, the first/primary voice wins — back-compatible for single-voice).
 export function slotAt(
   score: ParsedScore,
   measureIndex: number,
   onsetBeat: number,
   partIndex?: number,
+  voiceIndex?: number,
 ): SlotInfo | null {
   for (const slot of pickableSlots(score)) {
     if (
       slot.measureIndex === measureIndex &&
       Math.abs(slot.onsetBeat - onsetBeat) < 1e-6 &&
-      (partIndex === undefined || slot.partIndex === partIndex)
+      (partIndex === undefined || slot.partIndex === partIndex) &&
+      (voiceIndex === undefined || slot.voiceIndex === voiceIndex)
     ) {
       return slot;
     }
