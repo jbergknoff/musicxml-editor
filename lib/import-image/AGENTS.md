@@ -215,11 +215,14 @@ Phase 3 transcription + MusicXML assembly:
   moving line from the chord onset by its own note values (undoing the over-long
   bar the flattened stream would otherwise produce). It is conservative — an
   equal-duration chord never triggers it — so monophonic/plain-chord staves are
-  untouched (dormant on the integration fixtures). **Currently wired into the
-  single-staff `buildMusicXML` path only**; the grand-staff emitter
-  (`grandStaffMeasureXml`) still emits one voice per staff, so extending
-  sub-voice inference there (and re-curating the ratchet baselines it would
-  change) is a follow-up.
+  untouched. Wired into **both** the single-staff `buildMusicXML` path and the
+  grand-staff `buildScore` path: `emitVoiceGroups`/`staffVoiceGroups` emit a
+  staff's inferred voices as `<backup>`-separated runs, numbering a split-off
+  voice `staffCount + staffNumber` so voice numbers stay part-unique. A staff
+  that doesn't split is byte-identical to the pre-inference emission (so most
+  fixtures are unchanged); `mozart-piano-sonata` does split — its screenshot
+  baseline shows the two-voice engraving, and its note-level diff is unaffected
+  (the diff compares simultaneous notes as an unordered per-onset set).
 - `lib/assembly/meter.ts` — `inferMeterFromStaves(staffNotes)` derives a meter
   from recovered note durations (the modal per-measure total), used by
   `buildScore` as the time-signature fallback (see above). Pure and unit-tested

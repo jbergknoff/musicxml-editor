@@ -231,6 +231,56 @@ describe("buildScore — grand staff", () => {
     const bassBlock = xml.slice(xml.indexOf("<octave>3</octave>") - 40);
     expect(bassBlock.split("</note>")[0]).not.toContain("<tie ");
   });
+
+  it("splits one staff's unequal-duration chord into two voices, part-unique", () => {
+    // Treble holds an E5+G5 whole chord over a moving C5 D5 E5 F5 line (TrOMR's
+    // flattened form); the bass is a plain single-voice quarter run.
+    const heldWhole = (pitch: string, extra: Partial<NoteEvent> = {}): NoteEvent =>
+      note(pitch, 0, { duration: "whole", ...extra });
+    const xml = buildScore([
+      system(
+        staff(
+          [
+            heldWhole("E5"),
+            heldWhole("G5", { chord: true }),
+            note("C5", 0, { chord: true }),
+            note("D5", 0),
+            note("E5", 0),
+            note("F5", 0),
+          ],
+          TREBLE,
+        ),
+        staff([note("C3"), note("E3", 0), note("G3", 0)], BASS),
+      ),
+    ]);
+    const measure = xml.slice(
+      xml.indexOf('measure number="1"'),
+      xml.indexOf("</measure>"),
+    );
+    // Treble's split-off voice is part-unique (staffCount 2 + staff 1 = voice 3);
+    // bass keeps voice 2. All three voices are present on their own staves.
+    expect(measure).toContain("<voice>1</voice>"); // treble moving line
+    expect(measure).toContain("<voice>3</voice>"); // treble held chord
+    expect(measure).toContain("<voice>2</voice>"); // bass
+    // The held whole-note chord stays on staff 1 (not moved to a new staff).
+    const heldBlock = measure.slice(measure.indexOf("<voice>3</voice>") - 200);
+    expect(heldBlock).toContain("<staff>1</staff>");
+    // Two backups: one within the treble (between its voices), one to the bass.
+    expect((measure.match(/<backup>/g) ?? []).length).toBe(2);
+  });
+
+  it("leaves a plain grand staff byte-identical (no voice split)", () => {
+    // A grand staff with only equal-duration content must be unchanged by the
+    // voice-inference pass: staff 1 = voice 1, staff 2 = voice 2, one backup.
+    const xml = buildScore([
+      system(
+        staff([note("C5"), note("E5", 0, { chord: true })], TREBLE),
+        staff([note("C3")], BASS),
+      ),
+    ]);
+    expect(xml).not.toContain("<voice>3</voice>");
+    expect((xml.match(/<backup>/g) ?? []).length).toBe(1);
+  });
 });
 
 describe("buildScore — three-stave piano", () => {
