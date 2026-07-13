@@ -67,6 +67,83 @@ describe("buildScore — single staff", () => {
   });
 });
 
+describe("buildScore — voice inference", () => {
+  // A whole note stacked with a quarter is TrOMR's flattened two-voice chord.
+  function held(pitch: string, extra: Partial<NoteEvent> = {}): NoteEvent {
+    return note(pitch, 0, { duration: "whole", ...extra });
+  }
+
+  it("splits an unequal-duration chord into two <backup>-separated voices", () => {
+    const xml = buildScore([
+      system(
+        staff(
+          [
+            held("E4"),
+            held("G4", { chord: true }),
+            note("C4", 0, { chord: true }),
+            note("D4", 0),
+            note("E4", 0),
+            note("F4", 0),
+          ],
+          TREBLE,
+        ),
+      ),
+    ]);
+    // Two voices with a backup between them, all on one staff (no <staff>).
+    expect(xml).toContain("<voice>1</voice>");
+    expect(xml).toContain("<voice>2</voice>");
+    expect(xml).toContain("<backup>");
+    expect(xml).not.toContain("<staff>");
+    // The held chord (voice 2) keeps its whole notes; the moving line (voice 1)
+    // is four quarters re-timed from the chord onset.
+    expect((xml.match(/<type>whole<\/type>/g) ?? []).length).toBe(2);
+    expect((xml.match(/<type>quarter<\/type>/g) ?? []).length).toBe(4);
+  });
+
+  it("leaves an equal-duration chord single-voice (no backup)", () => {
+    const xml = buildScore([
+      system(
+        staff(
+          [note("C4"), note("E4", 0, { chord: true }), note("G4", 0, { chord: true })],
+          TREBLE,
+        ),
+      ),
+    ]);
+    expect(xml).not.toContain("<backup>");
+    expect(xml).not.toContain("<voice>");
+  });
+
+  it("reports note-element indices in document order across both voices", () => {
+    const emitted: Array<[string, number]> = [];
+    buildScore(
+      [
+        system(
+          staff(
+            [
+              held("E4"),
+              note("C4", 0, { chord: true }),
+              note("D4", 0),
+            ],
+            TREBLE,
+          ),
+        ),
+      ],
+      {
+        onNoteEmitted: (note, _measureIndex, noteElementIndex) => {
+          emitted.push([note.pitch, noteElementIndex]);
+        },
+      },
+    );
+    // Voice 1 (C4, D4) is emitted first (indices 0, 1), then voice 2 (E4) after
+    // the backup (index 2) — matching the editor's document-order handles.
+    expect(emitted).toEqual([
+      ["C4", 0],
+      ["D4", 1],
+      ["E4", 2],
+    ]);
+  });
+});
+
 describe("buildScore — grand staff", () => {
   it("emits one part with two staves, a clef per staff", () => {
     const xml = buildScore([

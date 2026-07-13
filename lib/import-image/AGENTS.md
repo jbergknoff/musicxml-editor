@@ -205,6 +205,21 @@ Phase 3 transcription + MusicXML assembly:
   (6/8 reads as 3/4, since beaming is not in TrOMR's tokens). The inference is
   confined to `buildScore`; low-level `buildMusicXML` keeps its plain 4/4 default
   for direct/test use.
+  **Voice inference:** TrOMR flattens a staff's voices into one stream, so a
+  sustained chord over a moving inner line comes back as a single `<chord/>` with
+  **unequal-duration members** (a held whole-note pair stacked with the quarter
+  that starts the moving line). `lib/assembly/infer-voices.ts`
+  (`inferVoices`) detects that signal per measure and splits it: the longest
+  member(s) become voice 2 (held), everything else voice 1 (moving). The builder
+  then emits each voice as its own `<backup>`-separated run, which *re-times* the
+  moving line from the chord onset by its own note values (undoing the over-long
+  bar the flattened stream would otherwise produce). It is conservative — an
+  equal-duration chord never triggers it — so monophonic/plain-chord staves are
+  untouched (dormant on the integration fixtures). **Currently wired into the
+  single-staff `buildMusicXML` path only**; the grand-staff emitter
+  (`grandStaffMeasureXml`) still emits one voice per staff, so extending
+  sub-voice inference there (and re-curating the ratchet baselines it would
+  change) is a follow-up.
 - `lib/assembly/meter.ts` — `inferMeterFromStaves(staffNotes)` derives a meter
   from recovered note durations (the modal per-measure total), used by
   `buildScore` as the time-signature fallback (see above). Pure and unit-tested

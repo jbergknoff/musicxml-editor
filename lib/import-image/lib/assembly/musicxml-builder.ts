@@ -17,6 +17,7 @@ import type {
 import { type BeamElement, computeBeams } from "./beams";
 import { combineBarlines, combinePages } from "./combine-pages";
 import { DIVISIONS, DURATION_DIVISIONS, noteDivisions } from "./durations";
+import { columnIndices, inferVoices } from "./infer-voices";
 import { inferMeterFromStaves } from "./meter";
 
 const MUSICXML_TYPE: Record<NoteEvent["duration"], string> = {
@@ -104,20 +105,25 @@ function pairTies(notes: NoteEvent[]): void {
 
 /**
  * One `<note>`. When `staffNumber` is given (multi-staff parts), the note also
- * carries `<voice>` and `<staff>`; without it the output is the single-staff,
- * single-voice form. Beams render only at the chosen level(s).
+ * carries `<staff>`; without it the output is the single-staff form. `<voice>`
+ * is emitted whenever a voice is in effect — either `voiceNumber` (an explicit
+ * voice on a single staff, from voice inference) or, absent that, `staffNumber`
+ * (one voice per staff on a grand staff). Beams render only at the chosen
+ * level(s).
  */
 function noteXml(
   note: NoteEvent,
   beams: BeamElement[],
   staffNumber?: number,
+  voiceNumber?: number,
 ): string {
   const divisions = DURATION_DIVISIONS[note.duration];
   const dottedDivisions = note.dotted ? Math.round(divisions * 1.5) : divisions;
   const type = MUSICXML_TYPE[note.duration];
-  // One voice per staff keeps the two hands' rhythms independent.
-  const voiceLine =
-    staffNumber !== undefined ? `  <voice>${staffNumber}</voice>` : "";
+  // Explicit voice (inference) wins; otherwise a grand staff uses one voice per
+  // staff to keep the two hands' rhythms independent.
+  const voice = voiceNumber ?? staffNumber;
+  const voiceLine = voice !== undefined ? `  <voice>${voice}</voice>` : "";
   const staffLine =
     staffNumber !== undefined ? `  <staff>${staffNumber}</staff>` : "";
   // A grace note carries `<grace/>` (before `<chord/>`) and, per the MusicXML
@@ -256,6 +262,67 @@ function wrapMeasure(measureNumber: number, children: string[]): string {
   return `  <measure number="${measureNumber}">\n${indent}\n  </measure>`;
 }
 
+// Emit a measure that voice inference split into two voices: voice 1's run, a
+// <backup>, then voice 2's run. Each note carries <voice> (no <staff> — this is
+// a single-staff part). `<chord/>` flags are recomputed *within* each voice (a
+// chord split across voices must re-lead in each), keyed by the note's original
+// rhythmic column, and note-element indices run in document order across both
+// groups so the review map stays aligned. Because each voice's run is emitted
+// independently, the moving voice is re-timed from the chord's onset by its own
+// note values — undoing TrOMR's over-long flattened bar.
+function polyphonicMeasureXml(
+  notes: NoteEvent[],
+  beats: number,
+  beatType: number,
+  onNoteEmitted?: NoteEmittedSink,
+): string[] {
+  const children: string[] = [];
+  const columns = columnIndices(notes);
+  const voiceNumbers = [
+    ...new Set(notes.map((note) => note.voice ?? 1)),
+  ].sort((a, b) => a - b);
+
+  let noteElementIndex = 0;
+  let previousDuration = 0;
+  let firstGroup = true;
+  for (const voiceNumber of voiceNumbers) {
+    const indices = notes
+      .map((note, index) => ({ note, index }))
+      .filter(({ note }) => (note.voice ?? 1) === voiceNumber);
+    if (indices.length === 0) {
+      continue;
+    }
+    if (!firstGroup && previousDuration > 0) {
+      children.push(backupXml(previousDuration));
+    }
+    firstGroup = false;
+    // This voice's notes with chord flags recomputed: a note is a chord tail
+    // only when the previous note in this same voice shares its column.
+    let lastColumn: number | null = null;
+    const groupNotes = indices.map(({ note, index }) => {
+      const isChord = lastColumn !== null && columns[index] === lastColumn;
+      lastColumn = columns[index];
+      return { ...note, chord: isChord };
+    });
+    const beams = computeBeams(groupNotes, beats, beatType);
+    let duration = 0;
+    for (let g = 0; g < groupNotes.length; g++) {
+      const note = groupNotes[g];
+      if (note.attributeChange !== undefined) {
+        children.push(attributeChangeXml(note.attributeChange));
+      }
+      onNoteEmitted?.(note, noteElementIndex);
+      noteElementIndex++;
+      children.push(noteXml(note, beams.get(g) ?? [], undefined, voiceNumber));
+      if (!note.chord && !note.grace) {
+        duration += noteDivisions(note);
+      }
+    }
+    previousDuration = duration;
+  }
+  return children;
+}
+
 /** `<barline>` XML for a measure's left (repeat forward) edge, if any. */
 function leftBarlineXml(barline: RepeatBarline | undefined): string | null {
   if (!barline?.repeatStart) {
@@ -306,6 +373,18 @@ function measureXml(
       "  <type>whole</type>",
       "</note>",
     );
+  } else if (notes.some((note) => (note.voice ?? 1) > 1)) {
+    // Voice inference split this measure into two voices: emit voice 1, a
+    // <backup>, then voice 2. Document-order note-element indices run across
+    // both groups (the backup is not a <note>).
+    for (const line of polyphonicMeasureXml(
+      notes,
+      beats,
+      beatType,
+      onNoteEmitted,
+    )) {
+      children.push(line);
+    }
   } else {
     const beams = computeBeams(notes, beats, beatType);
     for (let index = 0; index < notes.length; index++) {
@@ -623,6 +702,10 @@ export function buildScore(
     // 0) and reuse the single-staff builder unchanged.
     const staffStreams = systems.map((system) => system.staves[0]?.notes ?? []);
     const notes = combinePages(staffStreams);
+    // Recover voices TrOMR flattened: a chord member that sustains past the next
+    // onset marks a held voice over a moving line (see inferVoices). No-op on
+    // plain monophonic/chordal staves, so the output is otherwise unchanged.
+    inferVoices(notes);
     const barlines = combineBarlines(
       systems.map((system) => ({
         notes: system.staves[0]?.notes ?? [],
