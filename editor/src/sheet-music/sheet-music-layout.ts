@@ -256,9 +256,13 @@ function measureLeadIn(
     !isFirst && measures.some((m) => m.clefChange)
       ? clefChangeWidth(staffSpace)
       : 0;
+  // The left pad is the max any voice on any staff needs: the first event of a
+  // voice may carry grace notes or accidentals that must clear the barline.
   const leftPad = measures.length
     ? Math.max(
-        ...measures.map((m) => measureLeftPad(m.events, isFirst, staffSpace)),
+        ...measures.flatMap((m) =>
+          m.voices.map((v) => measureLeftPad(v.events, isFirst, staffSpace)),
+        ),
       )
     : MEASURE_PADDING_LEFT;
   return hdrW + keyChangeW + clefChangeW + leftPad;
@@ -289,32 +293,38 @@ export function buildMeasureSpine(
   }> = [];
   let contentEnd = 0; // last division any part's notes actually reach
   for (const measure of measures) {
-    let pos = 0;
-    let runningClef = measure.clef;
-    for (const event of measure.events) {
-      const chord = isRest(event) ? null : (event as ChordGroup);
-      let clefAdv = 0;
-      const chordClef = chord?.clef ?? measure.clef;
-      if (
-        chord &&
-        chordClef &&
-        (chordClef.sign !== runningClef?.sign ||
-          chordClef.line !== runningClef?.line)
-      ) {
-        clefAdv = staffSpace * MID_CLEF_ADVANCE_FACTOR;
-        runningClef = chordClef;
+    // Every voice on the staff resets to the measure start; their onsets union
+    // into the shared spine so simultaneous notes across voices stack in one
+    // column (a sustained voice's whole note and a moving voice's quarter that
+    // both begin at beat 1 share an x).
+    for (const voice of measure.voices) {
+      let pos = 0;
+      let runningClef = measure.clef;
+      for (const event of voice.events) {
+        const chord = isRest(event) ? null : (event as ChordGroup);
+        let clefAdv = 0;
+        const chordClef = chord?.clef ?? measure.clef;
+        if (
+          chord &&
+          chordClef &&
+          (chordClef.sign !== runningClef?.sign ||
+            chordClef.line !== runningClef?.line)
+        ) {
+          clefAdv = staffSpace * MID_CLEF_ADVANCE_FACTOR;
+          runningClef = chordClef;
+        }
+        rawOnsets.push({
+          pos,
+          acc: chord ? accidentalAdvance(chord.notes, staffSpace) : 0,
+          graceAdv: chord
+            ? (chord.gracesBefore?.length ?? 0) * GRACE_NOTE_ADVANCE
+            : 0,
+          clefAdv,
+        });
+        pos += isRest(event) ? event.duration : (event as ChordGroup).duration;
       }
-      rawOnsets.push({
-        pos,
-        acc: chord ? accidentalAdvance(chord.notes, staffSpace) : 0,
-        graceAdv: chord
-          ? (chord.gracesBefore?.length ?? 0) * GRACE_NOTE_ADVANCE
-          : 0,
-        clefAdv,
-      });
-      pos += isRest(event) ? event.duration : (event as ChordGroup).duration;
+      contentEnd = Math.max(contentEnd, pos);
     }
-    contentEnd = Math.max(contentEnd, pos);
   }
 
   // Collapse onsets from different staves that land on the same musical position
@@ -509,7 +519,14 @@ export function noteY(
 export function stemDirection(
   group: ChordGroup,
   clef: { sign: "G" | "F" },
+  // On a polyphonic staff each voice takes a fixed stem direction (voice 0 up,
+  // voice 1 down) so the two lines read apart, overriding the pitch rule. Omit
+  // on a single-voice staff to use the pitch-based default.
+  forced?: "up" | "down",
 ): "up" | "down" {
+  if (forced) {
+    return forced;
+  }
   const middleRef = clef.sign === "G" ? TREBLE_MIDDLE : BASS_MIDDLE;
   let farthestSteps = 0;
   for (const note of group.notes) {
@@ -519,6 +536,21 @@ export function stemDirection(
     }
   }
   return farthestSteps <= 0 ? "up" : "down";
+}
+
+// The fixed stem direction for a voice on a polyphonic staff, or undefined when
+// the staff has a single voice (pitch rule applies). Voice 0 stems up, every
+// other voice down — the standard two-voice convention (a third+ voice is rare
+// and also stems down here). Shared by the renderer's chord and beam paths so a
+// beamed run and a lone note in the same voice agree.
+export function voiceStemDirection(
+  voiceIndex: number,
+  voiceCount: number,
+): "up" | "down" | undefined {
+  if (voiceCount <= 1) {
+    return undefined;
+  }
+  return voiceIndex === 0 ? "up" : "down";
 }
 
 export function ledgerLineYs(
@@ -653,7 +685,13 @@ export function groupBeamableEvents(
 export function beamStemDirection(
   groups: ChordGroup[],
   clefForIndex: (index: number) => { sign: "G" | "F" },
+  // A polyphonic staff's voice forces the whole beam's direction (see
+  // `voiceStemDirection`); omit on a single-voice staff for the pitch rule.
+  forced?: "up" | "down",
 ): "up" | "down" {
+  if (forced) {
+    return forced;
+  }
   let farthestSteps = 0;
   groups.forEach((group, groupIndex) => {
     const middleRef =

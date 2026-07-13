@@ -51,6 +51,10 @@ export interface InspectorGraceRow {
 /** One staff's notes within the selected beat, with its staff label and duration. */
 export interface InspectorNoteGroup {
   partIndex: number;
+  /** 0-based voice ordinal on the staff. Shown as a "Voice N" badge only when
+   *  > 0 (a note split onto a secondary voice), so single-voice music is
+   *  unadorned. */
+  voiceIndex: number;
   /** "Treble" / "Bass" for grand staff; "" for a single staff. */
   label: string;
   /** Note-value name for this staff's slot, e.g. "quarter". */
@@ -566,9 +570,12 @@ function NoteGroupSection({
    *  this flat note index. */
   onAddGrace: (noteIndex: number) => void;
 }) {
+  // A polyphonic staff shows a "Voice N" badge even without a Treble/Bass label
+  // (single-staff two-voice music), so the header appears whenever it would.
+  const showHeader = showLabel || group.voiceIndex > 0;
   return (
-    <div style={{ marginBottom: showLabel ? 12 : 0 }}>
-      {showLabel && (
+    <div style={{ marginBottom: showHeader ? 12 : 0 }}>
+      {showHeader && (
         <div
           style={{
             display: "flex",
@@ -586,9 +593,17 @@ function NoteGroupSection({
               letterSpacing: ".06em",
               textTransform: "uppercase",
               color: COLORS.textFaint,
+              display: "flex",
+              gap: 6,
+              alignItems: "baseline",
             }}
           >
             {group.label}
+            {group.voiceIndex > 0 && (
+              <span style={{ color: COLORS.accent }}>
+                Voice {group.voiceIndex + 1}
+              </span>
+            )}
           </span>
           <span
             style={{

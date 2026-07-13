@@ -17,6 +17,7 @@ import type {
 import { type BeamElement, computeBeams } from "./beams";
 import { combineBarlines, combinePages } from "./combine-pages";
 import { DIVISIONS, DURATION_DIVISIONS, noteDivisions } from "./durations";
+import { columnIndices, inferVoices } from "./infer-voices";
 import { inferMeterFromStaves } from "./meter";
 
 const MUSICXML_TYPE: Record<NoteEvent["duration"], string> = {
@@ -104,20 +105,25 @@ function pairTies(notes: NoteEvent[]): void {
 
 /**
  * One `<note>`. When `staffNumber` is given (multi-staff parts), the note also
- * carries `<voice>` and `<staff>`; without it the output is the single-staff,
- * single-voice form. Beams render only at the chosen level(s).
+ * carries `<staff>`; without it the output is the single-staff form. `<voice>`
+ * is emitted whenever a voice is in effect — either `voiceNumber` (an explicit
+ * voice on a single staff, from voice inference) or, absent that, `staffNumber`
+ * (one voice per staff on a grand staff). Beams render only at the chosen
+ * level(s).
  */
 function noteXml(
   note: NoteEvent,
   beams: BeamElement[],
   staffNumber?: number,
+  voiceNumber?: number,
 ): string {
   const divisions = DURATION_DIVISIONS[note.duration];
   const dottedDivisions = note.dotted ? Math.round(divisions * 1.5) : divisions;
   const type = MUSICXML_TYPE[note.duration];
-  // One voice per staff keeps the two hands' rhythms independent.
-  const voiceLine =
-    staffNumber !== undefined ? `  <voice>${staffNumber}</voice>` : "";
+  // Explicit voice (inference) wins; otherwise a grand staff uses one voice per
+  // staff to keep the two hands' rhythms independent.
+  const voice = voiceNumber ?? staffNumber;
+  const voiceLine = voice !== undefined ? `  <voice>${voice}</voice>` : "";
   const staffLine =
     staffNumber !== undefined ? `  <staff>${staffNumber}</staff>` : "";
   // A grace note carries `<grace/>` (before `<chord/>`) and, per the MusicXML
@@ -256,6 +262,136 @@ function wrapMeasure(measureNumber: number, children: string[]): string {
   return `  <measure number="${measureNumber}">\n${indent}\n  </measure>`;
 }
 
+// One `<backup>`-separated run within a measure: a voice's notes on a staff.
+// `staffNumber` is omitted on a single-staff part (no `<staff>` emitted).
+// `measureRestLength`, when set, makes the group a single whole-measure rest
+// (an empty staff) instead of a note run.
+interface VoiceGroup {
+  staffNumber?: number;
+  voiceNumber: number;
+  notes: NoteEvent[];
+  measureRestLength?: number;
+}
+
+// A voice's notes (a subset of a measure's stream, by index) with `<chord/>`
+// flags recomputed against their original rhythmic columns: a note is a chord
+// tail only when the previous note *in this voice* shares its column. This
+// re-leads a chord that voice inference split across voices.
+function reflagVoiceGroup(
+  indices: number[],
+  columns: number[],
+  notes: NoteEvent[],
+): NoteEvent[] {
+  let lastColumn: number | null = null;
+  return indices.map((index) => {
+    const isChord = lastColumn !== null && columns[index] === lastColumn;
+    lastColumn = columns[index];
+    return { ...notes[index], chord: isChord };
+  });
+}
+
+// Emit an ordered list of voice groups into a measure's children: each group's
+// run, separated from the next by a `<backup>` that rewinds to the measure
+// start (by the previous group's written duration). Note-element indices run in
+// document order across every group so the review map stays aligned. Because
+// each group is emitted independently, a split voice is re-timed from the shared
+// onset by its own note values — undoing TrOMR's over-long flattened bar.
+function emitVoiceGroups(
+  groups: VoiceGroup[],
+  beats: number,
+  beatType: number,
+  onNoteEmitted?: NoteEmittedSink,
+): string[] {
+  const children: string[] = [];
+  let noteElementIndex = 0;
+  let previousDuration = 0;
+  for (let g = 0; g < groups.length; g++) {
+    const group = groups[g];
+    if (g > 0 && previousDuration > 0) {
+      children.push(backupXml(previousDuration));
+    }
+    if (group.measureRestLength !== undefined) {
+      children.push(
+        staffMeasureRestXml(group.voiceNumber, group.measureRestLength),
+      );
+      noteElementIndex++;
+      previousDuration = group.measureRestLength;
+      continue;
+    }
+    const beams = computeBeams(group.notes, beats, beatType);
+    let duration = 0;
+    for (let index = 0; index < group.notes.length; index++) {
+      const note = group.notes[index];
+      if (note.attributeChange !== undefined) {
+        children.push(
+          attributeChangeXml(note.attributeChange, group.staffNumber),
+        );
+      }
+      onNoteEmitted?.(note, noteElementIndex);
+      noteElementIndex++;
+      children.push(
+        noteXml(note, beams.get(index) ?? [], group.staffNumber, group.voiceNumber),
+      );
+      if (!note.chord && !note.grace) {
+        duration += noteDivisions(note);
+      }
+    }
+    previousDuration = duration;
+  }
+  return children;
+}
+
+// The voice groups for one staff's measure notes: one group when the staff is
+// single-voice (byte-identical to the pre-inference emission), or two — the
+// moving line then the held voice — when `inferVoices` split it. `primaryVoice`
+// numbers the staff's first voice; `secondaryVoice` numbers the split-off one
+// (part-unique). `staffNumber` is threaded onto every note (undefined on a
+// single-staff part).
+function staffVoiceGroups(
+  notes: NoteEvent[],
+  primaryVoice: number,
+  secondaryVoice: number,
+  staffNumber?: number,
+): VoiceGroup[] {
+  if (!notes.some((note) => (note.voice ?? 1) > 1)) {
+    return [{ staffNumber, voiceNumber: primaryVoice, notes }];
+  }
+  const columns = columnIndices(notes);
+  const indicesOf = (relativeVoice: number) =>
+    notes
+      .map((note, index) => ({ note, index }))
+      .filter(({ note }) => (note.voice ?? 1) === relativeVoice)
+      .map(({ index }) => index);
+  return [
+    {
+      staffNumber,
+      voiceNumber: primaryVoice,
+      notes: reflagVoiceGroup(indicesOf(1), columns, notes),
+    },
+    {
+      staffNumber,
+      voiceNumber: secondaryVoice,
+      notes: reflagVoiceGroup(indicesOf(2), columns, notes),
+    },
+  ];
+}
+
+// Emit a single-staff measure that voice inference split into two voices.
+function polyphonicMeasureXml(
+  notes: NoteEvent[],
+  beats: number,
+  beatType: number,
+  onNoteEmitted?: NoteEmittedSink,
+): string[] {
+  // Single-staff voices: primary is voice 1, the split-off held voice is voice 2.
+  return emitVoiceGroups(
+    staffVoiceGroups(notes, 1, 2),
+    beats,
+    beatType,
+    onNoteEmitted,
+  );
+}
+
 /** `<barline>` XML for a measure's left (repeat forward) edge, if any. */
 function leftBarlineXml(barline: RepeatBarline | undefined): string | null {
   if (!barline?.repeatStart) {
@@ -306,6 +442,18 @@ function measureXml(
       "  <type>whole</type>",
       "</note>",
     );
+  } else if (notes.some((note) => (note.voice ?? 1) > 1)) {
+    // Voice inference split this measure into two voices: emit voice 1, a
+    // <backup>, then voice 2. Document-order note-element indices run across
+    // both groups (the backup is not a <note>).
+    for (const line of polyphonicMeasureXml(
+      notes,
+      beats,
+      beatType,
+      onNoteEmitted,
+    )) {
+      children.push(line);
+    }
   } else {
     const beams = computeBeams(notes, beats, beatType);
     for (let index = 0; index < notes.length; index++) {
@@ -527,13 +675,18 @@ function staffMeasureRestXml(staffNumber: number, length: number): string {
   ].join("\n");
 }
 
-/** One measure of a multi-staff part: each staff's notes, separated by `<backup>`. */
+/** One measure of a multi-staff part: each staff's notes, separated by
+ *  `<backup>`. A staff that `inferVoices` split emits two `<backup>`-separated
+ *  voices (a moving line + a held voice), numbered so voice numbers stay unique
+ *  across the whole part: staff N's primary voice is N, its split-off voice is
+ *  `staffCount + N`. */
 function grandStaffMeasureXml(
   staffNotes: NoteEvent[][],
   measureNumber: number,
   openingAttributes: string | null,
   beats: number,
   beatType: number,
+  staffCount: number,
   barline?: RepeatBarline,
   onNoteEmitted?: NoteEmittedSink,
 ): string {
@@ -546,41 +699,34 @@ function grandStaffMeasureXml(
     children.push(left);
   }
   const length = measureLength(beats, beatType);
-  // Document-order index over ALL of the measure's `<note>` elements, across
-  // staves; a synthesized whole-measure rest is a `<note>` element too, so it
-  // advances the counter (but is not a recognized note, so it is not reported).
-  let noteElementIndex = 0;
-  let previousDuration = 0;
+  // Flatten every staff into an ordered list of voice groups: an empty staff is
+  // a single whole-measure rest; a single-voice staff is one group (byte-
+  // identical to the pre-inference emission); a split staff is its moving voice
+  // then its held voice.
+  const groups: VoiceGroup[] = [];
   for (let staffIndex = 0; staffIndex < staffNotes.length; staffIndex++) {
     const notes = staffNotes[staffIndex];
     const staffNumber = staffIndex + 1;
-    // Rewind to the measure start before laying down the next staff.
-    if (staffIndex > 0) {
-      children.push(backupXml(previousDuration));
-    }
     if (notes.length === 0) {
-      children.push(staffMeasureRestXml(staffNumber, length));
-      noteElementIndex++;
-      previousDuration = length;
+      groups.push({
+        staffNumber,
+        voiceNumber: staffNumber,
+        notes: [],
+        measureRestLength: length,
+      });
       continue;
     }
-    const beams = computeBeams(notes, beats, beatType);
-    let duration = 0;
-    for (let index = 0; index < notes.length; index++) {
-      const note = notes[index];
-      if (note.attributeChange !== undefined) {
-        children.push(attributeChangeXml(note.attributeChange, staffNumber));
-      }
-      onNoteEmitted?.(note, noteElementIndex);
-      noteElementIndex++;
-      children.push(noteXml(note, beams.get(index) ?? [], staffNumber));
-      // Chord tail notes share the previous note's slot; grace notes borrow time
-      // from a neighbor — neither advances the measure cursor.
-      if (!note.chord && !note.grace) {
-        duration += noteDivisions(note);
-      }
+    for (const group of staffVoiceGroups(
+      notes,
+      staffNumber,
+      staffCount + staffNumber,
+      staffNumber,
+    )) {
+      groups.push(group);
     }
-    previousDuration = duration;
+  }
+  for (const line of emitVoiceGroups(groups, beats, beatType, onNoteEmitted)) {
+    children.push(line);
   }
   const right = rightBarlineXml(barline);
   if (right !== null) {
@@ -623,6 +769,10 @@ export function buildScore(
     // 0) and reuse the single-staff builder unchanged.
     const staffStreams = systems.map((system) => system.staves[0]?.notes ?? []);
     const notes = combinePages(staffStreams);
+    // Recover voices TrOMR flattened: a chord member that sustains past the next
+    // onset marks a held voice over a moving line (see inferVoices). No-op on
+    // plain monophonic/chordal staves, so the output is otherwise unchanged.
+    inferVoices(notes);
     const barlines = combineBarlines(
       systems.map((system) => ({
         notes: system.staves[0]?.notes ?? [],
@@ -683,9 +833,15 @@ export function buildScore(
   ensureMeasure(0); // always at least one measure
 
   // Resolve TrOMR's slur spans into ties per staff, over each staff's whole
-  // (cross-measure) note stream — see pairTies.
+  // (cross-measure) note stream — see pairTies. Then recover voices TrOMR
+  // flattened within each staff (a held chord over a moving line — see
+  // inferVoices); dormant on a plain monophonic/chordal staff.
   for (let staffIndex = 0; staffIndex < staffCount; staffIndex++) {
-    pairTies(measureStaffNotes.flatMap((staffNotes) => staffNotes[staffIndex]));
+    const staffStream = measureStaffNotes.flatMap(
+      (staffNotes) => staffNotes[staffIndex],
+    );
+    pairTies(staffStream);
+    inferVoices(staffStream);
   }
 
   // Resolve the shared meter once: the top staff's recovered time signature, or
@@ -718,6 +874,7 @@ export function buildScore(
       index === 0 ? openingAttributes : null,
       beats,
       beatType,
+      staffCount,
       measureBarlines.get(index),
       onNoteEmitted === undefined
         ? undefined

@@ -8,13 +8,19 @@ import type { ParsedMeasure } from "./sheet-music-types";
 function measure(overrides: Partial<ParsedMeasure> = {}): ParsedMeasure {
   return {
     number: 1,
-    events: [
+    voices: [
       {
-        kind: "rest",
-        duration: 4,
-        type: "quarter",
-        dot: false,
-        fullMeasure: false,
+        voiceIndex: 0,
+        voiceNumber: 1,
+        events: [
+          {
+            kind: "rest",
+            duration: 4,
+            type: "quarter",
+            dot: false,
+            fullMeasure: false,
+          },
+        ],
       },
     ],
     divisions: 4,

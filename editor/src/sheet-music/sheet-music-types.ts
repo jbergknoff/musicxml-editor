@@ -90,9 +90,31 @@ export interface ChordGroup {
 
 export type MeasureEvent = ChordGroup | ParsedRest;
 
+/**
+ * One voice's onset-ordered event stream within a staff-measure. A voice is an
+ * independent rhythmic line: its `events` durations are the gaps between *its
+ * own* onsets (not flattened against other voices sharing the staff), so a
+ * sustained whole note in one voice and a moving quarter-note line in another
+ * are each rhythmically faithful. The overwhelmingly common single-voice
+ * measure has exactly one `VoiceStream`.
+ *
+ * `voiceIndex` is the 0-based ordinal within the staff (voice 0 renders with
+ * up-stems / normal ink, voice 1 with down-stems / a distinguishing tint — the
+ * standard two-voice engraving). `voiceNumber` is the source MusicXML `<voice>`
+ * number, carried so the editor can route an edit on this stream back to the
+ * right `<voice>` in the document.
+ */
+export interface VoiceStream {
+  voiceIndex: number;
+  voiceNumber: number;
+  events: MeasureEvent[];
+}
+
 export interface ParsedMeasure {
   number: number;
-  events: MeasureEvent[];
+  /** Independent rhythmic lines sharing this staff-measure, in voice order.
+   *  Single-voice measures carry one stream; see {@link VoiceStream}. */
+  voices: VoiceStream[];
   /** Divisions per quarter note in effect for this measure (carried forward
    *  from the last measure that declared one). Resolved by the parser. */
   divisions: number;

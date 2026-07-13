@@ -67,6 +67,83 @@ describe("buildScore — single staff", () => {
   });
 });
 
+describe("buildScore — voice inference", () => {
+  // A whole note stacked with a quarter is TrOMR's flattened two-voice chord.
+  function held(pitch: string, extra: Partial<NoteEvent> = {}): NoteEvent {
+    return note(pitch, 0, { duration: "whole", ...extra });
+  }
+
+  it("splits an unequal-duration chord into two <backup>-separated voices", () => {
+    const xml = buildScore([
+      system(
+        staff(
+          [
+            held("E4"),
+            held("G4", { chord: true }),
+            note("C4", 0, { chord: true }),
+            note("D4", 0),
+            note("E4", 0),
+            note("F4", 0),
+          ],
+          TREBLE,
+        ),
+      ),
+    ]);
+    // Two voices with a backup between them, all on one staff (no <staff>).
+    expect(xml).toContain("<voice>1</voice>");
+    expect(xml).toContain("<voice>2</voice>");
+    expect(xml).toContain("<backup>");
+    expect(xml).not.toContain("<staff>");
+    // The held chord (voice 2) keeps its whole notes; the moving line (voice 1)
+    // is four quarters re-timed from the chord onset.
+    expect((xml.match(/<type>whole<\/type>/g) ?? []).length).toBe(2);
+    expect((xml.match(/<type>quarter<\/type>/g) ?? []).length).toBe(4);
+  });
+
+  it("leaves an equal-duration chord single-voice (no backup)", () => {
+    const xml = buildScore([
+      system(
+        staff(
+          [note("C4"), note("E4", 0, { chord: true }), note("G4", 0, { chord: true })],
+          TREBLE,
+        ),
+      ),
+    ]);
+    expect(xml).not.toContain("<backup>");
+    expect(xml).not.toContain("<voice>");
+  });
+
+  it("reports note-element indices in document order across both voices", () => {
+    const emitted: Array<[string, number]> = [];
+    buildScore(
+      [
+        system(
+          staff(
+            [
+              held("E4"),
+              note("C4", 0, { chord: true }),
+              note("D4", 0),
+            ],
+            TREBLE,
+          ),
+        ),
+      ],
+      {
+        onNoteEmitted: (note, _measureIndex, noteElementIndex) => {
+          emitted.push([note.pitch, noteElementIndex]);
+        },
+      },
+    );
+    // Voice 1 (C4, D4) is emitted first (indices 0, 1), then voice 2 (E4) after
+    // the backup (index 2) — matching the editor's document-order handles.
+    expect(emitted).toEqual([
+      ["C4", 0],
+      ["D4", 1],
+      ["E4", 2],
+    ]);
+  });
+});
+
 describe("buildScore — grand staff", () => {
   it("emits one part with two staves, a clef per staff", () => {
     const xml = buildScore([
@@ -153,6 +230,56 @@ describe("buildScore — grand staff", () => {
     expect((xml.match(/<tie /g) ?? []).length).toBe(2);
     const bassBlock = xml.slice(xml.indexOf("<octave>3</octave>") - 40);
     expect(bassBlock.split("</note>")[0]).not.toContain("<tie ");
+  });
+
+  it("splits one staff's unequal-duration chord into two voices, part-unique", () => {
+    // Treble holds an E5+G5 whole chord over a moving C5 D5 E5 F5 line (TrOMR's
+    // flattened form); the bass is a plain single-voice quarter run.
+    const heldWhole = (pitch: string, extra: Partial<NoteEvent> = {}): NoteEvent =>
+      note(pitch, 0, { duration: "whole", ...extra });
+    const xml = buildScore([
+      system(
+        staff(
+          [
+            heldWhole("E5"),
+            heldWhole("G5", { chord: true }),
+            note("C5", 0, { chord: true }),
+            note("D5", 0),
+            note("E5", 0),
+            note("F5", 0),
+          ],
+          TREBLE,
+        ),
+        staff([note("C3"), note("E3", 0), note("G3", 0)], BASS),
+      ),
+    ]);
+    const measure = xml.slice(
+      xml.indexOf('measure number="1"'),
+      xml.indexOf("</measure>"),
+    );
+    // Treble's split-off voice is part-unique (staffCount 2 + staff 1 = voice 3);
+    // bass keeps voice 2. All three voices are present on their own staves.
+    expect(measure).toContain("<voice>1</voice>"); // treble moving line
+    expect(measure).toContain("<voice>3</voice>"); // treble held chord
+    expect(measure).toContain("<voice>2</voice>"); // bass
+    // The held whole-note chord stays on staff 1 (not moved to a new staff).
+    const heldBlock = measure.slice(measure.indexOf("<voice>3</voice>") - 200);
+    expect(heldBlock).toContain("<staff>1</staff>");
+    // Two backups: one within the treble (between its voices), one to the bass.
+    expect((measure.match(/<backup>/g) ?? []).length).toBe(2);
+  });
+
+  it("leaves a plain grand staff byte-identical (no voice split)", () => {
+    // A grand staff with only equal-duration content must be unchanged by the
+    // voice-inference pass: staff 1 = voice 1, staff 2 = voice 2, one backup.
+    const xml = buildScore([
+      system(
+        staff([note("C5"), note("E5", 0, { chord: true })], TREBLE),
+        staff([note("C3")], BASS),
+      ),
+    ]);
+    expect(xml).not.toContain("<voice>3</voice>");
+    expect((xml.match(/<backup>/g) ?? []).length).toBe(1);
   });
 });
 

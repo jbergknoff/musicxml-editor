@@ -156,6 +156,14 @@ export interface NoteEvent {
    * the source image; absent when the decoder path did not report it.
    */
   confidence?: number;
+  /**
+   * Which MusicXML `<voice>` this note belongs to within its staff. Absent (or
+   * 1) for the common monophonic case; set to 2 by `inferVoices` when a staff's
+   * measure holds a sustained chord over a moving inner line (TrOMR emits both
+   * as one voice — see `infer-voices.ts`). The builder emits a `<backup>`-
+   * separated group per voice within the staff.
+   */
+  voice?: number;
 }
 
 /**

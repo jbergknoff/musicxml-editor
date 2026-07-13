@@ -79,26 +79,30 @@ function flattenBeats(score: ParsedScore): BeatStep[] {
       if (!measure) {
         return;
       }
-      let playbackCursor = playbackStart[position];
-      let displayCursor = displayStart[position];
       const divisions = measure.divisions || 4;
-      for (const event of measure.events) {
-        if (isRest(event)) {
-          playbackCursor += event.duration / divisions;
-          displayCursor += event.duration / divisions;
-          continue;
+      // Each voice on the staff sounds simultaneously, so every voice restarts
+      // from the measure's start beat and its onsets merge into byBeat.
+      for (const voice of measure.voices) {
+        let playbackCursor = playbackStart[position];
+        let displayCursor = displayStart[position];
+        for (const event of voice.events) {
+          if (isRest(event)) {
+            playbackCursor += event.duration / divisions;
+            displayCursor += event.duration / divisions;
+            continue;
+          }
+          const group = event as ChordGroup;
+          const entry = byBeat.get(playbackCursor) ?? {
+            displayBeat: displayCursor,
+            pitches: [],
+          };
+          for (const note of group.notes) {
+            entry.pitches.push(note.pitch);
+          }
+          byBeat.set(playbackCursor, entry);
+          playbackCursor += group.duration / divisions;
+          displayCursor += group.duration / divisions;
         }
-        const group = event as ChordGroup;
-        const entry = byBeat.get(playbackCursor) ?? {
-          displayBeat: displayCursor,
-          pitches: [],
-        };
-        for (const note of group.notes) {
-          entry.pitches.push(note.pitch);
-        }
-        byBeat.set(playbackCursor, entry);
-        playbackCursor += group.duration / divisions;
-        displayCursor += group.duration / divisions;
       }
     });
   }

@@ -107,6 +107,12 @@ const EXPECTED_DIFFERENCES: Record<string, Affordance[]> = {
   //      recognition errors and are now gone.
   // What remains is genuinely the model's limit on tightly-packed low-bass grace
   // notes: one lift error and two pitch misreads, all in the bass arpeggios.
+  //
+  // Voice inference (infer-voices.ts) now splits this fixture's flattened
+  // sustained-chord-over-moving-line passages into two voices per staff, so the
+  // committed screenshot shows proper two-voice engraving. The note-level diff
+  // is unchanged (it compares simultaneous notes as an unordered per-onset set),
+  // so the affordances below are unaffected.
   "mozart-piano-sonata": [
     // Meter (2/4) is recovered by rhythm inference — no time affordance.
     codify.wrongAccidental(98, "A2", "A#2"),

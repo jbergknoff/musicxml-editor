@@ -37,6 +37,7 @@ import {
   noteY,
   resolveLayout,
   stemDirection,
+  voiceStemDirection,
 } from "./sheet-music-layout";
 import type {
   AccidentalKind,
@@ -52,6 +53,7 @@ import type {
   ParsedScore,
   Pitch,
   ResolvedLayout,
+  VoiceStream,
 } from "./sheet-music-types";
 
 // The notation glyphs are SMuFL codepoints that only render correctly in a
@@ -78,6 +80,33 @@ injectGlyphFont();
 // a free choice, so it stays an optional `textFontFamily` prop.
 const DEFAULT_TEXT_FONT_FAMILY =
   "'Geist', ui-sans-serif, system-ui, sans-serif";
+
+// Per-voice ink for a polyphonic staff. Index 0 (the primary voice) is `null`,
+// meaning "keep the normal ink"; further voices take distinguishing, colour-
+// blind-safe hues so the independent lines read apart. A staff with a single
+// voice never consults this (it always draws in the normal ink). Consumers can
+// override via the `voiceColors` prop.
+const DEFAULT_VOICE_COLORS: ReadonlyArray<string | null> = [
+  null, // voice 0: normal ink
+  "#1a7fd4", // voice 1: blue
+  "#c026a5", // voice 2: magenta
+  "#0f8a4c", // voice 3: green
+];
+
+// The ink a voice draws in: its palette colour on a polyphonic staff, else the
+// staff's normal ink. `voiceCount <= 1` short-circuits to normal ink so a plain
+// single-voice score is never tinted.
+function voiceInk(
+  voiceIndex: number,
+  voiceCount: number,
+  inkColor: string,
+  palette: ReadonlyArray<string | null>,
+): string {
+  if (voiceCount <= 1) {
+    return inkColor;
+  }
+  return palette[voiceIndex] ?? inkColor;
+}
 
 // Opacity for the lines that make up the staff itself — the five staff lines,
 // barlines, and the ledger lines that extend the staff for notes above/below
@@ -155,6 +184,8 @@ function computeBeamGroups(
   staffBottomY: number,
   staffSpace: number,
   beatDivisions: number,
+  // Forced stem direction for a polyphonic staff's voice (see voiceStemDirection).
+  forcedStemDir?: "up" | "down",
 ): BeamGroupData[] {
   const stemLength = staffSpace * 3;
   // Diagonal beams may not exceed this total rise/fall, keeping angles readable.
@@ -167,7 +198,11 @@ function computeBeamGroups(
     // change measures every chord against the clef it is actually drawn in
     // (otherwise stems land on the wrong side after the change).
     const chordClef = (g: ChordGroup) => g.clef ?? clef;
-    const stemDir = beamStemDirection(chords, (i) => chordClef(chords[i]));
+    const stemDir = beamStemDirection(
+      chords,
+      (i) => chordClef(chords[i]),
+      forcedStemDir,
+    );
 
     // Reference Y for each chord: the notehead the beam must clear, i.e. the
     // outermost note in the beam direction (top note for stem-up, bottom note
@@ -483,27 +518,30 @@ function beatColumnGeometry(
       const onsetX = spine.xs[k];
 
       // Count the maximum number of grace-note groups before this chord across
-      // all parts — grace notes appear to the left of the main notehead and
-      // must be included in the box.
+      // all parts and voices — grace notes appear to the left of the main
+      // notehead and must be included in the box.
       let maxGraceGroups = 0;
       for (const part of score.parts) {
         const measure = part.measures[measureIndex];
         if (!measure) {
           continue;
         }
-        let beatCursor = 0;
         const divisions = measure.divisions || DIVISIONS;
-        for (const event of measure.events) {
-          if (Math.abs(beatCursor - beatInMeasure) < 1e-6 && !isRest(event)) {
-            const graces = (event as ChordGroup).gracesBefore?.length ?? 0;
-            if (graces > maxGraceGroups) {
-              maxGraceGroups = graces;
+        for (const voice of measure.voices) {
+          let beatCursor = 0;
+          for (const event of voice.events) {
+            if (Math.abs(beatCursor - beatInMeasure) < 1e-6 && !isRest(event)) {
+              const graces = (event as ChordGroup).gracesBefore?.length ?? 0;
+              if (graces > maxGraceGroups) {
+                maxGraceGroups = graces;
+              }
+              break;
             }
-            break;
+            beatCursor +=
+              (isRest(event)
+                ? event.duration
+                : (event as ChordGroup).duration) / divisions;
           }
-          beatCursor +=
-            (isRest(event) ? event.duration : (event as ChordGroup).duration) /
-            divisions;
         }
       }
 
@@ -736,6 +774,8 @@ function beamStemOverrides(
   staffBottomY: number,
   staffSpace: number,
   beatDivisions: number,
+  // Forced stem direction for a polyphonic staff's voice (see voiceStemDirection).
+  forcedStemDir?: "up" | "down",
 ): {
   beamGroups: BeamGroupData[];
   beamOverrideMap: Map<number, { stemDir: "up" | "down"; stemTipY: number }>;
@@ -747,6 +787,7 @@ function beamStemOverrides(
     staffBottomY,
     staffSpace,
     beatDivisions,
+    forcedStemDir,
   );
   const beamOverrideMap = new Map<
     number,
@@ -870,48 +911,54 @@ function computeNoteRenderInfos(
       // mid-measure change) must match what the renderer draws so highlight and
       // marker geometry lands on the right notehead.
       const measureClef = measure.clef ?? part.clef;
-      const eventXs = eventXsFromSpine(measure.events, measureSpines[m]);
-      const { beamOverrideMap } = beamStemOverrides(
-        measure.events,
-        eventXs,
-        measureClef,
-        staffBottomY,
-        staffSpace,
-        beatDivisions,
-      );
+      const voiceCount = measure.voices.length;
+      for (const voice of measure.voices) {
+        const forcedStemDir = voiceStemDirection(voice.voiceIndex, voiceCount);
+        const eventXs = eventXsFromSpine(voice.events, measureSpines[m]);
+        const { beamOverrideMap } = beamStemOverrides(
+          voice.events,
+          eventXs,
+          measureClef,
+          staffBottomY,
+          staffSpace,
+          beatDivisions,
+          forcedStemDir,
+        );
 
-      measure.events.forEach((event, ei) => {
-        if (isRest(event)) {
-          return;
-        }
-        const group = event as ChordGroup;
-        const clef = group.clef ?? measureClef;
-        const stemDir =
-          beamOverrideMap.get(ei)?.stemDir ?? stemDirection(group, clef);
-        for (const info of chordNoteGeometry(
-          group,
-          eventXs[ei],
-          p,
-          measure.number,
-          clef,
-          staffBottomY,
-          staffSpace,
-          stemDir,
-        )) {
-          infos.set(info.id, info);
-        }
-        for (const info of graceNoteGeometry(
-          group,
-          eventXs[ei],
-          p,
-          measure.number,
-          clef,
-          staffBottomY,
-          staffSpace,
-        )) {
-          infos.set(info.id, info);
-        }
-      });
+        voice.events.forEach((event, ei) => {
+          if (isRest(event)) {
+            return;
+          }
+          const group = event as ChordGroup;
+          const clef = group.clef ?? measureClef;
+          const stemDir =
+            beamOverrideMap.get(ei)?.stemDir ??
+            stemDirection(group, clef, forcedStemDir);
+          for (const info of chordNoteGeometry(
+            group,
+            eventXs[ei],
+            p,
+            measure.number,
+            clef,
+            staffBottomY,
+            staffSpace,
+            stemDir,
+          )) {
+            infos.set(info.id, info);
+          }
+          for (const info of graceNoteGeometry(
+            group,
+            eventXs[ei],
+            p,
+            measure.number,
+            clef,
+            staffBottomY,
+            staffSpace,
+          )) {
+            infos.set(info.id, info);
+          }
+        });
+      }
     });
   });
 
@@ -955,57 +1002,65 @@ export function computeTieArcs(
 
     part.measures.forEach((measure, m) => {
       const measureClef = measure.clef ?? part.clef;
-      const eventXs = eventXsFromSpine(measure.events, measureSpines[m]);
-      const { beamOverrideMap } = beamStemOverrides(
-        measure.events,
-        eventXs,
-        measureClef,
-        staffBottomY,
-        staffSpace,
-        beatDivisions,
-      );
-
-      measure.events.forEach((event, ei) => {
-        if (isRest(event)) {
-          return;
-        }
-        const group = event as ChordGroup;
-        const clef = group.clef ?? measureClef;
-        const stemDir =
-          beamOverrideMap.get(ei)?.stemDir ?? stemDirection(group, clef);
-        const geom = chordNoteGeometry(
-          group,
-          eventXs[ei],
-          p,
-          measure.number,
-          clef,
+      const voiceCount = measure.voices.length;
+      for (const voice of measure.voices) {
+        const forcedStemDir = voiceStemDirection(voice.voiceIndex, voiceCount);
+        const eventXs = eventXsFromSpine(voice.events, measureSpines[m]);
+        const { beamOverrideMap } = beamStemOverrides(
+          voice.events,
+          eventXs,
+          measureClef,
           staffBottomY,
           staffSpace,
-          stemDir,
+          beatDivisions,
+          forcedStemDir,
         );
-        group.notes.forEach((note, v) => {
-          const pitchKey = `${note.pitch.step}${note.pitch.alter}/${note.pitch.octave}`;
-          const here = { x: geom[v].nx, y: geom[v].ny };
-          // Close an open tie before opening a new one so a note that both stops
-          // and starts (a chain of ties) is handled correctly.
-          if (note.tieStop) {
-            const start = openTies.get(pitchKey);
-            if (start) {
-              arcs.push({
-                partIndex: p,
-                startX: start.x,
-                stopX: here.x,
-                y: here.y,
-                bulge: here.y <= middleY ? "up" : "down",
-              });
-              openTies.delete(pitchKey);
+
+        voice.events.forEach((event, ei) => {
+          if (isRest(event)) {
+            return;
+          }
+          const group = event as ChordGroup;
+          const clef = group.clef ?? measureClef;
+          const stemDir =
+            beamOverrideMap.get(ei)?.stemDir ??
+            stemDirection(group, clef, forcedStemDir);
+          const geom = chordNoteGeometry(
+            group,
+            eventXs[ei],
+            p,
+            measure.number,
+            clef,
+            staffBottomY,
+            staffSpace,
+            stemDir,
+          );
+          group.notes.forEach((note, v) => {
+            // Key open ties by voice too: a tie always closes within the voice
+            // it opened, and two voices may sustain the same pitch at once.
+            const pitchKey = `${voice.voiceNumber}:${note.pitch.step}${note.pitch.alter}/${note.pitch.octave}`;
+            const here = { x: geom[v].nx, y: geom[v].ny };
+            // Close an open tie before opening a new one so a note that both
+            // stops and starts (a chain of ties) is handled correctly.
+            if (note.tieStop) {
+              const start = openTies.get(pitchKey);
+              if (start) {
+                arcs.push({
+                  partIndex: p,
+                  startX: start.x,
+                  stopX: here.x,
+                  y: here.y,
+                  bulge: here.y <= middleY ? "up" : "down",
+                });
+                openTies.delete(pitchKey);
+              }
             }
-          }
-          if (note.tieStart) {
-            openTies.set(pitchKey, here);
-          }
+            if (note.tieStart) {
+              openTies.set(pitchKey, here);
+            }
+          });
         });
-      });
+      }
     });
   });
 
@@ -1241,6 +1296,11 @@ interface SheetMusicDisplayProps {
   textFontFamily?: string;
   /** Color for staff lines, barlines, stems, and noteheads. Defaults to "black". */
   inkColor?: string;
+  /** Per-voice notehead/stem ink on a *polyphonic* staff, indexed by voice
+   *  ordinal (0 = the primary voice). A `null` entry keeps the normal `inkColor`
+   *  for that voice. Single-voice staves are never tinted. Defaults to a built-in
+   *  colour-blind-safe palette (primary voice normal, others blue/magenta/green). */
+  voiceColors?: ReadonlyArray<string | null>;
   /** Extra style applied to the scroll container div. */
   containerStyle?: Record<string, unknown>;
   /** When set, draw a tinted background rect over this measure range (1-indexed, inclusive). */
@@ -1346,6 +1406,7 @@ export function SheetMusicDisplay({
   glyphFontSize,
   textFontFamily = DEFAULT_TEXT_FONT_FAMILY,
   inkColor = "black",
+  voiceColors = DEFAULT_VOICE_COLORS,
   containerStyle,
   focusRange,
   focusColor,
@@ -1983,6 +2044,7 @@ export function SheetMusicDisplay({
               staffBottomY={layout.staffBottomYs[p]}
               visible={visibleParts ? visibleParts.has(part.id) : true}
               inkColor={inkColor}
+              voiceColors={voiceColors}
               textFontFamily={textFontFamily}
             />
           ))}
@@ -2169,6 +2231,7 @@ interface StaffProps {
   staffBottomY: number;
   visible: boolean;
   inkColor: string;
+  voiceColors: ReadonlyArray<string | null>;
   textFontFamily: string;
 }
 
@@ -2179,6 +2242,7 @@ const Staff = memo(function Staff({
   staffBottomY,
   visible,
   inkColor,
+  voiceColors,
   textFontFamily,
 }: StaffProps) {
   const { staffSpace, totalWidth, measureXs, measureWidths } = layout;
@@ -2204,6 +2268,7 @@ const Staff = memo(function Staff({
           staffBottomY={staffBottomY}
           layout={layout}
           inkColor={inkColor}
+          voiceColors={voiceColors}
           textFontFamily={textFontFamily}
           leadingBarlineStyle={boundaryBarlineStyle(
             part.measures[m - 1],
@@ -2525,6 +2590,7 @@ interface MeasureProps {
   staffBottomY: number;
   layout: ResolvedLayout;
   inkColor: string;
+  voiceColors: ReadonlyArray<string | null>;
   textFontFamily: string;
   leadingBarlineStyle?: BarlineStyle;
 }
@@ -2540,6 +2606,7 @@ function Measure({
   staffBottomY,
   layout,
   inkColor,
+  voiceColors,
   textFontFamily,
   leadingBarlineStyle,
 }: MeasureProps) {
@@ -2552,25 +2619,41 @@ function Measure({
   // Note positions and beam geometry depend only on the score + layout, never
   // on note colors. Memoize so color changes during playback don't recompute
   // them — and so beamOverrideMap entries keep a stable identity, letting the
-  // memoized ChordGroupEl skip re-rendering.
-  const { eventXs, beamGroups, beamOverrideMap } = useMemo(() => {
-    const eventXs = eventXsFromSpine(measure.events, spine);
-    const { beamGroups, beamOverrideMap } = beamStemOverrides(
-      measure.events,
-      eventXs,
-      measureClef,
-      staffBottomY,
-      staffSpace,
-      beatDivisions,
-    );
-    return { eventXs, beamGroups, beamOverrideMap };
+  // memoized ChordGroupEl skip re-rendering. One render context per voice: each
+  // voice maps its own event stream onto the shared spine, beams within itself,
+  // and (on a polyphonic staff) takes a fixed stem direction + ink.
+  const voiceRenders = useMemo(() => {
+    const voiceCount = measure.voices.length;
+    return measure.voices.map((voice) => {
+      const forcedStemDir = voiceStemDirection(voice.voiceIndex, voiceCount);
+      const eventXs = eventXsFromSpine(voice.events, spine);
+      const { beamGroups, beamOverrideMap } = beamStemOverrides(
+        voice.events,
+        eventXs,
+        measureClef,
+        staffBottomY,
+        staffSpace,
+        beatDivisions,
+        forcedStemDir,
+      );
+      return {
+        voice,
+        eventXs,
+        beamGroups,
+        beamOverrideMap,
+        forcedStemDir,
+        ink: voiceInk(voice.voiceIndex, voiceCount, inkColor, voiceColors),
+      };
+    });
   }, [
-    measure.events,
+    measure.voices,
     spine,
     staffSpace,
     measureClef,
     staffBottomY,
     beatDivisions,
+    inkColor,
+    voiceColors,
   ]);
 
   const clefX = x + 2;
@@ -2651,77 +2734,96 @@ function Measure({
           inkColor={inkColor}
         />
       )}
-      {(() => {
-        let beatOffset = 0;
-        // Track the clef as we walk the events so a mid-measure change draws a
-        // small clef glyph at the point it takes effect and shifts every later
-        // notehead onto the new clef.
-        let runningClef = measureClef;
-        const elements: VNode[] = [];
-        measure.events.forEach((event, ei) => {
-          const key = `o${beatOffset}`;
-          const dur = isRest(event)
-            ? event.duration
-            : (event as ChordGroup).duration;
-          beatOffset += dur;
-          const ex = eventXs[ei];
-          if (isRest(event)) {
+      {voiceRenders.map(
+        ({ voice, eventXs, beamOverrideMap, forcedStemDir, ink }) => {
+          // A rest nudge only when the staff is polyphonic: the upper voice's
+          // rests ride above the staff middle, lower voices' below, so two
+          // voices' rests at one beat don't overprint. Single-voice: centred.
+          const restYOffset =
+            measure.voices.length <= 1
+              ? 0
+              : voice.voiceIndex === 0
+                ? -staffSpace
+                : staffSpace;
+          let beatOffset = 0;
+          // Track the clef as we walk this voice so a mid-measure change draws a
+          // small clef glyph at the point it takes effect and shifts every later
+          // notehead onto the new clef.
+          let runningClef = measureClef;
+          const elements: VNode[] = [];
+          voice.events.forEach((event, ei) => {
+            const key = `v${voice.voiceIndex}-o${beatOffset}`;
+            const dur = isRest(event)
+              ? event.duration
+              : (event as ChordGroup).duration;
+            beatOffset += dur;
+            const ex = eventXs[ei];
+            if (isRest(event)) {
+              elements.push(
+                <RestEl
+                  key={key}
+                  rest={event}
+                  x={ex}
+                  staffBottomY={staffBottomY}
+                  staffSpace={staffSpace}
+                  inkColor={ink}
+                  yOffset={restYOffset}
+                />,
+              );
+              return;
+            }
+            const group = event as ChordGroup;
+            const eventClef = group.clef ?? measureClef;
+            if (!clefEqual(eventClef, runningClef)) {
+              // Centre the glyph in the widened gap between the previous note
+              // and this one (the spine reserved MID_CLEF_ADVANCE_FACTOR of
+              // extra space here), so its margins are symmetric rather than
+              // piling up on one side. Only the primary voice draws the change
+              // glyph (all voices share the staff's clef) to avoid doubling it.
+              const previousX = ei > 0 ? eventXs[ei - 1] : ex - staffSpace;
+              if (voice.voiceIndex === 0) {
+                elements.push(
+                  <Clef
+                    key={`clef-${key}`}
+                    clef={eventClef}
+                    x={(previousX + ex) / 2}
+                    anchor="middle"
+                    staffBottomY={staffBottomY}
+                    staffSpace={staffSpace}
+                    inkColor={inkColor}
+                    fontSize={staffSpace * CLEF_CHANGE_FONT_FACTOR}
+                  />,
+                );
+              }
+              runningClef = eventClef;
+            }
             elements.push(
-              <RestEl
+              <ChordGroupEl
                 key={key}
-                rest={event}
+                group={group}
                 x={ex}
                 staffBottomY={staffBottomY}
-                staffSpace={staffSpace}
-                inkColor={inkColor}
-              />,
-            );
-            return;
-          }
-          const group = event as ChordGroup;
-          const eventClef = group.clef ?? measureClef;
-          if (!clefEqual(eventClef, runningClef)) {
-            // Centre the glyph in the widened gap between the previous note and
-            // this one (the spine reserved MID_CLEF_ADVANCE_FACTOR of extra
-            // space here), so its margins are symmetric rather than piling up on
-            // one side.
-            const previousX = ei > 0 ? eventXs[ei - 1] : ex - staffSpace;
-            elements.push(
-              <Clef
-                key={`clef-${key}`}
                 clef={eventClef}
-                x={(previousX + ex) / 2}
-                anchor="middle"
-                staffBottomY={staffBottomY}
+                partIndex={partIndex}
+                measureNumber={measure.number}
                 staffSpace={staffSpace}
-                inkColor={inkColor}
-                fontSize={staffSpace * CLEF_CHANGE_FONT_FACTOR}
+                beamStemOverride={beamOverrideMap.get(ei)}
+                forcedStemDir={forcedStemDir}
+                inkColor={ink}
               />,
             );
-            runningClef = eventClef;
-          }
-          elements.push(
-            <ChordGroupEl
-              key={key}
-              group={group}
-              x={ex}
-              staffBottomY={staffBottomY}
-              clef={eventClef}
-              partIndex={partIndex}
-              measureNumber={measure.number}
-              staffSpace={staffSpace}
-              beamStemOverride={beamOverrideMap.get(ei)}
-              inkColor={inkColor}
-            />,
-          );
-        });
-        return elements;
-      })()}
-      <BeamLines
-        beamGroups={beamGroups}
-        staffSpace={staffSpace}
-        inkColor={inkColor}
-      />
+          });
+          return <g key={`voice-${voice.voiceIndex}`}>{elements}</g>;
+        },
+      )}
+      {voiceRenders.map(({ voice, beamGroups, ink }) => (
+        <BeamLines
+          key={`beams-${voice.voiceIndex}`}
+          beamGroups={beamGroups}
+          staffSpace={staffSpace}
+          inkColor={ink}
+        />
+      ))}
     </g>
   );
 }
@@ -3042,6 +3144,10 @@ interface ChordGroupElProps {
    *  and extend the stem to stemTipY instead of the default length. No flag
    *  is rendered — the beam line is drawn by BeamLines instead. */
   beamStemOverride?: { stemDir: "up" | "down"; stemTipY: number };
+  /** On a polyphonic staff, this voice's fixed stem direction (see
+   *  voiceStemDirection). Used only when the note is not beamed; a beam's own
+   *  direction (already voice-aware) takes precedence via beamStemOverride. */
+  forcedStemDir?: "up" | "down";
 }
 
 // Compute per-note x offsets within a chord to displace adjacent seconds.
@@ -3079,12 +3185,14 @@ const ChordGroupEl = memo(function ChordGroupEl({
   staffSpace,
   inkColor,
   beamStemOverride,
+  forcedStemDir,
 }: ChordGroupElProps) {
   const { type, notes, gracesBefore } = group;
   const N = gracesBefore?.length ?? 0;
   const hasNoStem = type === "whole";
 
-  const stemDir = beamStemOverride?.stemDir ?? stemDirection(group, clef);
+  const stemDir =
+    beamStemOverride?.stemDir ?? stemDirection(group, clef, forcedStemDir);
   const noteGeom = chordNoteGeometry(
     group,
     x,
@@ -3407,12 +3515,17 @@ function RestEl({
   staffBottomY,
   staffSpace,
   inkColor,
+  yOffset = 0,
 }: {
   rest: ParsedRest;
   x: number;
   staffBottomY: number;
   staffSpace: number;
   inkColor: string;
+  /** Vertical nudge (px) off the staff middle. On a polyphonic staff the upper
+   *  voice's rests sit above the middle and the lower voice's below, so two
+   *  voices' rests at the same beat don't overprint. 0 on a single-voice staff. */
+  yOffset?: number;
 }) {
   const { type, fullMeasure } = rest;
   const effectiveType = fullMeasure ? "whole" : type;
@@ -3431,7 +3544,7 @@ function RestEl({
   return (
     <text
       x={x}
-      y={staffBottomY - 2 * staffSpace}
+      y={staffBottomY - 2 * staffSpace + yOffset}
       text-anchor="middle"
       fill={inkColor}
     >

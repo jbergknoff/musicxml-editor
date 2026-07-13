@@ -80,8 +80,10 @@ import {
   setGracePitch,
   setGraceSlash,
   setNoteDuration,
+  setNotesVoice,
   shiftNotesInTime,
   toggleTie,
+  voicesInMeasure,
 } from "./dom-edit";
 import {
   type SlotInfo,
@@ -166,7 +168,15 @@ const BEATS_BY_TYPE: Record<NoteType, number> = {
 // shift-click/shift-arrow anchor; `endMeasureIndex` is the far end and may be
 // on either side of it.
 type Selection =
-  | { kind: "slot"; partIndex: number; measureIndex: number; onsetBeat: number }
+  | {
+      kind: "slot";
+      partIndex: number;
+      /** Which voice on the staff this slot belongs to (0 = primary). Omitted
+       *  on legacy call sites → resolves to the first voice at the position. */
+      voiceIndex?: number;
+      measureIndex: number;
+      onsetBeat: number;
+    }
   | { kind: "note"; handle: NoteHandle }
   | {
       kind: "measureRange";
@@ -185,11 +195,17 @@ function sameHandle(a: NoteHandle, b: NoteHandle): boolean {
 
 function sameSlot(
   selection: Selection,
-  slot: { partIndex: number; measureIndex: number; onsetBeat: number },
+  slot: {
+    partIndex: number;
+    voiceIndex?: number;
+    measureIndex: number;
+    onsetBeat: number;
+  },
 ): boolean {
   return (
     selection?.kind === "slot" &&
     selection.partIndex === slot.partIndex &&
+    (selection.voiceIndex ?? 0) === (slot.voiceIndex ?? 0) &&
     selection.measureIndex === slot.measureIndex &&
     Math.abs(selection.onsetBeat - slot.onsetBeat) < 1e-6
   );
@@ -488,11 +504,18 @@ export function Editor() {
         selection.measureIndex,
         selection.onsetBeat,
         selection.partIndex,
+        selection.voiceIndex,
       );
     }
     const info = chordInfoForHandle(score, selection.handle);
     return info
-      ? slotAt(score, info.measureIndex, info.onsetBeat, info.partIndex)
+      ? slotAt(
+          score,
+          info.measureIndex,
+          info.onsetBeat,
+          info.partIndex,
+          info.voiceIndex,
+        )
       : null;
   }, [selection, score]);
   // Mirrors `slotInfo`, updated synchronously in the render body for the same
@@ -567,6 +590,14 @@ export function Editor() {
       score,
       slotInfo.measureIndex,
       slotInfo.onsetBeat,
+    ).map((staffSlot) =>
+      // On the selected staff, show the exact selected voice's slot rather than
+      // the staff's primary voice (which allSlotsAtBeat defaults to) — so a
+      // voice-2 selection lists voice-2's notes, not voice-1's.
+      staffSlot.partIndex === slotInfo.partIndex &&
+      staffSlot.voiceIndex !== slotInfo.voiceIndex
+        ? slotInfo
+        : staffSlot,
     );
     const groupLabels = staffGroupLabels(score.parts);
     const flatHandles: NoteHandle[] = [];
@@ -585,6 +616,7 @@ export function Editor() {
       }
       return {
         partIndex: staffSlot.partIndex,
+        voiceIndex: staffSlot.voiceIndex,
         label: groupLabels[staffSlot.partIndex] ?? "",
         durationLabel: staffSlot.type,
         durationBeats: BEATS_BY_TYPE[staffSlot.type],
@@ -793,6 +825,7 @@ export function Editor() {
               hitChord.measureIndex,
               hitChord.onsetBeat,
               hitChord.partIndex,
+              hitChord.voiceIndex,
             )
           : slotAtBeat(score, gesture.beat, 1.5, gesture.partIndex);
       if (!slot) {
@@ -836,6 +869,7 @@ export function Editor() {
         return {
           kind: "slot",
           partIndex: slot.partIndex,
+          voiceIndex: slot.voiceIndex,
           measureIndex: slot.measureIndex,
           onsetBeat: slot.onsetBeat,
         };
@@ -903,6 +937,7 @@ export function Editor() {
             hitChord.measureIndex,
             hitChord.onsetBeat,
             hitChord.partIndex,
+            hitChord.voiceIndex,
           )
         : slotAtBeat(score, request.beat, 1.5, request.gesture?.partIndex);
       if (!slot) {
@@ -935,6 +970,7 @@ export function Editor() {
         return {
           kind: "slot",
           partIndex: slot.partIndex,
+          voiceIndex: slot.voiceIndex,
           measureIndex: slot.measureIndex,
           onsetBeat: slot.onsetBeat,
         };
@@ -1197,6 +1233,7 @@ export function Editor() {
           ? {
               kind: "slot",
               partIndex: slot.partIndex,
+              voiceIndex: slot.voiceIndex,
               measureIndex: slot.measureIndex,
               onsetBeat: slot.onsetBeat,
             }
@@ -1286,6 +1323,67 @@ export function Editor() {
     ],
   );
 
+  // Move the selected note (when drilled to a single note) or the whole chord
+  // (at beat level) to the staff's *other* voice — toggling between the two
+  // when both exist, or splitting off a fresh second voice when the staff is
+  // still single-voice. This is the manual OMR-cleanup fix for the screenshot's
+  // case: a sustained chord and a moving line the recognizer merged into one
+  // voice can be pulled apart so each keeps its own rhythm. Refused (with a
+  // transient hint) when the target voice already has a note overlapping the
+  // moved span — see `setNotesVoice`.
+  const moveSelectionToOtherVoice = useCallback(() => {
+    const slot = slotInfoRef.current;
+    if (!editable || !slot || slot.isRest || slot.handles.length === 0) {
+      return;
+    }
+    // A drilled single note moves alone; a beat-level selection moves the chord.
+    const focusedHere = focusedHandle(selectionRef.current, slot);
+    const handles =
+      selectionRef.current?.kind === "note" && focusedHere
+        ? [focusedHere]
+        : slot.handles;
+    // Staff for voice lookup: 1-based on a grand staff, 0 (all) single-staff.
+    const staffNumber = score.parts.length > 1 ? slot.partIndex + 1 : 0;
+    const staffVoices = voicesInMeasure(
+      documentRef.current,
+      slot.measureIndex,
+      staffNumber,
+    );
+    const current = slot.voiceNumber;
+    let targetVoice: number;
+    if (staffVoices.length >= 2) {
+      // Toggle to the staff's other existing voice.
+      targetVoice = staffVoices.find((v) => v !== current) ?? current;
+    } else {
+      // Split off a fresh voice: a number unused by any staff in the measure.
+      const allVoices = voicesInMeasure(documentRef.current, slot.measureIndex);
+      targetVoice = Math.max(0, ...allVoices) + 1;
+    }
+    const moved = setNotesVoice(documentRef.current, handles, targetVoice);
+    if (!moved) {
+      setEditHint("Can't change voice — the other voice already sounds here.");
+      return;
+    }
+    dropFlagsInMeasure(slot.measureIndex);
+    setMenu(null);
+    commit();
+    // Keep the moved note(s) selected at the same drill level.
+    if (selectionRef.current?.kind === "note" && moved[0]) {
+      setSelection({ kind: "note", handle: moved[0] });
+    } else {
+      const freshScore = parseScore(serializeDocument(documentRef.current));
+      const targetIndex =
+        chordInfoForHandle(freshScore, moved[0])?.voiceIndex ?? slot.voiceIndex;
+      setSelection({
+        kind: "slot",
+        partIndex: slot.partIndex,
+        voiceIndex: targetIndex,
+        measureIndex: slot.measureIndex,
+        onsetBeat: slot.onsetBeat,
+      });
+    }
+  }, [editable, score, documentRef, commit, dropFlagsInMeasure]);
+
   // A pointer-down on the canvas around/below the staves (not on the staff
   // SVG) clears the selection; taps that reach the SVG are handleTap's.
   const clearSelectionOffStaff = useCallback((event: PointerEvent) => {
@@ -1363,6 +1461,7 @@ export function Editor() {
         setSelection({
           kind: "slot",
           partIndex: slot.partIndex,
+          voiceIndex: slot.voiceIndex,
           measureIndex: slot.measureIndex,
           onsetBeat: slot.onsetBeat,
         });
@@ -1409,6 +1508,9 @@ export function Editor() {
           pitch: pitch ?? staffReferencePitch(clef),
           // 1-based staff; addNote ignores it for single-staff documents.
           staff: slot.partIndex + 1,
+          // Fill the rest in the voice the selected slot belongs to, so adding
+          // into a voice-2 rest keeps the note on voice 2.
+          voice: slot.voiceNumber,
         });
         if (added) {
           dropFlagsInMeasure(slot.measureIndex);
@@ -1575,6 +1677,7 @@ export function Editor() {
           ? {
               kind: "slot",
               partIndex: slot.partIndex,
+              voiceIndex: slot.voiceIndex,
               measureIndex: slot.measureIndex,
               onsetBeat: slot.onsetBeat,
             }
@@ -1738,6 +1841,7 @@ export function Editor() {
         ? {
             kind: "slot",
             partIndex: info.partIndex,
+            voiceIndex: info.voiceIndex,
             measureIndex: info.measureIndex,
             onsetBeat: info.onsetBeat,
           }
@@ -1795,18 +1899,21 @@ export function Editor() {
         (a, b) => a - b,
       );
       setSelection((prev) => {
-        // The current beat + staff, from either selection level.
+        // The current beat + staff + voice, from either selection level.
         let currentBeat: number | null = null;
         let currentPart = 0;
+        let currentVoice = 0;
         if (prev?.kind === "note") {
           const info = chordInfoForHandle(freshScore, prev.handle);
           if (info) {
             currentBeat = info.onsetBeat;
             currentPart = info.partIndex;
+            currentVoice = info.voiceIndex;
           }
         } else if (prev?.kind === "slot") {
           currentBeat = prev.onsetBeat;
           currentPart = prev.partIndex;
+          currentVoice = prev.voiceIndex ?? 0;
         }
         const beatIndex =
           currentBeat === null
@@ -1822,9 +1929,15 @@ export function Editor() {
         const here = allSlots.filter(
           (slot) => Math.abs(slot.onsetBeat - destBeat) < 1e-6,
         );
-        // Keep the current staff when it has an onset here; otherwise cross to
+        // Keep the current staff AND voice when they have an onset here; then
+        // fall back to the current staff's other voice; otherwise cross to
         // another staff, preferring one that actually holds a note.
         const chosen =
+          here.find(
+            (slot) =>
+              slot.partIndex === currentPart &&
+              slot.voiceIndex === currentVoice,
+          ) ??
           here.find((slot) => slot.partIndex === currentPart) ??
           [...here].sort(
             (a, b) =>
@@ -1844,6 +1957,7 @@ export function Editor() {
         return {
           kind: "slot",
           partIndex: chosen.partIndex,
+          voiceIndex: chosen.voiceIndex,
           measureIndex: chosen.measureIndex,
           onsetBeat: chosen.onsetBeat,
         };
@@ -1943,6 +2057,7 @@ export function Editor() {
           ? {
               kind: "slot",
               partIndex: slot.partIndex,
+              voiceIndex: slot.voiceIndex,
               measureIndex: slot.measureIndex,
               onsetBeat: slot.onsetBeat,
             }
@@ -2107,6 +2222,11 @@ export function Editor() {
           event.preventDefault();
           shiftSelectionInTime(1);
           return;
+        case "v":
+        case "V":
+          event.preventDefault();
+          moveSelectionToOtherVoice();
+          return;
         default:
           break;
       }
@@ -2137,6 +2257,7 @@ export function Editor() {
     accidentalOnFocus,
     addLetter,
     shiftSelectionInTime,
+    moveSelectionToOtherVoice,
     undo,
     redo,
     copyMeasureSelection,
@@ -2256,6 +2377,7 @@ export function Editor() {
           setSelection({
             kind: "slot",
             partIndex: slot.partIndex,
+            voiceIndex: slot.voiceIndex,
             measureIndex: slot.measureIndex,
             onsetBeat: slot.onsetBeat,
           });
@@ -2453,6 +2575,13 @@ export function Editor() {
     {
       label: "Shift earlier in time",
       onSelect: () => shiftSelectionInTime(-1),
+      disabled: !slotInfo || slotInfo.isRest,
+    },
+    // Move the selected note/chord to the staff's other voice (creating a
+    // second voice if there isn't one) — see `moveSelectionToOtherVoice`.
+    {
+      label: "Move to other voice",
+      onSelect: moveSelectionToOtherVoice,
       disabled: !slotInfo || slotInfo.isRest,
     },
     // Copy/Cut only appear for an explicit measure-range selection (shift-
@@ -2791,7 +2920,7 @@ export function Editor() {
         <span>Enter: drill in · Esc: out</span>
         <span>↑↓: pitch (⇧ octave)</span>
         <span>←→: beat · ⇧←→: measures · Tab: cycle</span>
-        <span>A–G: add · −/=/0: ♭♯♮ · ,/.: shift in time</span>
+        <span>A–G: add · −/=/0: ♭♯♮ · ,/.: shift in time · v: voice</span>
         <span>⌘C/X/V: copy/cut/paste measures</span>
         <span>Space: listen</span>
       </div>

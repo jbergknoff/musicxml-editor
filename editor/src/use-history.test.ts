@@ -31,9 +31,11 @@ function noteCount(doc: Document): number {
   const score = parseScore(serializeDocument(doc));
   let count = 0;
   for (const measure of score.parts[0].measures) {
-    for (const event of measure.events) {
-      if (!isRest(event)) {
-        count += 1;
+    for (const voice of measure.voices) {
+      for (const event of voice.events) {
+        if (!isRest(event)) {
+          count += 1;
+        }
       }
     }
   }
