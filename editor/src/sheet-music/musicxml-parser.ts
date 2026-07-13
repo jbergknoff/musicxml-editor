@@ -10,6 +10,7 @@ import type {
   ParsedRest,
   ParsedScore,
   Pitch,
+  VoiceStream,
 } from "./sheet-music-types";
 
 const DIATONIC: Record<string, number> = {
@@ -128,7 +129,7 @@ function resolvePartMeasures(measures: ParsedMeasure[]): void {
       runningDivisions = measure.divisions;
     }
     measure.divisions = runningDivisions;
-    assignMeasureAccidentals(measure.events, runningFifths);
+    assignMeasureAccidentals(measure.voices, runningFifths);
   });
 }
 
@@ -155,7 +156,9 @@ function parseMeasure(el: Element, measureIndex = 0): ParsedMeasure {
       parseRawNote(noteEl, { measureIndex, noteElementIndex }),
   );
   const events = groupEvents(rawItems);
-  assignNoteIndices(events);
+  // A single-staff part (no <backup>) is monophonic modulo chords: one voice.
+  const voices: VoiceStream[] = [{ voiceIndex: 0, voiceNumber: 1, events }];
+  assignNoteIndices(voices);
 
   const { repeatStart, repeatEnd } = parseBarlines(el);
 
@@ -166,7 +169,7 @@ function parseMeasure(el: Element, measureIndex = 0): ParsedMeasure {
     timeSig,
     keySig,
     clef,
-    events,
+    voices,
     divisions,
     activeFifths: keySig?.fifths ?? 0,
     repeatStart,
@@ -203,15 +206,18 @@ function parseBarlines(measureEl: Element): {
 
 // Assign noteIndex sequentially to grace groups and ChordGroups (rests don't
 // count). Grace groups and regular chords share the same counter so their SVG
-// IDs are unique within a measure.
-function assignNoteIndices(events: MeasureEvent[]): void {
+// IDs are unique within a measure. The counter runs across *every* voice of the
+// measure (in voice order) so two voices never mint the same id.
+function assignNoteIndices(voices: VoiceStream[]): void {
   let noteIndex = 0;
-  for (const event of events) {
-    if (!isRest(event)) {
-      for (const gg of event.gracesBefore ?? []) {
-        gg.noteIndex = noteIndex++;
+  for (const voice of voices) {
+    for (const event of voice.events) {
+      if (!isRest(event)) {
+        for (const gg of event.gracesBefore ?? []) {
+          gg.noteIndex = noteIndex++;
+        }
+        event.noteIndex = noteIndex++;
       }
-      event.noteIndex = noteIndex++;
     }
   }
 }
@@ -224,6 +230,9 @@ const NORMALIZED_DIVISIONS = 4;
 
 interface StaffItem {
   staff: number;
+  /** The MusicXML `<voice>` number (default 1). Groups a staff's notes into
+   *  independent rhythmic lines. */
+  voice: number;
   /** Onset within the measure, in the file's own divisions. */
   onset: number;
   /** Notated duration in the file's own divisions (0 for grace notes). */
@@ -296,6 +305,10 @@ function collectStaffItems(
         child.querySelector("staff")?.textContent ?? "1",
         10,
       );
+      const voice = Number.parseInt(
+        child.querySelector("voice")?.textContent ?? "1",
+        10,
+      );
       const durationReal = isGrace
         ? 0
         : Number.parseInt(
@@ -305,6 +318,7 @@ function collectStaffItems(
       const onset = isChord ? lastOnset : cursor;
       items.push({
         staff,
+        voice,
         onset,
         durationReal,
         parsed: parseRawNote(child, { measureIndex, noteElementIndex }),
@@ -415,19 +429,21 @@ function graceGroupsByOnset(
   return byOnset;
 }
 
-// Reduce one staff's items (across all its voices) to a single onset-ordered
-// event stream: notes sharing an onset become a chord, each event's duration is
-// the gap to the next onset so the cumulative-duration layout stays aligned, and
-// gaps before the first onset / an empty staff become rests.
+// Reduce one voice's items to a single onset-ordered event stream: notes
+// sharing an onset become a chord, each event's duration is the gap to the next
+// onset so the cumulative-duration layout stays aligned, and gaps before the
+// first onset / an empty voice become rests.
 //
-// `staffContentEndReal` is the maximum (onset + durationReal) within *this* staff
-// only; it anchors the last note's duration so it isn't stretched to cover notes
-// in another staff. `globalContentEndReal` is the maximum across all staves in the
-// measure; a trailing rest fills any gap between the two so every staff's total
-// beat count stays equal (required for cursor and highlight timing to agree).
+// `contentEndReal` is the maximum (onset + durationReal) within *this voice*
+// only; it anchors the last note's duration so it isn't stretched to cover a
+// different voice's (or staff's) later content. `globalContentEndReal` is the
+// maximum across every voice/staff in the measure; a trailing rest fills any gap
+// between the two so every voice's total beat count reaches the measure end
+// (required for cursor and highlight timing to agree, and standard notation
+// draws the silent tail of a short voice as rests).
 function buildStaffEvents(
   items: StaffItem[],
-  staffContentEndReal: number,
+  contentEndReal: number,
   globalContentEndReal: number,
   scale: number,
   // The clef in effect at this staff's measure start, plus the active clef at an
@@ -466,10 +482,9 @@ function buildStaffEvents(
 
   for (let i = 0; i < onsets.length; i++) {
     const onset = onsets[i];
-    // Use staffContentEndReal (not globalContentEndReal) as the terminal anchor
-    // for the last note so its duration reflects only this staff's content.
-    const nextOnset =
-      i + 1 < onsets.length ? onsets[i + 1] : staffContentEndReal;
+    // Use contentEndReal (not globalContentEndReal) as the terminal anchor
+    // for the last note so its duration reflects only this voice's content.
+    const nextOnset = i + 1 < onsets.length ? onsets[i + 1] : contentEndReal;
     const duration = Math.max(nextOnset - onset, 0) * scale;
     const group = byOnset.get(onset) ?? [];
     const noteItems = group.filter((it) => it.parsed.kind === "note");
@@ -511,13 +526,11 @@ function buildStaffEvents(
     });
   }
 
-  // If this staff ends before the measure's global content end (because another
-  // staff has notes that extend further), append a rest so the total beat count
-  // matches every other staff — keeping cursor and highlight timing in sync.
-  if (staffContentEndReal < globalContentEndReal) {
-    events.push(
-      restEvent((globalContentEndReal - staffContentEndReal) * scale),
-    );
+  // If this voice ends before the measure's global content end (because another
+  // voice/staff has notes that extend further), append a rest so the total beat
+  // count matches every other voice — keeping cursor and highlight timing in sync.
+  if (contentEndReal < globalContentEndReal) {
+    events.push(restEvent((globalContentEndReal - contentEndReal) * scale));
   }
 
   return events;
@@ -576,10 +589,6 @@ function parseMultiStaffPart(partEl: Element, id: string): ParsedPart[] {
 
     for (let s = 0; s < staffCount; s++) {
       const staffItems = items.filter((it) => it.staff === s + 1);
-      const staffContentEndReal = staffItems.reduce(
-        (end, it) => Math.max(end, it.onset + it.durationReal),
-        0,
-      );
 
       // Clef changes for this staff, in time order. A change at onset 0 is the
       // measure's start clef; anything later is a mid-measure change.
@@ -603,15 +612,39 @@ function parseMultiStaffPart(partEl: Element, id: string): ParsedPart[] {
         return active;
       };
 
-      const events = buildStaffEvents(
-        staffItems,
-        staffContentEndReal,
-        globalContentEndReal,
-        scale,
-        startClef,
-        clefForOnset,
+      // Split this staff's notes into independent voices, ordered by first
+      // appearance (the first voice becomes voiceIndex 0). An empty staff still
+      // gets one (empty) voice so it renders a full-measure rest.
+      const voiceNumbers: number[] = [];
+      for (const it of staffItems) {
+        if (!voiceNumbers.includes(it.voice)) {
+          voiceNumbers.push(it.voice);
+        }
+      }
+      if (voiceNumbers.length === 0) {
+        voiceNumbers.push(1);
+      }
+      const voices: VoiceStream[] = voiceNumbers.map(
+        (voiceNumber, voiceIndex) => {
+          const voiceItems = staffItems.filter(
+            (it) => it.voice === voiceNumber,
+          );
+          const voiceContentEndReal = voiceItems.reduce(
+            (end, it) => Math.max(end, it.onset + it.durationReal),
+            0,
+          );
+          const events = buildStaffEvents(
+            voiceItems,
+            voiceContentEndReal,
+            globalContentEndReal,
+            scale,
+            startClef,
+            clefForOnset,
+          );
+          return { voiceIndex, voiceNumber, events };
+        },
       );
-      assignNoteIndices(events);
+      assignNoteIndices(voices);
       measuresByStaff[s].push({
         number,
         timeSig,
@@ -624,7 +657,7 @@ function parseMultiStaffPart(partEl: Element, id: string): ParsedPart[] {
           measuresByStaff[s].length > 0 && !clefEqual(startClef, prevClef)
             ? startClef
             : undefined,
-        events,
+        voices,
         divisions: NORMALIZED_DIVISIONS,
         activeFifths: keySig?.fifths ?? 0,
         repeatStart,
@@ -801,10 +834,7 @@ export function keyAlterForStep(step: string, fifths: number): number {
 //
 // Grace note groups that precede a chord are processed first (left to right),
 // matching their left-to-right display order.
-function assignMeasureAccidentals(
-  events: MeasureEvent[],
-  fifths: number,
-): void {
+function assignMeasureAccidentals(voices: VoiceStream[], fifths: number): void {
   const active = new Map<string, number>();
 
   function assignForNotes(notes: ParsedNote[]) {
@@ -825,15 +855,26 @@ function assignMeasureAccidentals(
     }
   }
 
-  for (const event of events) {
-    if (isRest(event)) {
-      continue;
+  // A printed accidental carries to same (step, octave) notes later in the
+  // measure regardless of voice, so the running state is shared across voices
+  // and the chords are visited in onset order (ties broken by voice order).
+  const chords: Array<{ onset: number; group: ChordGroup }> = [];
+  for (const voice of voices) {
+    let onset = 0;
+    for (const event of voice.events) {
+      if (!isRest(event)) {
+        chords.push({ onset, group: event });
+      }
+      onset += event.duration;
     }
+  }
+  chords.sort((a, b) => a.onset - b.onset);
+  for (const { group } of chords) {
     // Grace notes appear visually before the main chord — process them first.
-    for (const graceGroup of (event as ChordGroup).gracesBefore ?? []) {
+    for (const graceGroup of group.gracesBefore ?? []) {
       assignForNotes(graceGroup.notes);
     }
-    assignForNotes(event.notes);
+    assignForNotes(group.notes);
   }
 }
 

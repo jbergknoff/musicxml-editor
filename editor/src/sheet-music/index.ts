@@ -6,7 +6,7 @@ export type {
   NoteHighlight,
   ScoreHighlight,
 } from "./highlights";
-export { computeMeasureStartBeats } from "./measure-beats";
+export { computeMeasureStartBeats, measureBeatSpan } from "./measure-beats";
 export {
   computePlaybackStartBeats,
   expandPlaybackOrder,
@@ -33,6 +33,7 @@ export type {
   ParsedScore,
   Pitch,
   ResolvedLayout,
+  VoiceStream,
 } from "./sheet-music-types";
 export {
   ACCIDENTAL_BASE_OFFSET_FACTOR,
@@ -61,6 +62,7 @@ export {
   partClef,
   resolveLayout,
   stemDirection,
+  voiceStemDirection,
 } from "./sheet-music-layout";
 export type { StagePointerInfo } from "./SheetMusicDisplay";
 export { SheetMusicDisplay, computeCursorX } from "./SheetMusicDisplay";

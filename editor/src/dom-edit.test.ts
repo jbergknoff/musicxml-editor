@@ -30,10 +30,20 @@ import {
 } from "./dom-edit";
 import {
   type ChordGroup,
+  type MeasureEvent,
+  type ParsedMeasure,
   type ParsedScore,
   isRest,
+  measureBeatSpan,
   parseScore,
 } from "./sheet-music/index";
+
+// All events across a measure's voices, concatenated. The dom-edit tests are
+// single-voice per staff, so this equals the old flat `events` list; the helper
+// keeps the assertions terse after the voices refactor.
+function flatEvents(measure: ParsedMeasure | undefined): MeasureEvent[] {
+  return measure ? measure.voices.flatMap((v) => v.events) : [];
+}
 
 function reparse(doc: Document): ParsedScore {
   return parseScore(serializeDocument(doc));
@@ -51,7 +61,7 @@ function chords(
   score.parts[0].measures.forEach((measure, measureIndex) => {
     let onsetBeat = 0;
     const divisions = measure.divisions || 4;
-    for (const event of measure.events) {
+    for (const event of flatEvents(measure)) {
       if (!isRest(event)) {
         result.push({ measureIndex, onsetBeat, chord: event });
       }
@@ -69,8 +79,8 @@ describe("createBlankDocument", () => {
     expect(score.numMeasures).toBe(3);
     // Every measure is a single full-measure rest.
     for (const measure of score.parts[0].measures) {
-      expect(measure.events.length).toBe(1);
-      expect(isRest(measure.events[0])).toBe(true);
+      expect(flatEvents(measure).length).toBe(1);
+      expect(isRest(flatEvents(measure)[0])).toBe(true);
     }
     expect(score.parts[0].timeSig).toEqual({ beats: 4, beatType: 4 });
     expect(score.parts[0].clef).toEqual({ sign: "G", line: 2 });
@@ -196,7 +206,7 @@ describe("removeNote", () => {
     removeNote(doc, handle);
     const score = reparse(doc);
     expect(chords(score).length).toBe(0);
-    expect(score.parts[0].measures[0].events.every(isRest)).toBe(true);
+    expect(flatEvents(score.parts[0].measures[0]).every(isRest)).toBe(true);
   });
 });
 
@@ -598,7 +608,7 @@ describe("setNoteDuration", () => {
     expect(placed.length).toBe(1);
     expect(placed[0].chord.type).toBe("quarter");
     // The freed three beats are rebalanced into rests.
-    const events = score.parts[0].measures[0].events;
+    const events = flatEvents(score.parts[0].measures[0]);
     expect(events.length).toBe(2);
     expect(isRest(events[1])).toBe(true);
   });
@@ -784,8 +794,8 @@ describe("insertMeasure", () => {
     expect(score.parts[0].measures.map((m) => m.number)).toEqual([1, 2, 3]);
     // The new (last) measure is a single full-measure rest.
     const last = score.parts[0].measures[2];
-    expect(last.events.length).toBe(1);
-    expect(isRest(last.events[0])).toBe(true);
+    expect(flatEvents(last).length).toBe(1);
+    expect(isRest(flatEvents(last)[0])).toBe(true);
   });
 
   test("inserts in the middle and shifts later measures down", () => {
@@ -1202,7 +1212,7 @@ describe("grand-staff editing", () => {
     }
     let beat = 0;
     const divisions = part.measures[0]?.divisions || 4;
-    for (const event of part.measures[0]?.events ?? []) {
+    for (const event of flatEvents(part.measures[0]) ?? []) {
       if (!isRest(event)) {
         result.push({
           onsetBeat: beat,
@@ -1222,7 +1232,7 @@ describe("grand-staff editing", () => {
     removeNote(doc, { measureIndex: 0, noteElementIndex: 0 });
     const score = parseScore(serializeDocument(doc));
     // Treble staff (parts[0]) is all rests.
-    expect(score.parts[0].measures[0].events.every(isRest)).toBe(true);
+    expect(flatEvents(score.parts[0].measures[0]).every(isRest)).toBe(true);
     // Bass staff (parts[1]) still has G2.
     const bassChords = grandStaffChords(score, 1);
     expect(bassChords.length).toBe(1);
@@ -1235,7 +1245,7 @@ describe("grand-staff editing", () => {
     removeNote(doc, { measureIndex: 0, noteElementIndex: 1 });
     const score = parseScore(serializeDocument(doc));
     // Bass staff (parts[1]) is all rests.
-    expect(score.parts[1].measures[0].events.every(isRest)).toBe(true);
+    expect(flatEvents(score.parts[1].measures[0]).every(isRest)).toBe(true);
     // Treble staff (parts[0]) still has E5.
     const trebleChords = grandStaffChords(score, 0);
     expect(trebleChords.length).toBe(1);
@@ -1246,9 +1256,9 @@ describe("grand-staff editing", () => {
     const score = parseScore(GRAND_STAFF_XML);
     // Grand staff parses into two parts.
     expect(score.parts.length).toBe(2);
-    const trebleNote = (score.parts[0].measures[0].events[0] as ChordGroup)
+    const trebleNote = (flatEvents(score.parts[0].measures[0])[0] as ChordGroup)
       .notes[0];
-    const bassNote = (score.parts[1].measures[0].events[0] as ChordGroup)
+    const bassNote = (flatEvents(score.parts[1].measures[0])[0] as ChordGroup)
       .notes[0];
     // Both staves carry source provenance so the editor can select/edit them.
     expect(trebleNote.source).toEqual({ measureIndex: 0, noteElementIndex: 0 });
@@ -1284,8 +1294,8 @@ describe("grand-staff editing", () => {
     expect(score.parts[0].measures.length).toBe(2);
     expect(score.parts[1].measures.length).toBe(2);
     // The new measure is all rests in both staves.
-    expect(score.parts[0].measures[1].events.every(isRest)).toBe(true);
-    expect(score.parts[1].measures[1].events.every(isRest)).toBe(true);
+    expect(flatEvents(score.parts[0].measures[1]).every(isRest)).toBe(true);
+    expect(flatEvents(score.parts[1].measures[1]).every(isRest)).toBe(true);
   });
 });
 
@@ -1305,7 +1315,7 @@ describe("add / remove staves", () => {
     expect(score.parts[1].clef?.sign).toBe("F");
     for (const part of score.parts) {
       for (const measure of part.measures) {
-        expect(measure.events.every(isRest)).toBe(true);
+        expect(flatEvents(measure).every(isRest)).toBe(true);
       }
     }
     // The document declares two staves.
@@ -1324,11 +1334,11 @@ describe("add / remove staves", () => {
 
     const score = reparse(doc);
     // The E5 still leads the treble staff; the bass staff is blank.
-    const treble = score.parts[0].measures[0].events;
+    const treble = flatEvents(score.parts[0].measures[0]);
     const firstNote = treble.find((event) => !isRest(event)) as ChordGroup;
     expect(firstNote.notes[0].pitch.step).toBe("E");
     expect(firstNote.notes[0].pitch.octave).toBe(5);
-    expect(score.parts[1].measures[0].events.every(isRest)).toBe(true);
+    expect(flatEvents(score.parts[1].measures[0]).every(isRest)).toBe(true);
     // That preserved note is now explicitly tagged onto staff 1.
     const staffTags = Array.from(doc.querySelectorAll("note")).flatMap(
       (noteEl) =>
@@ -1347,7 +1357,7 @@ describe("add / remove staves", () => {
     const score = reparse(doc);
     expect(score.parts.length).toBe(3);
     // Original staves keep their notes; the third staff is blank.
-    expect(score.parts[2].measures[0].events.every(isRest)).toBe(true);
+    expect(flatEvents(score.parts[2].measures[0]).every(isRest)).toBe(true);
     expect(doc.querySelector("staves")?.textContent).toBe("3");
   });
 
@@ -1359,7 +1369,7 @@ describe("add / remove staves", () => {
     const score = reparse(doc);
     // Back to a single part carrying the treble content (E5).
     expect(score.parts.length).toBe(1);
-    const firstNote = score.parts[0].measures[0].events.find(
+    const firstNote = flatEvents(score.parts[0].measures[0]).find(
       (event) => !isRest(event),
     ) as ChordGroup;
     expect(firstNote.notes[0].pitch.step).toBe("E");
@@ -1378,7 +1388,7 @@ describe("add / remove staves", () => {
     expect(newCount).toBe(1);
 
     const score = reparse(doc);
-    const firstNote = score.parts[0].measures[0].events.find(
+    const firstNote = flatEvents(score.parts[0].measures[0]).find(
       (event) => !isRest(event),
     ) as ChordGroup;
     // The surviving staff holds the bass content (G2) with a bass clef.
@@ -1404,7 +1414,7 @@ describe("add / remove staves", () => {
     const score = reparse(doc);
     expect(score.parts.length).toBe(2);
     // The old staff-2 content slid up to staff 1 (parts[0]).
-    const survivor = score.parts[0].measures[0].events.find(
+    const survivor = flatEvents(score.parts[0].measures[0]).find(
       (event) => !isRest(event),
     ) as ChordGroup;
     expect(survivor.notes[0].pitch.step).toBe("G");
@@ -1436,7 +1446,7 @@ describe("add / remove staves", () => {
     const score = reparse(doc);
     expect(score.parts.length).toBe(1);
     // The half note in measure 2 survives the round trip.
-    const note = score.parts[0].measures[1].events.find(
+    const note = flatEvents(score.parts[0].measures[1]).find(
       (event) => !isRest(event),
     ) as ChordGroup;
     expect(note.notes[0].pitch.step).toBe("C");
@@ -1477,7 +1487,7 @@ describe("multi-voice grand-staff editing", () => {
     removeNote(doc, { measureIndex: 0, noteElementIndex: 0 });
     const score = parseScore(serializeDocument(doc));
     // Treble (parts[0]): voice 1 first slot becomes rest, but C5 and D5 remain.
-    const treble = score.parts[0].measures[0].events;
+    const treble = flatEvents(score.parts[0].measures[0]);
     expect(
       treble.some(
         (e) =>
@@ -1486,14 +1496,14 @@ describe("multi-voice grand-staff editing", () => {
       ),
     ).toBe(true);
     // Voice-2 notes B4 and G4 survive.
-    const bass1 = score.parts[0].measures[0].events;
+    const bass1 = flatEvents(score.parts[0].measures[0]);
     const allSteps = bass1.flatMap((e) =>
       isRest(e) ? [] : (e as ChordGroup).notes.map((n) => n.pitch.step),
     );
     expect(allSteps).toContain("B");
     expect(allSteps).toContain("G");
     // Staff 2 (parts[1]): G3 still present.
-    const bassChords = score.parts[1].measures[0].events.filter(
+    const bassChords = flatEvents(score.parts[1].measures[0]).filter(
       (e) => !isRest(e),
     ) as ChordGroup[];
     expect(
@@ -1512,7 +1522,7 @@ describe("multi-voice grand-staff editing", () => {
     });
     const score = parseScore(serializeDocument(doc));
     // Staff 1 treble voices: D5 (voice 1), B4/G4 (voice 2) all survive.
-    const treble = score.parts[0].measures[0].events;
+    const treble = flatEvents(score.parts[0].measures[0]);
     const trebleSteps = treble.flatMap((e) =>
       isRest(e) ? [] : (e as ChordGroup).notes.map((n) => n.pitch.step),
     );
@@ -1520,7 +1530,7 @@ describe("multi-voice grand-staff editing", () => {
     expect(trebleSteps).toContain("B");
     expect(trebleSteps).toContain("G");
     // Staff 2: now has G3 and C3.
-    const bassChords = score.parts[1].measures[0].events.filter(
+    const bassChords = flatEvents(score.parts[1].measures[0]).filter(
       (e) => !isRest(e),
     ) as ChordGroup[];
     const bassSteps = bassChords.flatMap((c) =>
@@ -1531,19 +1541,15 @@ describe("multi-voice grand-staff editing", () => {
   });
 });
 
-// The total length, in quarter-note beats, of a part's measure `m` — the sum of
-// its event durations. Used to assert an edit preserves a bar's length.
+// The total length, in quarter-note beats, of a part's measure `m`. Used to
+// assert an edit preserves a bar's length.
 function measureBeats(
   score: ParsedScore,
   partIndex: number,
   m: number,
 ): number {
   const measure = score.parts[partIndex]?.measures[m];
-  if (!measure) {
-    return 0;
-  }
-  const divisions = measure.divisions || 4;
-  return measure.events.reduce((t, e) => t + e.duration / divisions, 0);
+  return measure ? measureBeatSpan(measure) : 0;
 }
 
 // A flat list of "step+octave" strings for the chord at event index over a
@@ -1567,7 +1573,7 @@ function chordPitches(
   let beat = 0;
   const measure = score.parts[partIndex]?.measures[0];
   const divisions = measure?.divisions || 4;
-  for (const event of measure?.events ?? []) {
+  for (const event of flatEvents(measure) ?? []) {
     if (!isRest(event) && Math.abs(beat - onsetBeat) < 1e-6) {
       return [...(event as ChordGroup).notes]
         .sort((a, b) => diatonic(b.pitch) - diatonic(a.pitch))
@@ -1710,7 +1716,7 @@ describe("grace notes survive edits", () => {
     // The chord stepped to E5 + A5 (no phantom, no swallowed notes).
     expect(chordPitches(score, 0, 1)).toEqual(["A5", "E5"]);
     // The grace note D5 still precedes the beat-2 chord.
-    const beat2 = score.parts[0].measures[0].events.find(
+    const beat2 = flatEvents(score.parts[0].measures[0]).find(
       (e) => !isRest(e) && (e as ChordGroup).gracesBefore !== undefined,
     ) as ChordGroup | undefined;
     expect(beat2?.gracesBefore?.[0].notes[0].pitch.step).toBe("D");
@@ -1756,7 +1762,7 @@ describe("non-quarter divisions", () => {
     // Remove the beat-1 C5 (index 0); the gap becomes a quarter rest, not a half.
     removeNote(doc, { measureIndex: 0, noteElementIndex: 0 });
     const score = parseScore(serializeDocument(doc));
-    const firstRest = score.parts[0].measures[0].events[0];
+    const firstRest = flatEvents(score.parts[0].measures[0])[0];
     expect(isRest(firstRest)).toBe(true);
     expect((firstRest as { type: string }).type).toBe("quarter");
     expect(measureBeats(score, 0, 0)).toBe(4);
@@ -1870,7 +1876,7 @@ describe("shiftNotesInTime", () => {
     const partOnsets = score.parts.map((part) => {
       let onsetBeat = 0;
       const divisions = part.measures[0].divisions || 4;
-      for (const event of part.measures[0].events) {
+      for (const event of flatEvents(part.measures[0])) {
         if (!isRest(event)) {
           return onsetBeat;
         }
@@ -2010,12 +2016,12 @@ describe("redistributeStaves", () => {
     expect(score.parts[1].clef?.sign).toBe("F");
 
     const trebleSteps = score.parts[0].measures.flatMap((m) =>
-      m.events.flatMap((e) =>
+      flatEvents(m).flatMap((e) =>
         isRest(e) ? [] : (e as ChordGroup).notes.map((n) => n.pitch.step),
       ),
     );
     const bassSteps = score.parts[1].measures.flatMap((m) =>
-      m.events.flatMap((e) =>
+      flatEvents(m).flatMap((e) =>
         isRest(e) ? [] : (e as ChordGroup).notes.map((n) => n.pitch.step),
       ),
     );
@@ -2056,11 +2062,11 @@ describe("redistributeStaves", () => {
     const doc = parseDocument(GRAND_STAFF_XML);
     redistributeStaves(doc, 21);
     const score = reparse(doc);
-    const trebleSteps = score.parts[0].measures[0].events.flatMap((e) =>
+    const trebleSteps = flatEvents(score.parts[0].measures[0]).flatMap((e) =>
       isRest(e) ? [] : (e as ChordGroup).notes.map((n) => n.pitch.step),
     );
     expect(trebleSteps.sort()).toEqual(["E", "G"]);
-    expect(score.parts[1].measures[0].events.every(isRest)).toBe(true);
+    expect(flatEvents(score.parts[1].measures[0]).every(isRest)).toBe(true);
   });
 
   test("redistributes a multi-voice score onto two staves without overfilling", () => {
@@ -2074,7 +2080,7 @@ describe("redistributeStaves", () => {
     expect(score.parts.length).toBe(2);
 
     const trebleSteps = new Set<string>(
-      score.parts[0].measures[0].events.flatMap((e) =>
+      flatEvents(score.parts[0].measures[0]).flatMap((e) =>
         isRest(e) ? [] : (e as ChordGroup).notes.map((n) => n.pitch.step),
       ),
     );
@@ -2082,7 +2088,7 @@ describe("redistributeStaves", () => {
       expect(trebleSteps.has(step)).toBe(true);
     }
     const bassSteps = new Set<string>(
-      score.parts[1].measures[0].events.flatMap((e) =>
+      flatEvents(score.parts[1].measures[0]).flatMap((e) =>
         isRest(e) ? [] : (e as ChordGroup).notes.map((n) => n.pitch.step),
       ),
     );

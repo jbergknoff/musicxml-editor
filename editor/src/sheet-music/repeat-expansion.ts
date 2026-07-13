@@ -2,7 +2,7 @@
 // barlines. Used only by Listen-mode playback — the renderer always draws
 // measures once, in document order.
 
-import { startBeatsOfMeasures } from "./measure-beats";
+import { measureBeatSpan, startBeatsOfMeasures } from "./measure-beats";
 import type { ParsedMeasure } from "./sheet-music-types";
 
 /**
@@ -61,11 +61,7 @@ export function computePlaybackStartBeats(
   for (const measureIndex of order) {
     playbackStart.push(cursor);
     displayStart.push(displayStartByMeasure[measureIndex] ?? 0);
-    const measure = measures[measureIndex];
-    const divisions = measure.divisions || 4;
-    for (const event of measure.events) {
-      cursor += event.duration / divisions;
-    }
+    cursor += measureBeatSpan(measures[measureIndex]);
   }
   return { playbackStart, displayStart };
 }

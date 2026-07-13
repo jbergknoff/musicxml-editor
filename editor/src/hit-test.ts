@@ -126,26 +126,29 @@ function pickableNotes(score: ParsedScore): PickableNote[] {
   const result: PickableNote[] = [];
   score.parts.forEach((part, partIndex) => {
     part.measures.forEach((measure, measureIndex) => {
-      let beatCursor = measureStartBeats[measureIndex] ?? 0;
+      const measureStart = measureStartBeats[measureIndex] ?? 0;
       const divisions = measure.divisions || 4;
-      for (const event of measure.events) {
-        if (isRest(event)) {
-          beatCursor += event.duration / divisions;
-          continue;
-        }
-        const group = event as ChordGroup;
-        group.notes.forEach((note, voiceIndex) => {
-          if (!note.source) {
-            return;
+      for (const voice of measure.voices) {
+        let beatCursor = measureStart;
+        for (const event of voice.events) {
+          if (isRest(event)) {
+            beatCursor += event.duration / divisions;
+            continue;
           }
-          result.push({
-            id: `p${partIndex}-m${measure.number}-n${group.noteIndex}-v${voiceIndex}`,
-            beat: beatCursor,
-            pitch: note.pitch,
-            handle: note.source,
+          const group = event as ChordGroup;
+          group.notes.forEach((note, memberIndex) => {
+            if (!note.source) {
+              return;
+            }
+            result.push({
+              id: `p${partIndex}-m${measure.number}-n${group.noteIndex}-v${memberIndex}`,
+              beat: beatCursor,
+              pitch: note.pitch,
+              handle: note.source,
+            });
           });
-        });
-        beatCursor += group.duration / divisions;
+          beatCursor += group.duration / divisions;
+        }
       }
     });
   });
@@ -229,39 +232,42 @@ export function pickNoteAtPoint(
         return;
       }
       // Same onset→x mapping the renderer uses, so hits line up with what was
-      // actually drawn (noteheads are centered on their spine x).
-      const eventXs = eventXsFromSpine(measure.events, spine);
-      measure.events.forEach((event, eventIndex) => {
-        if (isRest(event)) {
-          return;
-        }
-        const group = event as ChordGroup;
-        const x = eventXs[eventIndex];
-        const dx = Math.abs(x - svgX);
-        if (dx > xTolerance) {
-          return;
-        }
-        group.notes.forEach((note, voiceIndex) => {
-          if (!note.source) {
+      // actually drawn (noteheads are centered on their spine x). Each voice
+      // maps its own stream onto the shared spine.
+      for (const voice of measure.voices) {
+        const eventXs = eventXsFromSpine(voice.events, spine);
+        voice.events.forEach((event, eventIndex) => {
+          if (isRest(event)) {
             return;
           }
-          const y = noteY(note.pitch, clef, staffBottomY, layout.staffSpace);
-          const dy = Math.abs(y - svgY);
-          if (dy > yTolerance) {
+          const group = event as ChordGroup;
+          const x = eventXs[eventIndex];
+          const dx = Math.abs(x - svgX);
+          if (dx > xTolerance) {
             return;
           }
-          // Normalized elliptical distance; nearest notehead wins.
-          const distance = (dx / xTolerance) ** 2 + (dy / yTolerance) ** 2;
-          if (distance < bestDistance) {
-            bestDistance = distance;
-            best = {
-              id: `p${partIndex}-m${measure.number}-n${group.noteIndex}-v${voiceIndex}`,
-              handle: note.source,
-              partIndex,
-            };
-          }
+          group.notes.forEach((note, memberIndex) => {
+            if (!note.source) {
+              return;
+            }
+            const y = noteY(note.pitch, clef, staffBottomY, layout.staffSpace);
+            const dy = Math.abs(y - svgY);
+            if (dy > yTolerance) {
+              return;
+            }
+            // Normalized elliptical distance; nearest notehead wins.
+            const distance = (dx / xTolerance) ** 2 + (dy / yTolerance) ** 2;
+            if (distance < bestDistance) {
+              bestDistance = distance;
+              best = {
+                id: `p${partIndex}-m${measure.number}-n${group.noteIndex}-v${memberIndex}`,
+                handle: note.source,
+                partIndex,
+              };
+            }
+          });
         });
-      });
+      }
     });
   });
   return best;
@@ -302,18 +308,20 @@ export function idForGraceHandle(
 ): string | null {
   for (let partIndex = 0; partIndex < score.parts.length; partIndex++) {
     for (const measure of score.parts[partIndex].measures) {
-      for (const event of measure.events) {
-        if (isRest(event)) {
-          continue;
-        }
-        const rows = graceRowsForGroup(
-          event as ChordGroup,
-          partIndex,
-          measure.number,
-        );
-        for (const row of rows) {
-          if (sameHandle(row.handle, handle)) {
-            return row.id;
+      for (const voice of measure.voices) {
+        for (const event of voice.events) {
+          if (isRest(event)) {
+            continue;
+          }
+          const rows = graceRowsForGroup(
+            event as ChordGroup,
+            partIndex,
+            measure.number,
+          );
+          for (const row of rows) {
+            if (sameHandle(row.handle, handle)) {
+              return row.id;
+            }
           }
         }
       }
@@ -330,6 +338,10 @@ export interface ChordSelection {
   /** Which parsed part (staff) the chord lives on — 0 for a single staff, or the
    *  treble/bass staff of a grand staff. Lets selection target the right staff. */
   partIndex: number;
+  /** The 0-based voice ordinal within the staff this chord belongs to. */
+  voiceIndex: number;
+  /** The source MusicXML `<voice>` number, for routing edits to the right voice. */
+  voiceNumber: number;
   measureIndex: number;
   onsetBeat: number;
   handles: NoteHandle[];
@@ -343,26 +355,31 @@ function pickableChords(score: ParsedScore): ChordSelection[] {
   const result: ChordSelection[] = [];
   score.parts.forEach((part, partIndex) => {
     part.measures.forEach((measure, measureIndex) => {
-      let beatCursor = measureStartBeats[measureIndex] ?? 0;
+      const measureStart = measureStartBeats[measureIndex] ?? 0;
       const divisions = measure.divisions || 4;
-      for (const event of measure.events) {
-        if (isRest(event)) {
-          beatCursor += event.duration / divisions;
-          continue;
+      for (const voice of measure.voices) {
+        let beatCursor = measureStart;
+        for (const event of voice.events) {
+          if (isRest(event)) {
+            beatCursor += event.duration / divisions;
+            continue;
+          }
+          const group = event as ChordGroup;
+          const handles = group.notes
+            .map((note) => note.source)
+            .filter((source): source is NoteHandle => source !== undefined);
+          if (handles.length > 0) {
+            result.push({
+              partIndex,
+              voiceIndex: voice.voiceIndex,
+              voiceNumber: voice.voiceNumber,
+              measureIndex,
+              onsetBeat: beatCursor,
+              handles,
+            });
+          }
+          beatCursor += group.duration / divisions;
         }
-        const group = event as ChordGroup;
-        const handles = group.notes
-          .map((note) => note.source)
-          .filter((source): source is NoteHandle => source !== undefined);
-        if (handles.length > 0) {
-          result.push({
-            partIndex,
-            measureIndex,
-            onsetBeat: beatCursor,
-            handles,
-          });
-        }
-        beatCursor += group.duration / divisions;
       }
     });
   });
@@ -436,6 +453,10 @@ export interface ChordNote {
 // `NoteType`.
 export interface ChordInfo {
   partIndex: number;
+  /** The 0-based voice ordinal within the staff this chord belongs to. */
+  voiceIndex: number;
+  /** The source MusicXML `<voice>` number, for routing edits to the right voice. */
+  voiceNumber: number;
   measureIndex: number;
   onsetBeat: number;
   type: NoteType;
@@ -447,37 +468,42 @@ function pickableChordInfos(score: ParsedScore): ChordInfo[] {
   const result: ChordInfo[] = [];
   score.parts.forEach((part, partIndex) => {
     part.measures.forEach((measure, measureIndex) => {
-      let beatCursor = measureStartBeats[measureIndex] ?? 0;
+      const measureStart = measureStartBeats[measureIndex] ?? 0;
       const divisions = measure.divisions || 4;
-      for (const event of measure.events) {
-        if (isRest(event)) {
-          beatCursor += event.duration / divisions;
-          continue;
-        }
-        const group = event as ChordGroup;
-        const notes: ChordNote[] = [];
-        group.notes.forEach((note, voiceIndex) => {
-          if (!note.source) {
-            return;
+      for (const voice of measure.voices) {
+        let beatCursor = measureStart;
+        for (const event of voice.events) {
+          if (isRest(event)) {
+            beatCursor += event.duration / divisions;
+            continue;
           }
-          notes.push({
-            id: `p${partIndex}-m${measure.number}-n${group.noteIndex}-v${voiceIndex}`,
-            handle: note.source,
-            pitch: note.pitch,
-            type: note.type,
-            tieStart: note.tieStart,
+          const group = event as ChordGroup;
+          const notes: ChordNote[] = [];
+          group.notes.forEach((note, memberIndex) => {
+            if (!note.source) {
+              return;
+            }
+            notes.push({
+              id: `p${partIndex}-m${measure.number}-n${group.noteIndex}-v${memberIndex}`,
+              handle: note.source,
+              pitch: note.pitch,
+              type: note.type,
+              tieStart: note.tieStart,
+            });
           });
-        });
-        if (notes.length > 0) {
-          result.push({
-            partIndex,
-            measureIndex,
-            onsetBeat: beatCursor,
-            type: group.type,
-            notes,
-          });
+          if (notes.length > 0) {
+            result.push({
+              partIndex,
+              voiceIndex: voice.voiceIndex,
+              voiceNumber: voice.voiceNumber,
+              measureIndex,
+              onsetBeat: beatCursor,
+              type: group.type,
+              notes,
+            });
+          }
+          beatCursor += group.duration / divisions;
         }
-        beatCursor += group.duration / divisions;
       }
     });
   });
@@ -535,6 +561,10 @@ export interface SlotInfo {
   /** Which parsed part (staff) this slot belongs to — 0 for a single staff, or
    *  the treble (0) / bass (1) staff of a grand staff. */
   partIndex: number;
+  /** The 0-based voice ordinal within the staff this slot belongs to. */
+  voiceIndex: number;
+  /** The source MusicXML `<voice>` number, for routing edits to the right voice. */
+  voiceNumber: number;
   measureIndex: number;
   onsetBeat: number;
   isRest: boolean;
@@ -595,48 +625,55 @@ function pickableSlots(score: ParsedScore): SlotInfo[] {
   const result: SlotInfo[] = [];
   score.parts.forEach((part, partIndex) => {
     part.measures.forEach((measure, measureIndex) => {
-      let beatCursor = measureStartBeats[measureIndex] ?? 0;
+      const measureStart = measureStartBeats[measureIndex] ?? 0;
       const divisions = measure.divisions || 4;
-      for (const event of measure.events) {
-        if (isRest(event)) {
+      for (const voice of measure.voices) {
+        let beatCursor = measureStart;
+        for (const event of voice.events) {
+          if (isRest(event)) {
+            result.push({
+              partIndex,
+              voiceIndex: voice.voiceIndex,
+              voiceNumber: voice.voiceNumber,
+              measureIndex,
+              onsetBeat: beatCursor,
+              isRest: true,
+              type: event.type,
+              notes: [],
+              handles: [],
+              graces: [],
+            });
+            beatCursor += event.duration / divisions;
+            continue;
+          }
+          const group = event as ChordGroup;
+          const notes: ChordNote[] = [];
+          group.notes.forEach((note, memberIndex) => {
+            if (!note.source) {
+              return;
+            }
+            notes.push({
+              id: `p${partIndex}-m${measure.number}-n${group.noteIndex}-v${memberIndex}`,
+              handle: note.source,
+              pitch: note.pitch,
+              type: note.type,
+              tieStart: note.tieStart,
+            });
+          });
           result.push({
             partIndex,
+            voiceIndex: voice.voiceIndex,
+            voiceNumber: voice.voiceNumber,
             measureIndex,
             onsetBeat: beatCursor,
-            isRest: true,
-            type: event.type,
-            notes: [],
-            handles: [],
-            graces: [],
+            isRest: false,
+            type: group.type,
+            notes,
+            handles: notes.map((note) => note.handle),
+            graces: graceRowsForGroup(group, partIndex, measure.number),
           });
-          beatCursor += event.duration / divisions;
-          continue;
+          beatCursor += group.duration / divisions;
         }
-        const group = event as ChordGroup;
-        const notes: ChordNote[] = [];
-        group.notes.forEach((note, voiceIndex) => {
-          if (!note.source) {
-            return;
-          }
-          notes.push({
-            id: `p${partIndex}-m${measure.number}-n${group.noteIndex}-v${voiceIndex}`,
-            handle: note.source,
-            pitch: note.pitch,
-            type: note.type,
-            tieStart: note.tieStart,
-          });
-        });
-        result.push({
-          partIndex,
-          measureIndex,
-          onsetBeat: beatCursor,
-          isRest: false,
-          type: group.type,
-          notes,
-          handles: notes.map((note) => note.handle),
-          graces: graceRowsForGroup(group, partIndex, measure.number),
-        });
-        beatCursor += group.duration / divisions;
       }
     });
   });

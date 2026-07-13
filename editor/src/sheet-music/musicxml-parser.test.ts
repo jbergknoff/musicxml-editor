@@ -117,8 +117,14 @@ describe("cross-rhythm layout alignment", () => {
     const layout = resolveLayout(score);
     const spine = layout.measureSpines[0];
 
-    const trebleXs = eventXsFromSpine(score.parts[0].measures[0].events, spine);
-    const bassXs = eventXsFromSpine(score.parts[1].measures[0].events, spine);
+    const trebleXs = eventXsFromSpine(
+      score.parts[0].measures[0].voices[0].events,
+      spine,
+    );
+    const bassXs = eventXsFromSpine(
+      score.parts[1].measures[0].voices[0].events,
+      spine,
+    );
 
     // Treble events: [rest, t1..t9]. The beat-2 downbeat is the 4th triplet,
     // event index 4. Bass events: 8 eighths; beat 2 is the 5th, event index 4.
@@ -174,7 +180,7 @@ describe("clef changes", () => {
 
   test("a mid-measure clef change tags only the chords after it", () => {
     const bass = parseScore(MID_MEASURE_CLEF).parts[1];
-    const events = bass.measures[0].events as ChordGroup[];
+    const events = bass.measures[0].voices[0].events as ChordGroup[];
     // The measure starts in bass (F clef), so its start clef is F4 and the first
     // two chords (before the change) carry no clef override.
     expect(bass.measures[0].clef).toMatchObject({ sign: "F", line: 4 });
@@ -238,5 +244,65 @@ describe("clef changes", () => {
     // ...and measure 3 carries the treble clef forward (it declares none).
     expect(part.measures[2].clef).toMatchObject({ sign: "G", line: 2 });
     expect(part.measures[2].clefChange).toBeUndefined();
+  });
+});
+
+describe("multiple voices on one staff", () => {
+  // One treble staff, two voices via <backup>: voice 1 holds a whole-note chord
+  // for the whole bar while voice 2 moves quarter, quarter, then a half. This is
+  // the "sustained chord over a moving inner line" case that a single flattened
+  // stream cannot express (the whole note's 4-beat span collapses to the gap to
+  // the moving voice's next onset).
+  const TWO_VOICE = `<?xml version="1.0"?>
+<score-partwise version="3.1">
+  <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
+  <part id="P1">
+    <measure number="1">
+      <attributes>
+        <divisions>4</divisions><key><fifths>0</fifths></key>
+        <time><beats>4</beats><beat-type>4</beat-type></time>
+        <clef><sign>G</sign><line>2</line></clef>
+      </attributes>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>16</duration><voice>1</voice><type>whole</type></note>
+      <note><chord/><pitch><step>G</step><octave>4</octave></pitch><duration>16</duration><voice>1</voice><type>whole</type></note>
+      <backup><duration>16</duration></backup>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>4</duration><voice>2</voice><type>quarter</type></note>
+      <note><pitch><step>D</step><octave>4</octave></pitch><duration>4</duration><voice>2</voice><type>quarter</type></note>
+      <note><pitch><step>E</step><octave>4</octave></pitch><duration>8</duration><voice>2</voice><type>half</type></note>
+    </measure>
+  </part>
+</score-partwise>`;
+
+  test("splits a staff's <voice>s into independent streams with true durations", () => {
+    const measure = parseScore(TWO_VOICE).parts[0].measures[0];
+    expect(measure.voices.length).toBe(2);
+
+    const [v0, v1] = measure.voices;
+    expect(v0).toMatchObject({ voiceIndex: 0, voiceNumber: 1 });
+    expect(v1).toMatchObject({ voiceIndex: 1, voiceNumber: 2 });
+
+    // Voice 1: one whole-note chord spanning the full bar (16 divisions), NOT
+    // shortened to the gap to voice 2's next onset.
+    expect(v0.events.length).toBe(1);
+    const held = v0.events[0] as ChordGroup;
+    expect(held.duration).toBe(16);
+    expect(held.type).toBe("whole");
+    expect(held.notes.map((n) => n.pitch.step)).toEqual(["E", "G"]);
+
+    // Voice 2: quarter, quarter, half — summing to the same 16-division bar.
+    expect(v1.events.map((e) => e.duration)).toEqual([4, 4, 8]);
+    const total = v1.events.reduce((t, e) => t + e.duration, 0);
+    expect(total).toBe(16);
+  });
+
+  test("both voices share the rhythm spine so their onsets align", () => {
+    const score = parseScore(TWO_VOICE);
+    const layout = resolveLayout(score);
+    const spine = layout.measureSpines[0];
+    const measure = score.parts[0].measures[0];
+    const heldXs = eventXsFromSpine(measure.voices[0].events, spine);
+    const movingXs = eventXsFromSpine(measure.voices[1].events, spine);
+    // The held chord and the first moving note both begin at beat 0 → same x.
+    expect(heldXs[0]).toBe(movingXs[0]);
   });
 });
