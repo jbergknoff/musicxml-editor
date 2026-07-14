@@ -1354,6 +1354,86 @@ export function shiftNotesInTime(
   return handleFor(measuresOf(doc), handle.measureIndex, target);
 }
 
+// The length a measure would keep after trimming: as far as its real notes
+// reach, but never below the time signature's nominal bar (so a bar that ends
+// on a legitimate rest keeps it, and a genuinely over-full bar stays as long as
+// its notes demand). Shared by `trimMeasure` and `measureTrailingPadding`.
+function trimmedMeasureLength(
+  measureEl: Element,
+  divisions: number,
+  divisionsPerMeasure: number,
+): number {
+  const realExtent = readRealNotes(measureEl, divisions).reduce(
+    (max, note) => Math.max(max, note.onsetDivisions + note.durationDivisions),
+    0,
+  );
+  return Math.max(realExtent, divisionsPerMeasure);
+}
+
+// How many trailing divisions of pure rest padding a measure carries beyond both
+// its real notes and its nominal length — i.e. exactly how much `trimMeasure`
+// would drop. Zero when there is nothing to trim; the editor uses `> 0` to
+// enable the "Trim measure" command.
+export function measureTrailingPadding(
+  doc: Document,
+  measureIndex: number,
+): number {
+  const measureEl = measuresOf(doc)[measureIndex];
+  if (!measureEl) {
+    return 0;
+  }
+  const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+  const currentLength =
+    measureContentDivisions(measureEl) || divisionsPerMeasure;
+  const trimmed = trimmedMeasureLength(
+    measureEl,
+    divisions,
+    divisionsPerMeasure,
+  );
+  return Math.max(0, currentLength - trimmed);
+}
+
+// Trim a measure's trailing rest padding, shrinking its notated length back to
+// `trimmedMeasureLength`. This is the "fix" counterpart to the over-full states
+// the editor deliberately allows during OMR cleanup: `writeMeasure` pads every
+// voice out to the bar's (possibly over-full) length, so once the over-long
+// durations that stretched a bar have been corrected, those padding rests can't
+// be deleted directly — they are regenerated on every rewrite because the bar's
+// length is read back from content that includes them. Trimming re-emits the
+// measure at the shorter length, dropping the padding on every staff at once.
+// No-op (returns false) when the bar has no trailing padding to remove.
+export function trimMeasure(doc: Document, measureIndex: number): boolean {
+  const measureEl = measuresOf(doc)[measureIndex];
+  if (!measureEl) {
+    return false;
+  }
+  const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+  const currentLength =
+    measureContentDivisions(measureEl) || divisionsPerMeasure;
+  const trimmedLength = trimmedMeasureLength(
+    measureEl,
+    divisions,
+    divisionsPerMeasure,
+  );
+  if (trimmedLength >= currentLength) {
+    return false;
+  }
+  const sc = staffCountOf(doc);
+  const requiredStaves =
+    sc > 1 ? Array.from({ length: sc }, (_, index) => index + 1) : undefined;
+  const notes = readRealNotes(measureEl, divisions);
+  writeMeasure(
+    doc,
+    measureEl,
+    notes,
+    trimmedLength,
+    divisions,
+    sc,
+    requiredStaves,
+  );
+  return true;
+}
+
 // Set (or clear) a note element's `<voice>`. Voice 1 is the MusicXML default,
 // so it is written as a bare element with no `<voice>` child (matching how
 // createNoteElement and the single-voice writer emit it); voices ≥ 2 carry an

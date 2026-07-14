@@ -14,6 +14,7 @@ import {
   isEditableDocument,
   maxNoteDuration,
   measureFillReport,
+  measureTrailingPadding,
   moveNote,
   parseDocument,
   pasteMeasures,
@@ -28,6 +29,7 @@ import {
   setNotesVoice,
   shiftNotesInTime,
   toggleTie,
+  trimMeasure,
   voicesInMeasure,
 } from "./dom-edit";
 import {
@@ -1979,6 +1981,120 @@ describe("measureFillReport", () => {
     expect(fill.staffBeats[0]).toBe(1); // treble: notes end at beat 1, not over-full
     expect(fill.staffBeats[1]).toBe(5); // bass: notes reach beat 5, over-full
     expect(fill.nominalBeats).toBe(4);
+  });
+});
+
+describe("trimMeasure / measureTrailingPadding", () => {
+  // A 4/4 bar that once stretched to 5 beats but now holds only a single beat-0
+  // note, so it carries a beat of pure trailing rest padding it can't otherwise
+  // shed. Mirrors the OMR case: `writeMeasure` keeps re-padding to the old,
+  // longer length even after the note that stretched the bar is gone.
+  function docWithPadding(): Document {
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    const tail = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    // Push the beat-1 note out to beat 4, growing the bar to 5 beats, then
+    // delete it. writeMeasure re-pads the bar to its (still 5-beat) length,
+    // leaving a beat of trailing rest the padding can't otherwise shed.
+    const moved = shiftNotesInTime(doc, tail, 3) as NoteHandle;
+    removeNotes(doc, [moved]);
+    return doc;
+  }
+
+  test("reports the trailing padding beyond the real notes and the bar", () => {
+    const doc = docWithPadding();
+    // 5-beat bar, real note ends at beat 1, nominal 4 → padding = 5 - 4 = 1 beat
+    // (4 divisions).
+    expect(measureBeats(reparse(doc), 0, 0)).toBe(5);
+    expect(measureTrailingPadding(doc, 0)).toBe(4);
+  });
+
+  test("trims the bar back to the time signature, keeping the real note", () => {
+    const doc = docWithPadding();
+    expect(trimMeasure(doc, 0)).toBe(true);
+    const score = reparse(doc);
+    expect(measureBeats(score, 0, 0)).toBe(4);
+    expect(chords(score).map((entry) => entry.onsetBeat)).toEqual([0]);
+    // Nothing left to trim.
+    expect(measureTrailingPadding(doc, 0)).toBe(0);
+    expect(trimMeasure(doc, 0)).toBe(false);
+  });
+
+  test("never trims below nominal, so a bar ending on a rest is left alone", () => {
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    // One beat-0 quarter plus three beats of legitimate rest: not padding.
+    expect(measureTrailingPadding(doc, 0)).toBe(0);
+    expect(trimMeasure(doc, 0)).toBe(false);
+    expect(measureBeats(reparse(doc), 0, 0)).toBe(4);
+  });
+
+  test("does not drop a real note that legitimately overruns the bar", () => {
+    const doc = createBlankDocument();
+    const first = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    // Push the note out to beat 4: the bar is over-full but the length is all
+    // real note, not padding.
+    shiftNotesInTime(doc, first, 4);
+    expect(measureTrailingPadding(doc, 0)).toBe(0);
+    expect(trimMeasure(doc, 0)).toBe(false);
+    expect(measureBeats(reparse(doc), 0, 0)).toBe(5);
+  });
+
+  test("trims every staff of a grand staff at once", () => {
+    const doc = createBlankDocument();
+    addStaff(doc);
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+      staff: 1,
+    });
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "G", alter: 0, octave: 2 },
+      staff: 2,
+    });
+    const tail = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1,
+      durationBeats: 1,
+      pitch: { step: "G", alter: 0, octave: 2 },
+      staff: 2,
+    }) as NoteHandle;
+    // Push the beat-1 bass note out to beat 4 (growing the bar to 5 beats and
+    // padding both staves), then drop it.
+    const moved = shiftNotesInTime(doc, tail, 3) as NoteHandle;
+    removeNotes(doc, [moved]);
+    expect(measureTrailingPadding(doc, 0)).toBe(4);
+    expect(trimMeasure(doc, 0)).toBe(true);
+    const score = reparse(doc);
+    // Both staves come back to the nominal 4-beat length, each keeping its beat-0
+    // note (the required-staves path keeps the emptied staff present).
+    expect(measureBeats(score, 0, 0)).toBe(4);
+    expect(measureBeats(score, 1, 0)).toBe(4);
   });
 });
 

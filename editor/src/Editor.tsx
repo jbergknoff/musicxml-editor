@@ -66,6 +66,7 @@ import {
   isEditableDocument,
   maxNoteDuration,
   measureFillReport,
+  measureTrailingPadding,
   moveNote,
   parseDocument,
   pasteMeasures,
@@ -83,6 +84,7 @@ import {
   setNotesVoice,
   shiftNotesInTime,
   toggleTie,
+  trimMeasure,
   voicesInMeasure,
 } from "./dom-edit";
 import {
@@ -1728,6 +1730,37 @@ export function Editor() {
     dropFlagsInMeasure,
   ]);
 
+  // Trim trailing rest padding from the selected measure(s), shrinking each bar
+  // back to its real content (or the time signature, whichever is longer). This
+  // is how an over-full OMR bar is brought back to length: its padding rests
+  // can't be deleted directly (writeMeasure regenerates them to fill the
+  // stretched bar), so once the over-long durations are corrected, trimming
+  // drops the padding on every staff at once (see `trimMeasure`). Reads
+  // `selectionRef`/`slotInfoRef` fresh, per the stale-closure fix pattern.
+  const trimSelectedMeasure = useCallback(() => {
+    if (!editable) {
+      return;
+    }
+    const freshScore = parseScore(serializeDocument(documentRef.current));
+    const range = measureRangeForSelection(selectionRef.current, freshScore);
+    if (!range) {
+      return;
+    }
+    let trimmed = false;
+    for (let index = range.lo; index <= range.hi; index++) {
+      if (trimMeasure(documentRef.current, index)) {
+        trimmed = true;
+      }
+    }
+    if (!trimmed) {
+      return;
+    }
+    const slot = slotInfoRef.current;
+    setMenu(null);
+    commit();
+    reselectSlotAt(slot?.onsetBeat ?? null, slot?.partIndex ?? 0);
+  }, [editable, documentRef, commit, reselectSlotAt]);
+
   // Copy the active measure range (an explicit measureRange selection, or the
   // single measure a note/beat selection sits in) into the session clipboard.
   // Reads `selectionRef` + a freshly parsed score rather than the closed-over
@@ -2540,6 +2573,25 @@ export function Editor() {
   const canDelete =
     isMeasureRangeSelection ||
     (hasSelection && (slotInfo ? !slotInfo.isRest : true));
+  // "Trim measure" is offered only when a selected measure actually carries
+  // trailing rest padding to drop (an over-full OMR bar rebuilt past its
+  // content).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: version tracks the live document
+  const canTrim = useMemo(() => {
+    if (!editable || !activeMeasureRange) {
+      return false;
+    }
+    for (
+      let index = activeMeasureRange.lo;
+      index <= activeMeasureRange.hi;
+      index++
+    ) {
+      if (measureTrailingPadding(documentRef.current, index) > 0) {
+        return true;
+      }
+    }
+    return false;
+  }, [editable, activeMeasureRange, version]);
   const menuItems: ContextMenuItem[] = [
     {
       label: "Move up",
@@ -2583,6 +2635,13 @@ export function Editor() {
       label: "Move to other voice",
       onSelect: moveSelectionToOtherVoice,
       disabled: !slotInfo || slotInfo.isRest,
+    },
+    // Drop trailing rest padding from an over-full bar back to its real content
+    // (see `trimSelectedMeasure`); enabled only when there is padding to remove.
+    {
+      label: "Trim measure",
+      onSelect: trimSelectedMeasure,
+      disabled: !canTrim,
     },
     // Copy/Cut only appear for an explicit measure-range selection (shift-
     // click/drag or Shift+←/→) — not for an ordinary note/beat selection,
