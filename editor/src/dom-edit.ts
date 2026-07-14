@@ -1434,6 +1434,106 @@ export function trimMeasure(doc: Document, measureIndex: number): boolean {
   return true;
 }
 
+// The first real note at/after `gapOnsetDivisions` on a (staff, voice) line, and
+// how far earlier (a negative division count) it can move to butt up against the
+// last real note before the gap (or the bar start) — i.e. the empty span the gap
+// represents. `staff` is 1-based, or 0 for a single-staff document (every note).
+// Returns null when there is no note after the gap to pull in (a trailing rest,
+// nothing to close) or no empty space before it. Shared by `closeGap` and
+// `gapIsClosable` so the menu's enablement and the action agree exactly.
+function gapCloseTarget(
+  measureEl: Element,
+  divisions: number,
+  staff: number,
+  voice: number,
+  gapOnsetDivisions: number,
+): { element: Element; deltaDivisions: number } | null {
+  const notes = readRealNotes(measureEl, divisions);
+  const onLine = (note: RealNote) =>
+    (staff === 0 || staffOf(note.element) === staff) && note.voice === voice;
+  const following = notes
+    .filter((note) => onLine(note) && note.onsetDivisions >= gapOnsetDivisions)
+    .sort((a, b) => a.onsetDivisions - b.onsetDivisions)[0];
+  if (!following) {
+    return null;
+  }
+  const priorEnd = notes.reduce(
+    (max, note) =>
+      onLine(note) && note.onsetDivisions < gapOnsetDivisions
+        ? Math.max(max, note.onsetDivisions + note.durationDivisions)
+        : max,
+    0,
+  );
+  const deltaDivisions = priorEnd - following.onsetDivisions;
+  if (deltaDivisions >= 0) {
+    return null;
+  }
+  return { element: following.element, deltaDivisions };
+}
+
+// Whether a rest gap at `gapOnsetBeats` (in quarter-note beats) on a (staff,
+// voice) line has notes after it that can be pulled earlier — the predicate the
+// editor uses to enable "Close gap" only when it would do something.
+export function gapIsClosable(
+  doc: Document,
+  measureIndex: number,
+  staff: number,
+  voice: number,
+  gapOnsetBeats: number,
+): boolean {
+  const measureEl = measuresOf(doc)[measureIndex];
+  if (!measureEl) {
+    return false;
+  }
+  const { divisions } = measureMetrics(doc);
+  return (
+    gapCloseTarget(
+      measureEl,
+      divisions,
+      staff,
+      voice,
+      Math.round(gapOnsetBeats * divisions),
+    ) !== null
+  );
+}
+
+// Close a rest gap: pull the notes after the gap earlier in their voice so the
+// empty rest space is reclaimed, butting the first following note (and the rest
+// of the line behind it) up against the last real note before the gap (or the
+// bar start). This is the counterpart to shortening an over-long OMR duration —
+// which leaves a rest where the excess was — and to the stray rests the
+// recognizer inserts mid-voice: neither can be deleted directly (a rest slot has
+// no handle), so this reclaims the time instead. The move reuses
+// `shiftNotesInTime`, so it keeps the same collision guard (it lands exactly on
+// the prior note's end, never overlapping it) and rebuilds the measure's rests.
+// `staff` is 1-based, or 0 for a single-staff document. Returns the moved note's
+// fresh handle, or null when there is nothing after the gap to pull in.
+export function closeGap(
+  doc: Document,
+  measureIndex: number,
+  staff: number,
+  voice: number,
+  gapOnsetBeats: number,
+): NoteHandle | null {
+  const measureEl = measuresOf(doc)[measureIndex];
+  if (!measureEl) {
+    return null;
+  }
+  const { divisions } = measureMetrics(doc);
+  const target = gapCloseTarget(
+    measureEl,
+    divisions,
+    staff,
+    voice,
+    Math.round(gapOnsetBeats * divisions),
+  );
+  if (!target) {
+    return null;
+  }
+  const handle = handleFor(measuresOf(doc), measureIndex, target.element);
+  return shiftNotesInTime(doc, handle, target.deltaDivisions / divisions);
+}
+
 // Set (or clear) a note element's `<voice>`. Voice 1 is the MusicXML default,
 // so it is written as a bare element with no `<voice>` child (matching how
 // createNoteElement and the single-voice writer emit it); voices ≥ 2 carry an

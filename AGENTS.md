@@ -243,3 +243,19 @@ menu uses to enable the item only when there is padding to drop. Note that a
 measure whose content genuinely crosses the barline (tied-over notes) keeps fill
 rests on the shorter staves until those over-barline durations are themselves
 corrected — trim removes padding, it doesn't model cross-bar ties.
+
+**Close gap (`closeGap` in `dom-edit.ts` → the "Close gap" context-menu item):**
+the counterpart to shortening an over-long OMR duration (which leaves a rest
+where the excess was) and to stray mid-voice rests — neither can be deleted
+directly, since a rest slot has no handle. With a rest selected, `closeGap` pulls
+the notes *after* the gap earlier in their voice, butting the first following
+note (and the line behind it) up against the last real note before the gap (or
+the bar start), reclaiming the empty span. It reuses `shiftNotesInTime`, so it
+keeps that collision guard (it lands exactly on the prior note's end, never
+overlapping) and only touches the selected rest's own (staff, voice) line — other
+voices sounding across the gap stay put. `gapIsClosable` is the pure predicate
+the menu uses to enable the item only on a rest that has notes after it to pull
+in (a trailing rest with nothing behind it is a no-op). Together with the
+inspector's duration selector and Trim measure, this is the OMR-cleanup loop for
+a bar whose rhythm came in too long: shorten each over-long note, close the rest
+it leaves, then trim the trailing padding.

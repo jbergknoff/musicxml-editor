@@ -7,9 +7,11 @@ import {
   addNoteToChord,
   addStaff,
   appendScore,
+  closeGap,
   copyMeasures,
   createBlankDocument,
   deleteMeasures,
+  gapIsClosable,
   insertMeasure,
   isEditableDocument,
   maxNoteDuration,
@@ -2094,6 +2096,123 @@ describe("trimMeasure / measureTrailingPadding", () => {
     // Both staves come back to the nominal 4-beat length, each keeping its beat-0
     // note (the required-staves path keeps the emptied staff present).
     expect(measureBeats(score, 0, 0)).toBe(4);
+    expect(measureBeats(score, 1, 0)).toBe(4);
+  });
+});
+
+describe("closeGap / gapIsClosable", () => {
+  // Single voice: C5 quarter (beat 0), a quarter rest (beat 1), then E5 (beat 2)
+  // and G5 (beat 3). The mid-measure rest at beat 1 is the gap to close.
+  function docWithMidGap(): Document {
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 2,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+    });
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 3,
+      durationBeats: 1,
+      pitch: { step: "G", alter: 0, octave: 5 },
+    });
+    return doc;
+  }
+
+  test("pulls the notes after a rest earlier, reclaiming the gap", () => {
+    const doc = docWithMidGap();
+    expect(gapIsClosable(doc, 0, 0, 1, 1)).toBe(true);
+    expect(closeGap(doc, 0, 0, 1, 1)).not.toBeNull();
+    // E5/G5 slide from beats 2,3 to beats 1,2; C5 stays at beat 0.
+    expect(chords(reparse(doc)).map((entry) => entry.onsetBeat)).toEqual([
+      0, 1, 2,
+    ]);
+  });
+
+  test("butts the following note against the note before the gap", () => {
+    // C5 half (beats 0-2), a quarter rest (beat 2), then E5 quarter (beat 3).
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 2,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 3,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+    });
+    // Closing the beat-2 gap moves E5 to beat 2, touching C5's end.
+    expect(closeGap(doc, 0, 0, 1, 2)).not.toBeNull();
+    expect(chords(reparse(doc)).map((entry) => entry.onsetBeat)).toEqual([
+      0, 2,
+    ]);
+  });
+
+  test("is a no-op on a trailing rest with nothing after it", () => {
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    // Only a beat-0 quarter; beats 1-3 are trailing rest, nothing to pull in.
+    expect(gapIsClosable(doc, 0, 0, 1, 1)).toBe(false);
+    expect(closeGap(doc, 0, 0, 1, 1)).toBeNull();
+  });
+
+  test("closes only the anchored voice/staff on a grand staff", () => {
+    const doc = createBlankDocument();
+    addStaff(doc);
+    // Treble: C5 (beat 0), gap at beat 1, E5 (beat 2).
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+      staff: 1,
+    });
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 2,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+      staff: 1,
+    });
+    // Bass: a note on every beat, so it has no gap and must not move.
+    for (let beat = 0; beat < 4; beat++) {
+      addNote(doc, {
+        measureIndex: 0,
+        onsetBeatInMeasure: beat,
+        durationBeats: 1,
+        pitch: { step: "G", alter: 0, octave: 2 },
+        staff: 2,
+      });
+    }
+    expect(gapIsClosable(doc, 0, 1, 1, 1)).toBe(true);
+    expect(closeGap(doc, 0, 1, 1, 1)).not.toBeNull();
+    const score = reparse(doc);
+    // Treble E5 pulled to beat 1 (C5 at 0).
+    const trebleOnsets = score.parts[0].measures[0].voices
+      .flatMap((voice) => voice.events)
+      .filter((event) => !isRest(event))
+      .map((_, index) => index);
+    expect(trebleOnsets.length).toBe(2);
+    // Bass untouched: still four notes, one per beat.
+    const bassNotes = score.parts[1].measures[0].voices
+      .flatMap((voice) => voice.events)
+      .filter((event) => !isRest(event));
+    expect(bassNotes.length).toBe(4);
     expect(measureBeats(score, 1, 0)).toBe(4);
   });
 });

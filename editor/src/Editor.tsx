@@ -59,9 +59,11 @@ import {
   addNoteToChord,
   addStaff,
   appendScore,
+  closeGap,
   copyMeasures,
   createBlankDocument,
   deleteMeasures,
+  gapIsClosable,
   insertMeasure,
   isEditableDocument,
   maxNoteDuration,
@@ -1761,6 +1763,44 @@ export function Editor() {
     reselectSlotAt(slot?.onsetBeat ?? null, slot?.partIndex ?? 0);
   }, [editable, documentRef, commit, reselectSlotAt]);
 
+  // Close the rest gap under a selected rest: pull the notes after it earlier in
+  // their voice so the empty space is reclaimed (see `closeGap`). This is the
+  // counterpart to shortening an over-long OMR duration (which leaves a rest) and
+  // to stray mid-voice rests — neither of which can be deleted directly, since a
+  // rest slot has no handle. Reads `slotInfoRef` fresh per the stale-closure fix.
+  const closeSelectedGap = useCallback(() => {
+    const slot = slotInfoRef.current;
+    if (!editable || !slot || !slot.isRest) {
+      return;
+    }
+    const staffNumber = score.parts.length > 1 ? slot.partIndex + 1 : 0;
+    const onsetInMeasure =
+      slot.onsetBeat - (measureStartBeats[slot.measureIndex] ?? 0);
+    const moved = closeGap(
+      documentRef.current,
+      slot.measureIndex,
+      staffNumber,
+      slot.voiceNumber,
+      onsetInMeasure,
+    );
+    if (!moved) {
+      return;
+    }
+    dropFlagsInMeasure(slot.measureIndex);
+    setMenu(null);
+    commit();
+    // The pulled-in note now sits where the rest was; reselect that position.
+    reselectSlotAt(slot.onsetBeat, slot.partIndex);
+  }, [
+    editable,
+    score,
+    measureStartBeats,
+    documentRef,
+    commit,
+    reselectSlotAt,
+    dropFlagsInMeasure,
+  ]);
+
   // Copy the active measure range (an explicit measureRange selection, or the
   // single measure a note/beat selection sits in) into the session clipboard.
   // Reads `selectionRef` + a freshly parsed score rather than the closed-over
@@ -2592,6 +2632,24 @@ export function Editor() {
     }
     return false;
   }, [editable, activeMeasureRange, version]);
+  // "Close gap" is offered only on a selected rest that has notes after it to
+  // pull earlier (see `gapIsClosable`).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: version tracks the live document
+  const canCloseGap = useMemo(() => {
+    if (!editable || !slotInfo || !slotInfo.isRest) {
+      return false;
+    }
+    const staffNumber = score.parts.length > 1 ? slotInfo.partIndex + 1 : 0;
+    const onsetInMeasure =
+      slotInfo.onsetBeat - (measureStartBeats[slotInfo.measureIndex] ?? 0);
+    return gapIsClosable(
+      documentRef.current,
+      slotInfo.measureIndex,
+      staffNumber,
+      slotInfo.voiceNumber,
+      onsetInMeasure,
+    );
+  }, [editable, slotInfo, score, measureStartBeats, version]);
   const menuItems: ContextMenuItem[] = [
     {
       label: "Move up",
@@ -2635,6 +2693,14 @@ export function Editor() {
       label: "Move to other voice",
       onSelect: moveSelectionToOtherVoice,
       disabled: !slotInfo || slotInfo.isRest,
+    },
+    // Reclaim a selected rest's empty time by pulling the notes after it earlier
+    // in their voice (see `closeSelectedGap`); enabled only on a rest with notes
+    // to pull in.
+    {
+      label: "Close gap",
+      onSelect: closeSelectedGap,
+      disabled: !canCloseGap,
     },
     // Drop trailing rest padding from an over-full bar back to its real content
     // (see `trimSelectedMeasure`); enabled only when there is padding to remove.
