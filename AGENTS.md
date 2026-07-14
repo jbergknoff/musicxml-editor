@@ -227,3 +227,19 @@ staff of an over-full bar would read as over-full), so a grand staff whose bass
 overflows while the treble is fine badges only the bass. `staffBeats[i]` is
 index-aligned with `score.parts[i]`. Under-full bars (pickups, final bars) are
 legitimate and never flagged.
+
+**Trim measure (`trimMeasure` in `dom-edit.ts` → the "Trim measure" context-menu
+item):** the "fix" counterpart to an over-full bar. `writeMeasure` pads every
+voice out to the bar's *own* length (`measureContentDivisions`, which counts the
+padding rests), so an over-full OMR bar is a fixed point — shortening the
+over-long durations that stretched it just re-pads to the same length, and the
+trailing rests can't be deleted directly (a rest slot has no handles). `trimMeasure`
+re-emits the measure at `max(realNoteExtent, nominalDivisionsPerMeasure)` — as far
+as its real notes reach, but never below the time signature — dropping the padding
+on every staff at once. It floors at nominal so a bar that legitimately ends on a
+rest is left alone, and never removes a real note that overruns the barline (that
+stays over-full and badged). `measureTrailingPadding` is the pure predicate the
+menu uses to enable the item only when there is padding to drop. Note that a
+measure whose content genuinely crosses the barline (tied-over notes) keeps fill
+rests on the shorter staves until those over-barline durations are themselves
+corrected — trim removes padding, it doesn't model cross-bar ties.
