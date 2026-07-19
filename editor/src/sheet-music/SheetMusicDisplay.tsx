@@ -3267,6 +3267,22 @@ const ChordGroupEl = memo(function ChordGroupEl({
   const hasFlag =
     !hasNoStem && (type === "eighth" || type === "16th") && !beamStemOverride;
 
+  // A fermata (hold) is drawn once per chord, centered above the notehead
+  // column and clear of both the staff and the stem/flag — drawn as plain SVG
+  // (arc + dot) since the embedded glyph subset doesn't carry it.
+  const hasFermata = notes.some((n) => n.fermata);
+  let fermataMark: { cx: number; baseY: number; r: number } | null = null;
+  if (hasFermata) {
+    const staffTopY = staffBottomY - staffSpace * 4;
+    const stemTopY = hasNoStem ? topY : Math.min(stemY1, stemY2);
+    fermataMark = {
+      cx: x + nrx,
+      baseY:
+        Math.min(staffTopY, topY - staffSpace, stemTopY) - staffSpace * 0.7,
+      r: staffSpace * 1.15,
+    };
+  }
+
   return (
     <g data-chord-id={`p${partIndex}-m${measureNumber}-n${group.noteIndex}`}>
       {/* Grace notes rendered to the left of the main chord */}
@@ -3355,6 +3371,26 @@ const ChordGroupEl = memo(function ChordGroupEl({
       })}
       {staccatoDot && (
         <circle cx={staccatoDot.x} cy={staccatoDot.y} r={1.6} fill={inkColor} />
+      )}
+      {fermataMark && (
+        <g>
+          <path
+            d={`M ${fermataMark.cx - fermataMark.r} ${fermataMark.baseY} A ${
+              fermataMark.r
+            } ${fermataMark.r} 0 0 1 ${fermataMark.cx + fermataMark.r} ${
+              fermataMark.baseY
+            }`}
+            fill="none"
+            stroke={inkColor}
+            stroke-width={1.4}
+          />
+          <circle
+            cx={fermataMark.cx}
+            cy={fermataMark.baseY - 1.8}
+            r={1.7}
+            fill={inkColor}
+          />
+        </g>
       )}
     </g>
   );

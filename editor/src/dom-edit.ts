@@ -1354,6 +1354,110 @@ export function shiftNotesInTime(
   return handleFor(measuresOf(doc), handle.measureIndex, target);
 }
 
+// Resolve the rest space at a slot: the next real note in the same staff and
+// voice after `onsetBeat`, and how many divisions of silence separate them.
+// Null when a note in that voice is still sounding at (or across) the slot —
+// not rest space — or when nothing follows in the measure (a trailing rest;
+// trimming covers those).
+function resolveRestGap(
+  doc: Document,
+  measureIndex: number,
+  staffNumber: number,
+  voiceNumber: number,
+  onsetBeat: number,
+): { next: RealNote; gapDivisions: number; divisions: number } | null {
+  const measureEl = measuresOf(doc)[measureIndex];
+  if (!measureEl) {
+    return null;
+  }
+  const { divisions } = measureMetrics(doc);
+  const slotDivisions = Math.round(onsetBeat * divisions);
+  const sc = staffCountOf(doc);
+  const inGroup = (note: RealNote) =>
+    (sc <= 1 || staffOf(note.element) === staffNumber) &&
+    note.voice === voiceNumber;
+  let next: RealNote | null = null;
+  for (const note of readRealNotes(measureEl, divisions)) {
+    if (!inGroup(note)) {
+      continue;
+    }
+    if (note.onsetDivisions <= slotDivisions) {
+      if (note.onsetDivisions + note.durationDivisions > slotDivisions) {
+        return null;
+      }
+      continue;
+    }
+    if (!next || note.onsetDivisions < next.onsetDivisions) {
+      next = note;
+    }
+  }
+  if (!next) {
+    return null;
+  }
+  const gapDivisions = next.onsetDivisions - slotDivisions;
+  return gapDivisions > 0 ? { next, gapDivisions, divisions } : null;
+}
+
+// How many beats of rest space `deleteRestAt` would close at this slot. The
+// editor uses `> 0` to enable Delete on a rest selection. `staffNumber` is the
+// 1-based MusicXML staff (ignored for single-staff documents); `voiceNumber`
+// is the MusicXML voice number the rest belongs to.
+export function restGapBeats(
+  doc: Document,
+  measureIndex: number,
+  staffNumber: number,
+  voiceNumber: number,
+  onsetBeat: number,
+): number {
+  const resolved = resolveRestGap(
+    doc,
+    measureIndex,
+    staffNumber,
+    voiceNumber,
+    onsetBeat,
+  );
+  return resolved ? resolved.gapDivisions / resolved.divisions : 0;
+}
+
+// Delete the rest space at a slot: pull the next note in the slot's staff and
+// voice — and everything after it in the bar — earlier, so it starts where the
+// rest did. This is the fix for the spurious mid-bar gaps OMR recovery leaves
+// behind: the rest itself has no stable element to remove (`writeMeasure`
+// regenerates rest filler on every rewrite), so the gap is closed by shifting
+// the following notes back over it instead. A trailing rest has nothing to
+// pull earlier — that's `trimMeasure`'s territory. Returns false when there is
+// no gap to close.
+export function deleteRestAt(
+  doc: Document,
+  measureIndex: number,
+  staffNumber: number,
+  voiceNumber: number,
+  onsetBeat: number,
+): boolean {
+  const resolved = resolveRestGap(
+    doc,
+    measureIndex,
+    staffNumber,
+    voiceNumber,
+    onsetBeat,
+  );
+  if (!resolved) {
+    return false;
+  }
+  const handle = handleFor(
+    measuresOf(doc),
+    measureIndex,
+    resolved.next.element,
+  );
+  return (
+    shiftNotesInTime(
+      doc,
+      handle,
+      -resolved.gapDivisions / resolved.divisions,
+    ) !== null
+  );
+}
+
 // The length a measure would keep after trimming: as far as its real notes
 // reach, but never below the time signature's nominal bar (so a bar that ends
 // on a legitimate rest keeps it, and a genuinely over-full bar stays as long as
@@ -1826,6 +1930,111 @@ export function toggleTie(doc: Document, handle: NoteHandle): boolean {
   setTieMark(doc, element, "start", true);
   setTieMark(doc, partner, "stop", true);
   return true;
+}
+
+// The `<notations><fermata>` child of a note element, if any. Direct-child
+// walk (not querySelector) so a nested element can't false-positive.
+function fermataEl(noteEl: Element): Element | null {
+  for (const notations of Array.from(noteEl.children)) {
+    if (notations.tagName.toLowerCase() !== "notations") {
+      continue;
+    }
+    for (const mark of Array.from(notations.children)) {
+      if (mark.tagName.toLowerCase() === "fermata") {
+        return mark;
+      }
+    }
+  }
+  return null;
+}
+
+// Whether any member of the chord at `handle` carries a fermata (hold) mark.
+export function chordHasFermata(doc: Document, handle: NoteHandle): boolean {
+  const ctx = noteDurationContext(doc, handle);
+  return ctx?.members.some((m) => fermataEl(m.element) !== null) ?? false;
+}
+
+// Toggle a fermata on the chord at `handle`. The mark is written on the
+// chord's base note element (first in document order); toggling off removes it
+// from every member so a chord never keeps a stale duplicate. Mutates in place
+// — no measure rewrite — so all other children survive. Returns false on a bad
+// handle, a rest, or a grace note.
+export function toggleFermata(doc: Document, handle: NoteHandle): boolean {
+  const ctx = noteDurationContext(doc, handle);
+  if (!ctx || ctx.members.length === 0) {
+    return false;
+  }
+  const marked = ctx.members.filter((m) => fermataEl(m.element) !== null);
+  if (marked.length > 0) {
+    for (const member of marked) {
+      const fermata = fermataEl(member.element);
+      const notationsParent = fermata?.parentElement;
+      fermata?.remove();
+      if (notationsParent && notationsParent.children.length === 0) {
+        notationsParent.remove();
+      }
+    }
+    return true;
+  }
+  const base = ctx.members[0].element;
+  let notationsEl = Array.from(base.children).find(
+    (c) => c.tagName.toLowerCase() === "notations",
+  );
+  if (!notationsEl) {
+    notationsEl = doc.createElement("notations");
+    base.insertBefore(notationsEl, base.querySelector("lyric"));
+  }
+  notationsEl.appendChild(doc.createElement("fermata"));
+  return true;
+}
+
+// Normalize structurally broken notation that OMR recovery can emit, so a
+// recovered document behaves like hand-written MusicXML in the editor:
+//   - A rest carrying a `<chord>` flag (a "chord member rest") is invalid —
+//     it's dropped outright.
+//   - A tie mark whose partner note exists but lacks the reciprocal mark is
+//     repaired (the missing start/stop is added); a tie mark with no
+//     same-pitch note at the adjacent onset at all is dropped, so no tie
+//     dangles into silence (which would render as a hanging curve and replay
+//     the note on playback).
+// Idempotent; run at import time. Returns true when anything changed.
+export function normalizeRecoveredNotation(doc: Document): boolean {
+  let changed = false;
+  for (const note of Array.from(doc.querySelectorAll("note"))) {
+    if (note.querySelector("chord") && note.querySelector("rest")) {
+      note.remove();
+      changed = true;
+    }
+  }
+  for (const measureEl of measuresOf(doc)) {
+    for (const note of readRealNotes(measureEl, 0)) {
+      const element = note.element;
+      if (!readPitch(element)) {
+        continue;
+      }
+      if (hasTieMark(element, "start")) {
+        const partner = findTiePartner(doc, element, "forward");
+        if (partner === null) {
+          setTieMark(doc, element, "start", false);
+          changed = true;
+        } else if (!hasTieMark(partner, "stop")) {
+          setTieMark(doc, partner, "stop", true);
+          changed = true;
+        }
+      }
+      if (hasTieMark(element, "stop")) {
+        const partner = findTiePartner(doc, element, "backward");
+        if (partner === null) {
+          setTieMark(doc, element, "stop", false);
+          changed = true;
+        } else if (!hasTieMark(partner, "start")) {
+          setTieMark(doc, partner, "start", true);
+          changed = true;
+        }
+      }
+    }
+  }
+  return changed;
 }
 
 // Mutate a grace note's pitch in place. Grace notes carry no rhythmic span, so

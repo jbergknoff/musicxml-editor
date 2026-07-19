@@ -59,15 +59,18 @@ import {
   addNoteToChord,
   addStaff,
   appendScore,
+  chordHasFermata,
   copyMeasures,
   createBlankDocument,
   deleteMeasures,
+  deleteRestAt,
   insertMeasure,
   isEditableDocument,
   maxNoteDuration,
   measureFillReport,
   measureTrailingPadding,
   moveNote,
+  normalizeRecoveredNotation,
   parseDocument,
   pasteMeasures,
   redistributeStaves,
@@ -75,6 +78,7 @@ import {
   removeNotes,
   removeStaff,
   reorderGrace,
+  restGapBeats,
   serializeDocument,
   setAccidental,
   setChordMemberDuration,
@@ -83,6 +87,7 @@ import {
   setNoteDuration,
   setNotesVoice,
   shiftNotesInTime,
+  toggleFermata,
   toggleTie,
   trimMeasure,
   voicesInMeasure,
@@ -628,6 +633,10 @@ export function Editor() {
               BEATS_BY_TYPE[staffSlot.type])
             : BEATS_BY_TYPE[staffSlot.type],
         isRest: staffSlot.isRest,
+        hasFermata:
+          rows.length > 0
+            ? chordHasFermata(documentRef.current, rows[0].handle)
+            : false,
         noteOffset: offset,
         notes: rows.map((row) => ({
           key: row.id,
@@ -1092,6 +1101,20 @@ export function Editor() {
       }
       if (toggleTie(documentRef.current, handle)) {
         setSelection({ kind: "note", handle });
+        commit();
+      }
+    },
+    [editable, documentRef, commit],
+  );
+
+  // Toggle a fermata (hold mark) on the chord at `handle` — chord-level, so
+  // the Inspector offers it once per staff group rather than per note row.
+  const toggleFermataOn = useCallback(
+    (handle: NoteHandle) => {
+      if (!editable) {
+        return;
+      }
+      if (toggleFermata(documentRef.current, handle)) {
         commit();
       }
     },
@@ -1710,7 +1733,30 @@ export function Editor() {
     const handles =
       selection.kind === "note" ? [selection.handle] : slotInfo.handles;
     if (handles.length === 0) {
-      // A rest slot has nothing to delete.
+      // A rest slot: deleting it closes the gap — the notes after it in the
+      // same staff/voice slide earlier to start where the rest did. Trimming
+      // right after lets an over-full bar shrink back toward its time
+      // signature (a normal-length bar keeps its padding — trim floors at the
+      // nominal bar, so it's a no-op there). Trailing rests have nothing to
+      // pull earlier; the delete is refused and the selection kept.
+      const deleted = deleteRestAt(
+        documentRef.current,
+        slotInfo.measureIndex,
+        slotInfo.partIndex + 1,
+        slotInfo.voiceNumber,
+        slotInfo.onsetBeat - (measureStartBeats[slotInfo.measureIndex] ?? 0),
+      );
+      if (!deleted) {
+        setEditHint(
+          "Nothing after this rest to pull earlier — trailing padding is removed with Trim measure.",
+        );
+        return;
+      }
+      trimMeasure(documentRef.current, slotInfo.measureIndex);
+      dropFlagsInMeasure(slotInfo.measureIndex);
+      setMenu(null);
+      commit();
+      reselectSlotAt(slotInfo.onsetBeat, slotInfo.partIndex);
       return;
     }
     const onsetBeat = slotInfo.onsetBeat;
@@ -1728,6 +1774,7 @@ export function Editor() {
     documentRef,
     reselectSlotAt,
     dropFlagsInMeasure,
+    measureStartBeats,
   ]);
 
   // Trim trailing rest padding from the selected measure(s), shrinking each bar
@@ -2310,6 +2357,10 @@ export function Editor() {
       embeddedReviewPayload: EmbeddedReviewPayload | null = null,
     ) => {
       const doc = parseDocument(imported);
+      // Drop/repair structurally invalid notation OMR recovery can emit
+      // (chord-member rests, one-sided tie marks) before the document goes
+      // live — idempotent, and a no-op for well-formed files.
+      normalizeRecoveredNotation(doc);
       // Stamp how/when/from-what the document was imported (conversions only).
       if (importMethod) {
         stampImportProvenance(doc, {
@@ -2356,6 +2407,9 @@ export function Editor() {
         return;
       }
       setAppendError(null);
+      // Same import-artifact cleanup finishImport applies — the appended
+      // content is a fresh conversion too.
+      normalizeRecoveredNotation(documentRef.current);
       if (embeddedReviewPayload) {
         writeEmbeddedReview(
           documentRef.current,
@@ -2570,9 +2624,24 @@ export function Editor() {
   // Context-menu items act on the current selection.
   const canNudge = focused !== null;
   const isMeasureRangeSelection = selection?.kind === "measureRange";
+  // A rest slot is deletable when it has a closable gap — notes after it in
+  // its staff/voice that would slide earlier (see deleteSelection).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: version tracks the live document
+  const restDeletable = useMemo(
+    () =>
+      slotInfo?.isRest === true &&
+      restGapBeats(
+        documentRef.current,
+        slotInfo.measureIndex,
+        slotInfo.partIndex + 1,
+        slotInfo.voiceNumber,
+        slotInfo.onsetBeat - (measureStartBeats[slotInfo.measureIndex] ?? 0),
+      ) > 0,
+    [slotInfo, version],
+  );
   const canDelete =
     isMeasureRangeSelection ||
-    (hasSelection && (slotInfo ? !slotInfo.isRest : true));
+    (hasSelection && (slotInfo ? !slotInfo.isRest || restDeletable : true));
   // "Trim measure" is offered only when a selected measure actually carries
   // trailing rest padding to drop (an over-full OMR bar rebuilt past its
   // content).
@@ -3115,6 +3184,12 @@ export function Editor() {
             const handle = inspector?.handles[index];
             if (handle) {
               toggleTieOn(handle);
+            }
+          }}
+          onToggleFermata={(index) => {
+            const handle = inspector?.handles[index];
+            if (handle) {
+              toggleFermataOn(handle);
             }
           }}
           onSetDuration={(index, durationBeats) => {

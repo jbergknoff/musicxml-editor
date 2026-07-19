@@ -782,6 +782,8 @@ function parseRawNote(
   const staccato =
     el.querySelector("notations > articulations > staccato") !== null;
 
+  const fermata = el.querySelector("notations > fermata") !== null;
+
   // Non-standard element emitted by the MIDI-to-MusicXML converter when the
   // actual note duration differs from the display duration (space to next onset).
   const playbackDurationText = el.querySelector("play-duration")?.textContent;
@@ -802,6 +804,7 @@ function parseRawNote(
     // running accidental state (and the key signature) are known.
     accidental: "none",
     staccato,
+    fermata,
     playbackDuration,
     source,
   };

@@ -24,6 +24,8 @@ export interface ParsedNote {
   isChordMember: boolean;
   accidental: AccidentalKind;
   staccato: boolean;
+  /** True when the note (or its chord) carries a fermata (hold) mark. */
+  fermata: boolean;
   /** Present when this note is a grace note (appoggiatura or acciaccatura). */
   grace?: { slash: boolean };
   /**
