@@ -1384,14 +1384,7 @@ export function Editor() {
         );
       }
     },
-    [
-      editable,
-      slotInfo,
-      documentRef,
-      commit,
-      dropFlagsInMeasure,
-      reselectSlotAt,
-    ],
+    [editable, slotInfo, documentRef, commit, dropFlagsInMeasure],
   );
 
   // Move the selected note (when drilled to a single note) or the whole chord
