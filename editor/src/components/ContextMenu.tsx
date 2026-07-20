@@ -8,6 +8,8 @@ export interface ContextMenuItem {
   label: string;
   onSelect: () => void;
   disabled?: boolean;
+  /** Tooltip — used to explain why a disabled item is disabled. */
+  title?: string;
 }
 
 export function ContextMenu({
@@ -62,6 +64,7 @@ export function ContextMenu({
           type="button"
           role="menuitem"
           disabled={item.disabled}
+          title={item.title}
           onClick={() => {
             if (!item.disabled) {
               item.onSelect();

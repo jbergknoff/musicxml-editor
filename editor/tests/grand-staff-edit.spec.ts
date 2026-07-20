@@ -126,7 +126,7 @@ test("a ledger-line bass note selects the bass staff even when the click is near
   // staff's band than the bass staff's. The screen-space notehead pick must
   // still resolve the tap to the bass note's own slot, not the treble rest.
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2 - 4);
-  await expect(page.getByText("Sel: m.1 · 1 note")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*· 1 note/)).toBeVisible();
 
   // A repeat tap on the notehead drills into the note itself.
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2 - 4);

@@ -81,12 +81,16 @@ export interface InspectorNoteGroup {
   graceOffset: number;
 }
 
-// Standard, undotted note values offered by the duration selector, largest
-// first — mirrors `dom-edit`'s own standard-duration table.
+// Standard note values offered by the duration selector, largest first —
+// mirrors `dom-edit`'s own standard-duration table (dotted values included, so
+// the dotted rhythms OMR sources are full of can be entered directly).
 const DURATION_OPTIONS: Array<{ label: string; beats: number }> = [
   { label: "Whole", beats: 4 },
+  { label: "Half ·", beats: 3 },
   { label: "Half", beats: 2 },
+  { label: "Quarter ·", beats: 1.5 },
   { label: "Quarter", beats: 1 },
+  { label: "Eighth ·", beats: 0.75 },
   { label: "Eighth", beats: 0.5 },
   { label: "16th", beats: 0.25 },
 ];

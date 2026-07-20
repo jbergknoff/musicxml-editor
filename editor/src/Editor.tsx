@@ -625,13 +625,16 @@ export function Editor() {
         partIndex: staffSlot.partIndex,
         voiceIndex: staffSlot.voiceIndex,
         label: groupLabels[staffSlot.partIndex] ?? "",
-        durationLabel: staffSlot.type,
-        durationBeats: BEATS_BY_TYPE[staffSlot.type],
+        durationLabel: staffSlot.dot
+          ? `dotted ${staffSlot.type}`
+          : staffSlot.type,
+        durationBeats:
+          BEATS_BY_TYPE[staffSlot.type] * (staffSlot.dot ? 1.5 : 1),
         maxDurationBeats:
           rows.length > 0
             ? (maxNoteDuration(documentRef.current, rows[0].handle) ??
-              BEATS_BY_TYPE[staffSlot.type])
-            : BEATS_BY_TYPE[staffSlot.type],
+              BEATS_BY_TYPE[staffSlot.type] * (staffSlot.dot ? 1.5 : 1))
+            : BEATS_BY_TYPE[staffSlot.type] * (staffSlot.dot ? 1.5 : 1),
         isRest: staffSlot.isRest,
         hasFermata:
           rows.length > 0
@@ -644,10 +647,10 @@ export function Editor() {
           alter: row.pitch.alter,
           focused: focused ? sameHandle(row.handle, focused) : false,
           tied: row.tieStart,
-          durationBeats: BEATS_BY_TYPE[row.type],
+          durationBeats: BEATS_BY_TYPE[row.type] * (row.dot ? 1.5 : 1),
           maxDurationBeats:
             maxNoteDuration(documentRef.current, row.handle) ??
-            BEATS_BY_TYPE[row.type],
+            BEATS_BY_TYPE[row.type] * (row.dot ? 1.5 : 1),
           canDivergeDuration: rows.length > 1,
         })),
         graceOffset,
@@ -828,6 +831,9 @@ export function Editor() {
       const hitChord = gesture.hit
         ? chordForHandle(score, gesture.hit.handle)
         : null;
+      // A tap on a rest glyph selects that exact rest — staff AND voice — so a
+      // secondary voice's rest is reachable (the beat-nearest fallback below
+      // always resolves the primary voice's slot at a shared beat).
       const slot = gesture.offStaff
         ? null
         : hitChord
@@ -838,7 +844,16 @@ export function Editor() {
               hitChord.partIndex,
               hitChord.voiceIndex,
             )
-          : slotAtBeat(score, gesture.beat, 1.5, gesture.partIndex);
+          : ((gesture.restHit
+              ? slotAt(
+                  score,
+                  gesture.restHit.measureIndex,
+                  gesture.restHit.onsetBeat,
+                  gesture.restHit.partIndex,
+                  gesture.restHit.voiceIndex,
+                )
+              : null) ??
+            slotAtBeat(score, gesture.beat, 1.5, gesture.partIndex));
       if (!slot) {
         setSelection(null);
         anchorMeasureRef.current = null;
@@ -950,7 +965,16 @@ export function Editor() {
             hitChord.partIndex,
             hitChord.voiceIndex,
           )
-        : slotAtBeat(score, request.beat, 1.5, request.gesture?.partIndex);
+        : ((request.gesture?.restHit
+            ? slotAt(
+                score,
+                request.gesture.restHit.measureIndex,
+                request.gesture.restHit.onsetBeat,
+                request.gesture.restHit.partIndex,
+                request.gesture.restHit.voiceIndex,
+              )
+            : null) ??
+          slotAtBeat(score, request.beat, 1.5, request.gesture?.partIndex));
       if (!slot) {
         setMenu(null);
         return;
@@ -1332,9 +1356,31 @@ export function Editor() {
       if (selectionRef.current?.kind === "note") {
         setSelection({ kind: "note", handle: moved });
       } else {
-        reselectSlotAt(
-          slotInfo.onsetBeat + direction * step,
-          slotInfo.partIndex,
+        // Reselect the moved chord's exact slot (staff AND voice) — a
+        // beat-nearest lookup would land on the primary voice's slot at the
+        // new beat, so repeatedly shifting a secondary voice's chord would
+        // silently switch to shifting the other voice after the first press.
+        const freshScore = parseScore(serializeDocument(documentRef.current));
+        const chord = chordForHandle(freshScore, moved);
+        const slot = chord
+          ? slotAt(
+              freshScore,
+              chord.measureIndex,
+              chord.onsetBeat,
+              chord.partIndex,
+              chord.voiceIndex,
+            )
+          : null;
+        setSelection(
+          slot
+            ? {
+                kind: "slot",
+                partIndex: slot.partIndex,
+                voiceIndex: slot.voiceIndex,
+                measureIndex: slot.measureIndex,
+                onsetBeat: slot.onsetBeat,
+              }
+            : null,
         );
       }
     },
@@ -2730,9 +2776,17 @@ export function Editor() {
       disabled: !clipboard,
     },
     {
-      label: isMeasureRangeSelection ? "Delete measure(s)" : "Delete",
+      label: isMeasureRangeSelection
+        ? "Delete measure(s)"
+        : slotInfo?.isRest
+          ? "Delete rest (close gap)"
+          : "Delete",
       onSelect: deleteSelection,
       disabled: !canDelete,
+      title:
+        slotInfo?.isRest && !restDeletable
+          ? "Nothing after this rest to pull earlier — trailing padding is removed with Trim measure"
+          : undefined,
     },
   ];
 
@@ -2753,20 +2807,38 @@ export function Editor() {
       fontSize: 15,
     }) as const;
 
-  const selectionReadout =
-    selection?.kind === "measureRange"
-      ? `Sel: m.${
-          Math.min(selection.startMeasureIndex, selection.endMeasureIndex) + 1
-        }–${
-          Math.max(selection.startMeasureIndex, selection.endMeasureIndex) + 1
-        }`
-      : slotInfo
-        ? slotInfo.isRest
-          ? `Sel: m.${slotInfo.measureIndex + 1} · rest`
-          : `Sel: m.${slotInfo.measureIndex + 1} · ${slotInfo.notes.length} ${
-              slotInfo.notes.length === 1 ? "note" : "notes"
-            }`
-        : "No selection";
+  // The status readout names the full slot address — staff, within-measure
+  // beat, and voice — so multi-voice cleanup always shows exactly which line
+  // an edit will hit (two voices' slots at one beat are otherwise
+  // indistinguishable here).
+  const selectionReadout = (() => {
+    if (selection?.kind === "measureRange") {
+      return `Sel: m.${
+        Math.min(selection.startMeasureIndex, selection.endMeasureIndex) + 1
+      }–${Math.max(selection.startMeasureIndex, selection.endMeasureIndex) + 1}`;
+    }
+    if (!slotInfo) {
+      return "No selection";
+    }
+    const staffLabel = staffGroupLabels(score.parts)[slotInfo.partIndex] ?? "";
+    const beat =
+      slotInfo.onsetBeat - (measureStartBeats[slotInfo.measureIndex] ?? 0) + 1;
+    const beatLabel = Number.isInteger(beat) ? String(beat) : beat.toFixed(2);
+    const where = [
+      `m.${slotInfo.measureIndex + 1}`,
+      staffLabel,
+      `b${beatLabel}`,
+      slotInfo.voiceIndex > 0 ? `v${slotInfo.voiceIndex + 1}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const what = slotInfo.isRest
+      ? `${slotInfo.dot ? "dotted " : ""}${slotInfo.type} rest`
+      : `${slotInfo.notes.length} ${
+          slotInfo.notes.length === 1 ? "note" : "notes"
+        }`;
+    return `Sel: ${where} · ${what}`;
+  })();
 
   return (
     <div
@@ -2829,6 +2901,13 @@ export function Editor() {
           type="button"
           onClick={deleteSelection}
           disabled={!canDelete}
+          title={
+            slotInfo?.isRest
+              ? restDeletable
+                ? "Delete this rest — the notes after it slide earlier"
+                : "Nothing after this rest to pull earlier — trailing padding is removed with Trim measure"
+              : undefined
+          }
           style={toolbarButtonStyle(hasSelection)}
         >
           Delete

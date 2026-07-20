@@ -273,6 +273,90 @@ export function pickNoteAtPoint(
   return best;
 }
 
+/** A rest glyph hit in screen (SVG) space: the exact slot position (staff,
+ *  voice, measure, absolute onset) of the rest that was clicked. Lets a tap
+ *  select a rest in a secondary voice, which the nearest-onset fallback
+ *  (`slotAtBeat`) can never reach — it always resolves the primary voice's
+ *  slot at a shared beat. */
+export interface RestHit {
+  partIndex: number;
+  voiceIndex: number;
+  measureIndex: number;
+  onsetBeat: number;
+}
+
+// Rest glyphs are tall (a quarter rest spans ~3 staff-spaces), so picking is
+// more forgiving vertically than for noteheads.
+const REST_PICK_Y_TOLERANCE_SPACES = 1.6;
+
+/**
+ * Pick the rest glyph nearest an SVG-space point, across every staff and
+ * voice. Mirrors the renderer's `RestEl` placement exactly: x from the shared
+ * rhythm spine, y centered on the staff middle line, nudged one staff-space up
+ * (upper voice) or down (lower voice) on a polyphonic staff so each voice's
+ * rests are individually clickable.
+ */
+export function pickRestAtPoint(
+  score: ParsedScore,
+  layout: ResolvedLayout,
+  svgX: number,
+  svgY: number,
+): RestHit | null {
+  const measureStartBeats = computeMeasureStartBeats(score);
+  const xTolerance = PICK_X_TOLERANCE_SPACES * layout.staffSpace;
+  const yTolerance = REST_PICK_Y_TOLERANCE_SPACES * layout.staffSpace;
+  let best: RestHit | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  score.parts.forEach((part, partIndex) => {
+    const staffBottomY = layout.staffBottomYs[partIndex] ?? 0;
+    part.measures.forEach((measure, measureIndex) => {
+      const spine = layout.measureSpines[measureIndex];
+      if (!spine) {
+        return;
+      }
+      const measureStart = measureStartBeats[measureIndex] ?? 0;
+      const divisions = measure.divisions || 4;
+      for (const voice of measure.voices) {
+        const eventXs = eventXsFromSpine(voice.events, spine);
+        const restYOffset =
+          measure.voices.length <= 1
+            ? 0
+            : voice.voiceIndex === 0
+              ? -layout.staffSpace
+              : layout.staffSpace;
+        let beatCursor = measureStart;
+        voice.events.forEach((event, eventIndex) => {
+          const onsetBeat = beatCursor;
+          beatCursor += event.duration / divisions;
+          if (!isRest(event)) {
+            return;
+          }
+          const dx = Math.abs(eventXs[eventIndex] - svgX);
+          if (dx > xTolerance) {
+            return;
+          }
+          const y = staffBottomY - 2 * layout.staffSpace + restYOffset;
+          const dy = Math.abs(y - svgY);
+          if (dy > yTolerance) {
+            return;
+          }
+          const distance = (dx / xTolerance) ** 2 + (dy / yTolerance) ** 2;
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            best = {
+              partIndex,
+              voiceIndex: voice.voiceIndex,
+              measureIndex,
+              onsetBeat,
+            };
+          }
+        });
+      }
+    });
+  });
+  return best;
+}
+
 // The renderer id + handle for a known note handle, used to keep a selection
 // highlight attached to a note across edits. Returns null if the handle no
 // longer resolves (e.g. the note was removed).
@@ -443,6 +527,8 @@ export interface ChordNote {
   /** This note's own duration value — usually equal to the chord's `type`,
    *  but chord members may diverge (see `setChordMemberDuration`). */
   type: NoteType;
+  /** True when this note's duration is dotted (1.5× its `type`). */
+  dot: boolean;
   /** True when this note ties forward into the next chord (drawn as a tie
    *  arc by `TieLayer`; see `ParsedNote.tieStart`). */
   tieStart: boolean;
@@ -488,6 +574,7 @@ function pickableChordInfos(score: ParsedScore): ChordInfo[] {
               handle: note.source,
               pitch: note.pitch,
               type: note.type,
+              dot: note.dot,
               tieStart: note.tieStart,
             });
           });
@@ -570,6 +657,8 @@ export interface SlotInfo {
   isRest: boolean;
   /** Duration value of the rest or chord (for the inspector's duration label). */
   type: NoteType;
+  /** True when the rest/chord duration is dotted (1.5× its `type`). */
+  dot: boolean;
   /** Chord members, top-first ordering applied by the caller; empty for a rest. */
   notes: ChordNote[];
   /** Source handles of the chord's notes; empty for a rest. */
@@ -639,6 +728,7 @@ function pickableSlots(score: ParsedScore): SlotInfo[] {
               onsetBeat: beatCursor,
               isRest: true,
               type: event.type,
+              dot: event.dot,
               notes: [],
               handles: [],
               graces: [],
@@ -657,6 +747,7 @@ function pickableSlots(score: ParsedScore): SlotInfo[] {
               handle: note.source,
               pitch: note.pitch,
               type: note.type,
+              dot: note.dot,
               tieStart: note.tieStart,
             });
           });
@@ -668,6 +759,7 @@ function pickableSlots(score: ParsedScore): SlotInfo[] {
             onsetBeat: beatCursor,
             isRest: false,
             type: group.type,
+            dot: group.dot,
             notes,
             handles: notes.map((note) => note.handle),
             graces: graceRowsForGroup(group, partIndex, measure.number),

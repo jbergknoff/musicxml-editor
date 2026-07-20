@@ -2639,3 +2639,103 @@ describe("normalizeRecoveredNotation", () => {
     expect(serializeDocument(doc)).toBe(before);
   });
 });
+
+describe("toggleTie across voices", () => {
+  test("forward partner search walks time order, not document order", () => {
+    const doc = createBlankDocument({ measureCount: 2 });
+    // Voice 1: A4 quarter on beat 4 of measure 1; voice 2: A4 whole at beat 1
+    // (its <note> appears AFTER voice 1's in the document). The tie from the
+    // beat-4 A4 must reach measure 2's A4 — not voice 2's earlier whole note.
+    const late = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 3,
+      durationBeats: 1,
+      pitch: { step: "A", alter: 0, octave: 4 },
+    }) as NoteHandle;
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 4,
+      pitch: { step: "A", alter: 0, octave: 4 },
+      voice: 2,
+    });
+    addNote(doc, {
+      measureIndex: 1,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "A", alter: 0, octave: 4 },
+    });
+    expect(toggleTie(doc, late)).toBe(true);
+    const placed = chords(reparse(doc));
+    // measure 2's A4 carries the stop; voice 2's whole note carries nothing.
+    const m2 = placed.find((entry) => entry.measureIndex === 1);
+    expect(m2?.chord.notes[0].tieStop).toBe(true);
+    const whole = placed.find(
+      (entry) => entry.measureIndex === 0 && entry.chord.duration === 16,
+    );
+    expect(whole?.chord.notes[0].tieStart).toBe(false);
+    expect(whole?.chord.notes[0].tieStop).toBe(false);
+  });
+
+  test("a chain link's forward tie can be added despite its stop mark", () => {
+    const doc = createBlankDocument({ measureCount: 2 });
+    const first = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 2,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    const middle = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 2,
+      durationBeats: 2,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    addNote(doc, {
+      measureIndex: 1,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    expect(toggleTie(doc, first)).toBe(true);
+    // `middle` now carries a stop; toggling it must ADD the forward tie into
+    // measure 2 (not tear down the first tie).
+    expect(toggleTie(doc, middle)).toBe(true);
+    const placed = chords(reparse(doc));
+    expect(placed[0].chord.notes[0].tieStart).toBe(true);
+    expect(placed[1].chord.notes[0].tieStop).toBe(true);
+    expect(placed[1].chord.notes[0].tieStart).toBe(true);
+    expect(placed[2].chord.notes[0].tieStop).toBe(true);
+  });
+});
+
+describe("removing a staff's last notes", () => {
+  test("an emptied grand-staff measure keeps blank bars on both staves", () => {
+    const doc = parseDocument(
+      serializeDocument(createBlankDocument({ measureCount: 2 })),
+    );
+    addStaff(doc);
+    const first = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+      staff: 1,
+    }) as NoteHandle;
+    const second = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 2 },
+      staff: 2,
+    }) as NoteHandle;
+    removeNotes(doc, [second, first]);
+    const measure = reparse(doc).parts.map(
+      (part) => part.measures[0].voices.flatMap((v) => v.events).length,
+    );
+    // Both staves still carry (rest) events — the measure did not vanish.
+    expect(measure.length).toBe(2);
+    expect(measure[0]).toBeGreaterThan(0);
+    expect(measure[1]).toBeGreaterThan(0);
+  });
+});

@@ -1053,8 +1053,28 @@ export function removeNotes(doc: Document, handles: NoteHandle[]): void {
     const notes = readRealNotes(measureEl, divisions).filter(
       (note) => !removeSet.has(note.element),
     );
-    writeMeasure(doc, measureEl, notes, measureLength, divisions, sc);
+    // Every staff must survive the rewrite even if this removal emptied it —
+    // without the requiredStaves list an emptied staff (or a fully emptied
+    // measure) would vanish from the document: no rests, no slots, invisible
+    // and unreachable in the editor.
+    writeMeasure(
+      doc,
+      measureEl,
+      notes,
+      measureLength,
+      divisions,
+      sc,
+      allStaves(sc),
+    );
   }
+}
+
+// The 1..staffCount list writeMeasure needs to keep emptied staves alive, or
+// undefined for a single staff (where writeStaffNotes always emits the bar).
+function allStaves(staffCount: number): number[] | undefined {
+  return staffCount > 1
+    ? Array.from({ length: staffCount }, (_, index) => index + 1)
+    : undefined;
 }
 
 // Remove a note; its span becomes rest (rebalanced by writeMeasure).
@@ -1075,7 +1095,16 @@ export function removeNote(doc: Document, handle: NoteHandle): void {
   const notes = readRealNotes(measureEl, divisions).filter(
     (note) => note.element !== target,
   );
-  writeMeasure(doc, measureEl, notes, measureLength, divisions, sc);
+  // Keep emptied staves alive (see removeNotes).
+  writeMeasure(
+    doc,
+    measureEl,
+    notes,
+    measureLength,
+    divisions,
+    sc,
+    allStaves(sc),
+  );
 }
 
 // Move a note to a new pitch and/or onset (possibly a different measure). The
@@ -1155,6 +1184,7 @@ export function moveNote(
   });
   writeMeasure(doc, destMeasureEl, destNotes, destLength, divisions, sc);
   // A cross-measure move leaves a hole in the source measure to backfill.
+  // Keep emptied staves alive (see removeNotes).
   if (sourceMeasureEl !== destMeasureEl) {
     const sourceLength =
       measureContentDivisions(sourceMeasureEl) || divisionsPerMeasure;
@@ -1166,6 +1196,7 @@ export function moveNote(
       sourceLength,
       divisions,
       sc,
+      allStaves(sc),
     );
   }
   return handleFor(measuresOf(doc), target.measureIndex, element);
@@ -1764,6 +1795,7 @@ interface TieCandidate {
   measureIndex: number;
   onsetDivisions: number;
   staff: number;
+  voice: number;
   pitch: Pitch;
 }
 
@@ -1783,6 +1815,7 @@ function tieCandidates(doc: Document): TieCandidate[] {
         measureIndex,
         onsetDivisions: note.onsetDivisions,
         staff: staffOf(note.element),
+        voice: note.voice,
         pitch,
       });
     }
@@ -1806,7 +1839,19 @@ function findTiePartner(
     return null;
   }
   const src = candidates[sourceIndex];
-  const sameStaff = candidates.filter((c) => c.staff === src.staff);
+  // Time order, not document order: in a multi-voice measure a later voice's
+  // early notes appear after an earlier voice's late notes in the document, so
+  // walking document order would let "the next onset" be an earlier beat in
+  // another voice. Sort is stable, so same-onset notes keep document order.
+  // Ties are voice-internal: another voice's intervening onsets on the same
+  // staff (a moving line under a held note) must not block the held note from
+  // reaching its own voice's next onset.
+  const sameStaff = candidates
+    .filter((c) => c.staff === src.staff && c.voice === src.voice)
+    .sort(
+      (a, b) =>
+        a.measureIndex - b.measureIndex || a.onsetDivisions - b.onsetDivisions,
+    );
   const srcStaffIndex = sameStaff.findIndex((c) => c.element === source);
   const sequence =
     direction === "forward"
@@ -1893,13 +1938,16 @@ function setTieMark(
   }
 }
 
-// Toggle a tie on `handle`'s note: if it already ties to its neighbor (in
-// either direction — the handle may be the tie's start or stop endpoint),
-// remove the tie from both notes; otherwise tie it forward to the next
+// Toggle the FORWARD tie on `handle`'s note: if it already ties into the next
+// chord, remove that tie from both notes; otherwise tie it forward to the next
 // same-pitch note on its staff, if one exists at the immediately following
-// onset. Mutated in place (no measure rewrite) so every other child survives.
-// Returns false on a bad handle, a rest, or a forward tie with no eligible
-// partner.
+// onset. Forward-biased on purpose — the note may also be a tie's *target* (a
+// chain link like 8th→half→next bar), and that backward tie must not block
+// adding or removing the forward one; a backward tie is removed from its own
+// start note's toggle. A note with only a stray stop mark (no forward partner
+// at all) still clears it, so damaged one-sided ties remain fixable from
+// either end. Mutated in place (no measure rewrite) so every other child
+// survives. Returns false on a bad handle, a rest, or no tie to add/remove.
 export function toggleTie(doc: Document, handle: NoteHandle): boolean {
   const element = elementForHandle(doc, handle);
   if (!element || !readPitch(element)) {
@@ -1914,22 +1962,23 @@ export function toggleTie(doc: Document, handle: NoteHandle): boolean {
     }
     return true;
   }
-  if (hasTieMark(element, "stop")) {
-    const partner = findTiePartner(doc, element, "backward");
-    setTieMark(doc, element, "stop", false);
-    if (partner) {
-      setTieMark(doc, partner, "start", false);
-    }
+
+  const partner = findTiePartner(doc, element, "forward");
+  if (partner) {
+    setTieMark(doc, element, "start", true);
+    setTieMark(doc, partner, "stop", true);
     return true;
   }
 
-  const partner = findTiePartner(doc, element, "forward");
-  if (!partner) {
-    return false;
+  if (hasTieMark(element, "stop")) {
+    const backwardPartner = findTiePartner(doc, element, "backward");
+    setTieMark(doc, element, "stop", false);
+    if (backwardPartner) {
+      setTieMark(doc, backwardPartner, "start", false);
+    }
+    return true;
   }
-  setTieMark(doc, element, "start", true);
-  setTieMark(doc, partner, "stop", true);
-  return true;
+  return false;
 }
 
 // The `<notations><fermata>` child of a note element, if any. Direct-child

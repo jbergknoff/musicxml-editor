@@ -54,7 +54,7 @@ test("shift-click selects a measure range; copy + paste inserts a copy elsewhere
   expect(pitchCount(await exportXml(page))).toBe(3);
 
   await page.locator("#p0-m1-n0-v0").click();
-  await expect(page.getByText("Sel: m.1 · 1 note")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*· 1 note/)).toBeVisible();
 
   await page.locator("#p0-m2-n0-v0").click({ modifiers: ["Shift"] });
   await expect(page.getByText("Sel: m.1–2")).toBeVisible();
@@ -65,7 +65,7 @@ test("shift-click selects a measure range; copy + paste inserts a copy elsewhere
   // Select measure 3 (plain click — resets the range anchor) and paste: the
   // copied measures 1–2 (C, D) are inserted before it.
   await page.locator("#p0-m3-n0-v0").click();
-  await expect(page.getByText("Sel: m.3 · 1 note")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.3 .*· 1 note/)).toBeVisible();
   await page.keyboard.press("Control+v");
   // The paste reselects the pasted range (measures 3–4) — wait for it before
   // exporting, so the export doesn't race the state update.
@@ -88,14 +88,14 @@ test("Shift+ArrowRight extends a measure range from the keyboard; cut removes wh
   await loadThreeMeasures(page);
 
   await page.locator("#p0-m1-n0-v0").click();
-  await expect(page.getByText("Sel: m.1 · 1 note")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*· 1 note/)).toBeVisible();
   await page.keyboard.press("Shift+ArrowRight");
   await expect(page.getByText("Sel: m.1–2")).toBeVisible();
 
   await page.keyboard.press("Control+x");
   // Wait for the cut's reselect (deleteMeasureRange lands on the surviving
   // measure) before exporting, so the export doesn't race the state update.
-  await expect(page.getByText("Sel: m.1 · 1 note")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*· 1 note/)).toBeVisible();
   const afterCut = await exportXml(page);
   // Only measure 3 (E) survives the cut.
   expect(measureCount(afterCut)).toBe(1);
@@ -186,7 +186,7 @@ test("right-click on a single-note selection does not offer Cut measure(s)", asy
 }) => {
   await loadThreeMeasures(page);
   await page.locator("#p0-m1-n0-v0").click();
-  await expect(page.getByText("Sel: m.1 · 1 note")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*· 1 note/)).toBeVisible();
 
   await page.locator("#p0-m1-n0-v0").click({ button: "right" });
   await expect(page.getByRole("menuitem", { name: "Delete" })).toBeVisible();
@@ -209,7 +209,7 @@ test("the − Measure toolbar button deletes the selected measure", async ({
   await page.getByRole("button", { name: "− Measure" }).click();
   // The delete reselects the measure now sitting at that position (E, moved
   // down from measure 3 to measure 2) — wait before exporting.
-  await expect(page.getByText("Sel: m.2 · 1 note")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.2 .*· 1 note/)).toBeVisible();
 
   const after = await exportXml(page);
   expect(measureCount(after)).toBe(2);
