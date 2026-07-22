@@ -1520,6 +1520,30 @@ describe("multi-voice grand-staff editing", () => {
     ).toBe(true);
   });
 
+  test("nudging a voice-1 half note keeps its duration when another voice subdivides the staff", () => {
+    // Regression: gap detection in moveNote was staff-only, so a pitch nudge of
+    // the voice-1 D5 half note (beats 1-2) was truncated to a quarter by voice
+    // 2's onset at beat 2 on the same staff. Voices overlap by design.
+    const doc = parseDocument(MULTI_VOICE_XML);
+    const moved = moveNote(
+      doc,
+      { measureIndex: 0, noteElementIndex: 0 },
+      {
+        measureIndex: 0,
+        onsetBeatInMeasure: 0,
+        pitch: { step: "E", alter: 0, octave: 5 },
+      },
+    );
+    expect(moved).not.toBeNull();
+    const notes = [...doc.querySelectorAll("note")];
+    const eNote = notes.find(
+      (n) => n.querySelector("step")?.textContent === "E",
+    );
+    // Still a half note (duration 8 at divisions=4), not clamped to a quarter.
+    expect(eNote?.querySelector("duration")?.textContent).toBe("8");
+    expect(eNote?.querySelector("type")?.textContent).toBe("half");
+  });
+
   test("addNote on staff 2 of a multi-voice score leaves staff-1 voices intact", () => {
     const doc = parseDocument(MULTI_VOICE_XML);
     addNote(doc, {

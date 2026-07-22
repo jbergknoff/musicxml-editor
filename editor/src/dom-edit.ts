@@ -1153,11 +1153,16 @@ export function moveNote(
   const destNotes = readRealNotes(destMeasureEl, divisions).filter(
     (note) => note.element !== element,
   );
-  // Gap detection looks only at notes in the moving note's own staff — a busier
-  // staff alongside it (grand staff) must not shorten this note's duration.
+  // Gap detection looks only at notes in the moving note's own staff *and*
+  // voice — a busier staff alongside it (grand staff), or another voice sharing
+  // its staff, must not shorten this note's duration. Voices overlap by design,
+  // so a half note in voice 2 keeps its length even when voice 1 subdivides the
+  // same beats (otherwise a pitch nudge would truncate it to the next voice-1
+  // onset).
   const nextOnset = destNotes.reduce(
     (min, note) =>
       staffOf(note.element) === movingStaff &&
+      note.voice === movingVoice &&
       note.onsetDivisions > onsetDivisions
         ? Math.min(min, note.onsetDivisions)
         : min,
