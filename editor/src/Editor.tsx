@@ -3,13 +3,14 @@
 // counter forces a re-render after each in-place mutation, and the serialized
 // string is recomputed from it.
 //
-// Interaction is selection-first and keyboard-driven (per the Claude Design
-// handoff): a click selects the whole chord at a beat (Level 1); a second click
-// on a notehead — or Enter — drills to a single note (Level 2); Esc steps back
-// out. The right-hand inspector mirrors the selection and edits pitch /
-// accidental / chord membership with discrete commands. Arrow keys re-pitch the
-// drilled note (↑/↓) or move between beats (←/→); A–G add a note; -/=/0 set
-// accidentals; Space plays/stops. A plain drag only scrolls the staff.
+// Interaction is selection-first and keyboard-driven: clicking a notehead
+// selects that note directly, clicking a rest selects that rest, and the scope
+// of an edit (one note vs the whole chord at a beat) comes from which inspector
+// control you use — not from a mode you step into and out of. The right-hand
+// inspector mirrors the selection and edits pitch / accidental / chord
+// membership with discrete commands. Arrow keys re-pitch the selected note
+// (↑/↓) or move between beats (←/→); A–G add a note; -/=/0 set accidentals;
+// Space plays/stops. A plain drag only scrolls the staff.
 
 import { parseMidi } from "midi-file";
 import type { MidiData } from "midi-file";
@@ -199,24 +200,6 @@ function sameHandle(a: NoteHandle, b: NoteHandle): boolean {
   return (
     a.measureIndex === b.measureIndex &&
     a.noteElementIndex === b.noteElementIndex
-  );
-}
-
-function sameSlot(
-  selection: Selection,
-  slot: {
-    partIndex: number;
-    voiceIndex?: number;
-    measureIndex: number;
-    onsetBeat: number;
-  },
-): boolean {
-  return (
-    selection?.kind === "slot" &&
-    selection.partIndex === slot.partIndex &&
-    (selection.voiceIndex ?? 0) === (slot.voiceIndex ?? 0) &&
-    selection.measureIndex === slot.measureIndex &&
-    Math.abs(selection.onsetBeat - slot.onsetBeat) < 1e-6
   );
 }
 
@@ -885,30 +868,21 @@ export function Editor() {
         partIndex: slot.partIndex,
         measureIndex: slot.measureIndex,
       };
-      setSelection((prev) => {
-        const onThisSlot =
-          sameSlot(prev, slot) ||
-          (prev?.kind === "note" &&
-            slot.handles.some((handle) => sameHandle(handle, prev.handle)));
-        // A repeat tap that landed on a notehead drills into that note.
-        if (onThisSlot && gesture.hit) {
-          return { kind: "note", handle: gesture.hit.handle };
-        }
-        // Already drilled to note level: a tap on another notehead stays at
-        // note level (matching ←/→, which keeps the drill level while
-        // moving) instead of popping back out to the beat and demanding a
-        // second click on every note.
-        if (prev?.kind === "note" && gesture.hit) {
-          return { kind: "note", handle: gesture.hit.handle };
-        }
-        return {
-          kind: "slot",
-          partIndex: slot.partIndex,
-          voiceIndex: slot.voiceIndex,
-          measureIndex: slot.measureIndex,
-          onsetBeat: slot.onsetBeat,
-        };
-      });
+      // A tap on a notehead selects that note directly — no drill step, no
+      // second click. A tap on a rest (or an empty beat) selects the beat/rest
+      // slot. Chord-wide vs single-note scope comes from which inspector control
+      // you use, not from a selection mode you have to step into and out of.
+      setSelection(
+        gesture.hit
+          ? { kind: "note", handle: gesture.hit.handle }
+          : {
+              kind: "slot",
+              partIndex: slot.partIndex,
+              voiceIndex: slot.voiceIndex,
+              measureIndex: slot.measureIndex,
+              onsetBeat: slot.onsetBeat,
+            },
+      );
     },
     [editable, score],
   );
@@ -1975,33 +1949,14 @@ export function Editor() {
     });
   }, [score]);
 
-  const stepOut = useCallback(() => {
+  // Escape clears the selection outright — there is no drill hierarchy to step
+  // back through anymore. A measure range is exempted so the natural "right-
+  // click a range, press Escape to dismiss the menu" gesture doesn't also wipe
+  // the range (Escape reaches this global handler alongside ContextMenu's own).
+  const clearSelectionOnEscape = useCallback(() => {
     setMenu(null);
-    setSelection((prev) => {
-      // A measure range isn't part of the slot→note drill hierarchy Escape
-      // steps back out of, so it isn't Escape's to clear. Without this, the
-      // very natural "right-click a range, then press Escape to dismiss the
-      // menu without picking anything" gesture would silently wipe the
-      // range: Escape reaches this global handler before (or as well as)
-      // ContextMenu's own Escape-closes-the-menu listener.
-      if (prev?.kind === "measureRange") {
-        return prev;
-      }
-      if (prev?.kind !== "note") {
-        return null;
-      }
-      const info = chordInfoForHandle(score, prev.handle);
-      return info
-        ? {
-            kind: "slot",
-            partIndex: info.partIndex,
-            voiceIndex: info.voiceIndex,
-            measureIndex: info.measureIndex,
-            onsetBeat: info.onsetBeat,
-          }
-        : null;
-    });
-  }, [score]);
+    setSelection((prev) => (prev?.kind === "measureRange" ? prev : null));
+  }, []);
 
   const cycleChord = useCallback(
     (dir: number) => {
@@ -2314,7 +2269,7 @@ export function Editor() {
         if (listen.playing) {
           listen.stop();
         }
-        stepOut();
+        clearSelectionOnEscape();
         return;
       }
 
@@ -2409,7 +2364,7 @@ export function Editor() {
     editable,
     listen,
     onListen,
-    stepOut,
+    clearSelectionOnEscape,
     drillIn,
     cycleChord,
     deleteSelection,

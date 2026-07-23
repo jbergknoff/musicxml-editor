@@ -57,12 +57,10 @@ test("stepping a chord member in an over-full bar keeps the bar intact", async (
   await loadFile(page, IRREGULAR);
   const inspector = page.locator("aside");
 
-  // Select the beat-1 chord (C5 over A4) → Level 1. Clicking the low A4 notehead
-  // selects the whole beat; the inspector lists it top-first as C5, A4.
+  // Clicking the low A4 notehead selects that note; the inspector still lists
+  // every note at the beat (top-first C5, A4, then the bass staff's C3), so the
+  // whole chord is editable regardless of which note the click landed on.
   await clickNotehead(page, "#p0-m1-n0-v0");
-  await expect(inspector.getByText("Beat", { exact: true })).toBeVisible();
-  // Top-first treble chord rows, then the bass staff's own note at this beat
-  // (the inspector shows a group per staff).
   await expect(pitchButtons(page)).toHaveText(["C5", "A4", "C3"]);
 
   // Click the top row's "Up one step" stepper: C5 → D5.

@@ -91,7 +91,7 @@ test("a note can be added onto the bass staff of a grand staff", async ({
   // → advances along the spine to beat 2; the bass has its own onset there, so
   // the selection stays on the bass staff.
   await page.keyboard.press("ArrowRight");
-  await expect(inspector.getByText("Measure 1 · Beat 2")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*b2 /)).toBeVisible();
   // Both staves rest at beat 2 — the inspector shows one group per staff.
   await expect(inspector.getByText("Rest · quarter")).toHaveCount(2);
 
@@ -126,13 +126,9 @@ test("a ledger-line bass note selects the bass staff even when the click is near
   // staff's band than the bass staff's. The screen-space notehead pick must
   // still resolve the tap to the bass note's own slot, not the treble rest.
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2 - 4);
+  // The click selects that one bass note directly (a single-note selection),
+  // not the treble rest whose band the tap was nearer.
   await expect(page.getByText(/Sel: m\.1 .*· 1 note/)).toBeVisible();
-
-  // A repeat tap on the notehead drills into the note itself.
-  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2 - 4);
-  await expect(
-    page.locator("aside").getByText("Note", { exact: true }),
-  ).toBeVisible();
 });
 
 test("→ walks the shared spine, crossing to the other staff mid-note", async ({
@@ -151,13 +147,13 @@ test("→ walks the shared spine, crossing to the other staff mid-note", async (
   await expect(inspector.getByText("C5", { exact: true })).toBeVisible();
 
   await page.keyboard.press("ArrowRight");
-  await expect(inspector.getByText("Measure 1 · Beat 2")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*b2 /)).toBeVisible();
   // The bass A2 onset at beat 2 is what we crossed to.
   await expect(inspector.getByText("A2", { exact: true })).toBeVisible();
 
   // → again reaches beat 3, where both staves have an onset; still on bass (B2).
   await page.keyboard.press("ArrowRight");
-  await expect(inspector.getByText("Measure 1 · Beat 3")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*b3 /)).toBeVisible();
   await expect(inspector.getByText("B2", { exact: true })).toBeVisible();
 });
 

@@ -31,6 +31,9 @@ const GRAND_STAFF_REST_COVER = fileURLToPath(
 // laid over the black ink note — so a highlighted note is identified by the
 // presence of that overlay group, not by the original notehead's fill.
 const CHORD_TINT = "#84a9e8";
+// Editor.tsx's FOCUS_COLOR (COLORS.accent): the selected note draws in this
+// strong accent; its same-beat chord-mates get the lighter CHORD_TINT.
+const FOCUS_COLOR = "#2A6FDB";
 
 async function loadSingleStaff(page: Page): Promise<void> {
   await page.locator('input[type="file"]').first().setInputFiles(SINGLE_STAFF);
@@ -65,19 +68,20 @@ async function expectSelected(
   page: Page,
   expected: { beat: number; label: string; noteId: string },
 ): Promise<void> {
-  const aside = page.locator("aside");
   await expect(
-    aside.getByText(`Measure 1 · Beat ${expected.beat}`),
+    page.getByText(new RegExp(`Sel: m\\.1 .*b${expected.beat} `)),
   ).toBeVisible();
   await expect(pitchButtons(page)).toHaveCount(1);
   await expect(pitchButtons(page).first()).toHaveText(expected.label);
-  // Exactly one note is highlighted, and it is the expected one — drawn tinted.
+  // Exactly one note is highlighted, and it is the expected one. A click that
+  // lands on the notehead selects the note (focus accent); one that lands off it
+  // resolves to the beat slot (chord tint) — either way it's this note, alone.
   await expect(page.locator("g[data-color-id]")).toHaveCount(1);
   const overlay = page.locator(`g[data-color-id="${expected.noteId}"]`);
   await expect(overlay).toHaveCount(1);
   await expect(overlay.locator("text").last()).toHaveAttribute(
     "fill",
-    CHORD_TINT,
+    new RegExp(`${FOCUS_COLOR}|${CHORD_TINT}`, "i"),
   );
 }
 
@@ -89,7 +93,7 @@ async function expectRestSelected(
 ): Promise<void> {
   const aside = page.locator("aside");
   await expect(
-    aside.getByText(`Measure 1 · Beat ${expected.beat}`),
+    page.getByText(new RegExp(`Sel: m\\.1 .*b${expected.beat} `)),
   ).toBeVisible();
   await expect(aside.getByText(`Rest · ${expected.duration}`)).toBeVisible();
   await expect(pitchButtons(page)).toHaveCount(0);
@@ -147,8 +151,8 @@ test("clicking off a notehead vertically still highlights the note at that beat"
   await page.mouse.click(c1.x, c1.y - staffSpace);
   await expectSelected(page, { beat: 2, label: "E5", noteId: "p0-m1-n1-v0" });
 
-  // Move the selection to C5 first — a repeat click on E5's beat would drill in
-  // rather than re-select it — then click a staff space below the notehead.
+  // A click a staff space below the notehead also resolves to E5's onset.
+  // (Selecting C5 in between just shows the selection actually moves.)
   await page.mouse.click(c0.x, c0.y);
   await expectSelected(page, { beat: 1, label: "C5", noteId: "p0-m1-n0-v0" });
 
@@ -181,18 +185,19 @@ async function loadGrandStaffRestCover(page: Page): Promise<void> {
   await expect(page.locator("#p1-m1-n0-v0")).toBeVisible(); // bass chord
 }
 
-test("a beat-sharing chord on another staff tints with the selection", async ({
+test("clicking a note highlights only that note, not beat-mates on another staff", async ({
   page,
 }) => {
   await loadGrandStaffRestCover(page);
 
-  // Clicking treble C5 (beat 1) selects that beat's slot. The bass half-chord
-  // begins on the same beat, so both its notes tint alongside C5.
+  // Clicking treble C5 (beat 1) selects that one note. The bass half-chord
+  // begins on the same beat but is NOT tinted — a click selects a note, not the
+  // whole beat.
   const c5 = await noteheadCenter(page, "#p0-m1-n0-v0");
   await page.mouse.click(c5.x, c5.y);
   await expect(page.locator('g[data-color-id="p0-m1-n0-v0"]')).toHaveCount(1);
-  await expect(page.locator('g[data-color-id="p1-m1-n0-v0"]')).toHaveCount(1);
-  await expect(page.locator('g[data-color-id="p1-m1-n0-v1"]')).toHaveCount(1);
+  await expect(page.locator('g[data-color-id="p1-m1-n0-v0"]')).toHaveCount(0);
+  await expect(page.locator('g[data-color-id="p1-m1-n0-v1"]')).toHaveCount(0);
   // No rest is selected, so no rest-highlight box is drawn.
   await expect(page.locator("rect[data-rest-highlight]")).toHaveCount(0);
 });
@@ -216,7 +221,7 @@ test("selecting a rest does not tint a chord merely sounding through it", async 
 
   // The rest slot is selected: the inspector names its beat and shows the rest.
   const aside = page.locator("aside");
-  await expect(aside.getByText("Measure 1 · Beat 2")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*b2 /)).toBeVisible();
   await expect(aside.getByText("Rest · quarter")).toBeVisible();
   // No notehead is tinted on the score — in particular the bass half-chord
   // (onset beat 1, covering beat 2) is NOT tinted, because the score highlight

@@ -91,11 +91,11 @@ test("the v key moves a note to the staff's other voice", async ({ page }) => {
   // voice 2 has four moving quarters, the first (C5) at beat 1 alongside them.
   expect(voiceNoteCount(before, 1)).toBe(2);
   expect(voiceNoteCount(before, 2)).toBe(4);
-  // Drill into voice 2's first quarter (C5) and move it to the other voice.
-  // C5 shares its onset with the voice-1 chord, so it merges there rather than
-  // overlapping — an allowed move.
+  // Select voice 2's first quarter (C5) and move it to the other voice. C5
+  // shares its onset with the voice-1 chord, so it merges there rather than
+  // overlapping — an allowed move. Clicking the notehead selects that one note
+  // directly, so "v" moves C5 alone (not the whole beat).
   await clickNotehead(page, "#p0-m1-n1-v0");
-  await clickNotehead(page, "#p0-m1-n1-v0"); // second click drills to the note
   await page.keyboard.press("v");
   const after = await exportXml(page);
   // C5 left voice 2 (three quarters remain) and joined the voice-1 chord.

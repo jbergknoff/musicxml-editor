@@ -156,32 +156,6 @@ export interface InspectorModel {
   noteGroups: InspectorNoteGroup[];
 }
 
-const LEVEL_LABEL: Record<InspectorLevel, string> = {
-  idle: "Idle",
-  beat: "Beat",
-  note: "Note",
-};
-
-function LevelBadge({ level }: { level: InspectorLevel }) {
-  const active = level !== "idle";
-  return (
-    <span
-      style={{
-        fontFamily: FONTS.mono,
-        fontSize: 10.5,
-        letterSpacing: ".06em",
-        textTransform: "uppercase",
-        color: active ? COLORS.accent : COLORS.textFaint,
-        border: `1px solid ${active ? COLORS.accent : COLORS.borderLight}`,
-        borderRadius: 5,
-        padding: "2px 7px",
-      }}
-    >
-      {LEVEL_LABEL[level]}
-    </span>
-  );
-}
-
 // The ♭ ♮ ♯ segmented control. The applied accidental highlights in accent;
 // ♮ is the neutral default and is not highlighted (matching the score, which
 // only prints a natural when one is actually needed).
@@ -906,24 +880,15 @@ export function Inspector({
     >
       <div
         style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
+          fontFamily: FONTS.mono,
+          fontSize: 10.5,
+          letterSpacing: ".08em",
+          textTransform: "uppercase",
+          color: COLORS.textFaint,
           marginBottom: 4,
         }}
       >
-        <span
-          style={{
-            fontFamily: FONTS.mono,
-            fontSize: 10.5,
-            letterSpacing: ".08em",
-            textTransform: "uppercase",
-            color: COLORS.textFaint,
-          }}
-        >
-          Selection
-        </span>
-        <LevelBadge level={model?.level ?? "idle"} />
+        Selection
       </div>
 
       {!editable ? (
@@ -941,17 +906,20 @@ export function Inspector({
             marginTop: 40,
           }}
         >
-          Click a beat on the score to select it.
+          Click a note or rest to select it.
         </p>
       ) : (
         <>
+          {/* The measure/beat position lives in the transport bar's readout;
+              here we name only the note value, so the two don't duplicate. */}
           <div
-            style={{ fontSize: 14, fontWeight: 600, color: COLORS.textPrimary }}
-          >
-            Measure {model.measureNumber} · Beat {model.beatNumber}
-          </div>
-          <div
-            style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 14 }}
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color: COLORS.textPrimary,
+              marginBottom: 14,
+              textTransform: "capitalize",
+            }}
           >
             {subtitle}
           </div>

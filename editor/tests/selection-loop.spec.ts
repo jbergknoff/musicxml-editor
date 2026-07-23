@@ -3,8 +3,8 @@ import { fileURLToPath } from "node:url";
 import { type Page, expect, test } from "@playwright/test";
 import { moreAction } from "./toolbar";
 
-// The design handoff's core selection loop: click a notehead to drill to a note
-// (Level 2), see it mirrored in the inspector, and edit it via the inspector
+// The core selection loop: click a notehead to select that note, see it
+// mirrored in the inspector, and edit it via the inspector
 // controls and the keyboard map (Esc step-out, A–G add, accidentals, + Measure).
 
 const SINGLE_STAFF = fileURLToPath(
@@ -48,26 +48,18 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator("svg").first()).toBeVisible();
 });
 
-test("clicking selects the beat; a second click drills to the note", async ({
-  page,
-}) => {
+test("clicking a notehead selects that note directly", async ({ page }) => {
   await loadSingleStaff(page);
   const inspector = page.locator("aside");
 
   // Before any selection the inspector shows its empty state.
-  await expect(inspector.getByText("Idle")).toBeVisible();
-  await expect(inspector.getByText(/click a beat/i)).toBeVisible();
+  await expect(inspector.getByText(/click a note or rest/i)).toBeVisible();
 
-  // First click on a notehead selects its beat (Level 1); the header names the
-  // time-position and the chord's note is listed with the exact pitch label.
+  // A single click on a notehead selects that note — no drill step. The
+  // transport readout names the position and the note is listed with its pitch.
   await page.locator("#p0-m1-n0-v0").click();
-  await expect(inspector.getByText("Beat", { exact: true })).toBeVisible();
-  await expect(inspector.getByText(/Measure 1 .* Beat \d/)).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*· 1 note/)).toBeVisible();
   await expect(pitchButton(page, "C5")).toBeVisible();
-
-  // A second click on the same notehead narrows to that one note (Level 2).
-  await page.locator("#p0-m1-n0-v0").click();
-  await expect(inspector.getByText("Note", { exact: true })).toBeVisible();
 });
 
 test("the inspector sets an accidental on the selected note", async ({
@@ -110,22 +102,17 @@ test("Add note stacks a chord member on the selected beat", async ({
   expect(pitchCount(await exportXml(page))).toBe(4);
 });
 
-test("Esc steps out Note → Beat → idle without deleting", async ({ page }) => {
+test("Esc clears the selection without deleting", async ({ page }) => {
   await loadSingleStaff(page);
   const inspector = page.locator("aside");
 
-  // Click selects the beat; Enter drills into the top note (Level 2).
   await page.locator("#p0-m1-n0-v0").click();
-  await page.keyboard.press("Enter");
-  await expect(inspector.getByText("Note", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*· 1 note/)).toBeVisible();
 
   await page.keyboard.press("Escape");
-  await expect(inspector.getByText("Beat", { exact: true })).toBeVisible();
+  await expect(inspector.getByText(/click a note or rest/i)).toBeVisible();
 
-  await page.keyboard.press("Escape");
-  await expect(inspector.getByText(/click a beat/i)).toBeVisible();
-
-  // Nothing was deleted by stepping out.
+  // Clearing the selection deleted nothing.
   expect(pitchCount(await exportXml(page))).toBe(3);
 });
 
