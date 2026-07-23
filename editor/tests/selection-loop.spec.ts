@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { type Page, expect, test } from "@playwright/test";
+import { moreAction } from "./toolbar";
 
 // The design handoff's core selection loop: click a notehead to drill to a note
 // (Level 2), see it mirrored in the inspector, and edit it via the inspector
@@ -139,6 +140,6 @@ test("the + Measure button appends a measure", async ({ page }) => {
   await loadSingleStaff(page);
   expect(measureCount(await exportXml(page))).toBe(1);
 
-  await page.getByRole("button", { name: "+ Measure" }).click();
+  await moreAction(page, "Add measure");
   expect(measureCount(await exportXml(page))).toBe(2);
 });

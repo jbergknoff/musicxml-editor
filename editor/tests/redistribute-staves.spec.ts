@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { type Page, expect, test } from "@playwright/test";
+import { moreAction } from "./toolbar";
 
 // The "Redistribute" toolbar command opens a modal (explanation + split-point
 // slider) and, on confirm, splits every note across a treble/bass grand staff
@@ -45,7 +46,7 @@ test("Redistribute splits a single staff into a treble/bass grand staff", async 
   expect(before).not.toMatch(/<staves>/);
 
   // Open the confirmation modal and confirm with the default split (middle C).
-  await page.getByRole("button", { name: "Redistribute" }).click();
+  await moreAction(page, "Redistribute across staves");
   const dialog = page.getByRole("dialog", {
     name: "Redistribute across staves",
   });
@@ -81,7 +82,7 @@ test("Redistribute can be cancelled without changing the score", async ({
     .setInputFiles(REDISTRIBUTE_SOURCE);
   await expect(page.locator("#p0-m1-n0-v0")).toBeVisible();
 
-  await page.getByRole("button", { name: "Redistribute" }).click();
+  await moreAction(page, "Redistribute across staves");
   const dialog = page.getByRole("dialog", {
     name: "Redistribute across staves",
   });
@@ -108,7 +109,7 @@ test("an OMR low-confidence (amber) flag follows its note across redistribution"
 
   // Split high enough that every note in the fixture (C5/E5/G5) moves onto
   // the bass staff (part index 1).
-  await page.getByRole("button", { name: "Redistribute" }).click();
+  await moreAction(page, "Redistribute across staves");
   const dialog = page.getByRole("dialog", {
     name: "Redistribute across staves",
   });

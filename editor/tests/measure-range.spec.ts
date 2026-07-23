@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { type Page, expect, test } from "@playwright/test";
+import { moreAction } from "./toolbar";
 
 // Integration tests for measure-range selection + copy/cut/paste/delete-measure
 // (deferred item 9 in IDEAS.md): shift-click and Shift+←/→ both grow a
@@ -205,8 +206,7 @@ test("the − Measure toolbar button deletes the selected measure", async ({
   expect(measureCount(await exportXml(page))).toBe(3);
 
   await page.locator("#p0-m2-n0-v0").click();
-  await expect(page.getByRole("button", { name: "− Measure" })).toBeEnabled();
-  await page.getByRole("button", { name: "− Measure" }).click();
+  await moreAction(page, "Delete measure(s)");
   // The delete reselects the measure now sitting at that position (E, moved
   // down from measure 3 to measure 2) — wait before exporting.
   await expect(page.getByText(/Sel: m\.2 .*· 1 note/)).toBeVisible();

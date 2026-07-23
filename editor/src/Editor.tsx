@@ -390,6 +390,12 @@ export function Editor() {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  // Anchor for the toolbar's "More" overflow menu (structure/append actions).
+  const [overflowMenu, setOverflowMenu] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const appendInputRef = useRef<HTMLInputElement>(null);
   // Whether the "Redistribute across staves" confirmation modal is showing.
   const [redistributeOpen, setRedistributeOpen] = useState(false);
   const imageImport = useImageImport();
@@ -2830,23 +2836,6 @@ export function Editor() {
     },
   ];
 
-  // Accidental toolbar buttons act on the drilled note.
-  const accidentalButtonStyle = (enabled: boolean) =>
-    ({
-      width: 30,
-      height: 28,
-      display: "inline-flex",
-      alignItems: "center",
-      justifyContent: "center",
-      borderRadius: RADIUS.button,
-      border: `1px solid ${COLORS.borderButton}`,
-      background: COLORS.canvas,
-      color: enabled ? COLORS.textPrimary : COLORS.textPlaceholder,
-      cursor: enabled ? "pointer" : "default",
-      fontFamily: FONTS.music,
-      fontSize: 15,
-    }) as const;
-
   // The status readout names the full slot address — staff, within-measure
   // beat, and voice — so multi-voice cleanup always shows exactly which line
   // an edit will hit (two voices' slots at one beat are otherwise
@@ -2937,21 +2926,6 @@ export function Editor() {
         >
           Redo
         </button>
-        <button
-          type="button"
-          onClick={deleteSelection}
-          disabled={!canDelete}
-          title={
-            slotInfo?.isRest
-              ? restDeletable
-                ? "Delete this rest — the notes after it slide earlier"
-                : "Nothing after this rest to pull earlier — trailing padding is removed with Trim measure"
-              : undefined
-          }
-          style={toolbarButtonStyle(hasSelection)}
-        >
-          Delete
-        </button>
         <span
           style={{ width: 1, height: 22, background: COLORS.borderLight }}
         />
@@ -2982,94 +2956,35 @@ export function Editor() {
         >
           Paste
         </button>
-        {/* Scoped to the current file: appends onto the end of the live
-            document (e.g. a series of page screenshots that should all land
-            in one score) rather than replacing it. Undoable like any other
-            edit. */}
-        <label
-          style={toolbarButtonStyle(editable && !imageImport.busy)}
-          title="Append an imported file onto the end of this score"
-        >
-          Append Import
-          <input
-            type="file"
-            accept=".musicxml,.xml,.mxl,.mid,.midi,audio/midi,.pdf,image/*"
-            onChange={onAppendImport}
-            disabled={!editable || imageImport.busy}
-            style={{ display: "none" }}
-          />
-        </label>
         <span
           style={{ width: 1, height: 22, background: COLORS.borderLight }}
         />
-        {(
-          [
-            { glyph: "♭", value: -1, title: "Flat" },
-            { glyph: "♮", value: 0, title: "Natural" },
-            { glyph: "♯", value: 1, title: "Sharp" },
-          ] as const
-        ).map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            title={option.title}
-            onClick={() => accidentalOnFocus(option.value)}
-            disabled={!canNudge}
-            style={accidentalButtonStyle(canNudge)}
-          >
-            {option.glyph}
-          </button>
-        ))}
-        <span
-          style={{ width: 1, height: 22, background: COLORS.borderLight }}
+        {/* Structure & append-import — the rarer, document-shape actions live
+            in an overflow menu so the toolbar stays focused on the common ones.
+            A hidden file input (triggered from the menu) handles Append Import,
+            which needs a picker rather than a plain click. */}
+        <input
+          ref={appendInputRef}
+          type="file"
+          accept=".musicxml,.xml,.mxl,.mid,.midi,audio/midi,.pdf,image/*"
+          onChange={onAppendImport}
+          disabled={!editable || imageImport.busy}
+          style={{ display: "none" }}
         />
         <button
           type="button"
-          onClick={onInsertMeasure}
+          aria-label="More actions"
+          title="More: staves, measures, append import"
           disabled={!editable}
-          style={toolbarButtonStyle(editable)}
-        >
-          + Measure
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            if (activeMeasureRange) {
-              deleteMeasureRange(activeMeasureRange);
-            }
+          onClick={(event) => {
+            const rect = (
+              event.currentTarget as HTMLElement
+            ).getBoundingClientRect();
+            setOverflowMenu({ x: rect.left, y: rect.bottom + 4 });
           }}
-          disabled={!editable || !activeMeasureRange}
-          title="Delete the selected measure(s)"
-          style={toolbarButtonStyle(editable && activeMeasureRange !== null)}
-        >
-          − Measure
-        </button>
-        <button
-          type="button"
-          onClick={onAddStaff}
-          disabled={!editable}
-          title="Add a staff below the existing staves"
           style={toolbarButtonStyle(editable)}
         >
-          + Staff
-        </button>
-        <button
-          type="button"
-          onClick={onRemoveStaff}
-          disabled={!editable || staffCount <= 1}
-          title="Remove the selected staff (or the bottom staff)"
-          style={toolbarButtonStyle(editable && staffCount > 1)}
-        >
-          − Staff
-        </button>
-        <button
-          type="button"
-          onClick={() => setRedistributeOpen(true)}
-          disabled={!editable}
-          title="Redistribute all notes onto a treble + bass grand staff by pitch"
-          style={toolbarButtonStyle(editable)}
-        >
-          Redistribute
+          ⋯ More
         </button>
         <span style={{ flex: 1 }} />
         {/* Always rendered (hidden when clean) so the first edit doesn't
@@ -3403,6 +3318,56 @@ export function Editor() {
       ) : null}
 
       {helpOpen ? <KeyboardHelp onClose={() => setHelpOpen(false)} /> : null}
+
+      {overflowMenu ? (
+        <ContextMenu
+          x={overflowMenu.x}
+          y={overflowMenu.y}
+          onClose={() => setOverflowMenu(null)}
+          items={[
+            {
+              label: "Append import…",
+              onSelect: () => appendInputRef.current?.click(),
+              disabled: !editable || imageImport.busy,
+              title: "Append an imported file onto the end of this score",
+            },
+            {
+              label: "Add measure",
+              onSelect: onInsertMeasure,
+              disabled: !editable,
+            },
+            {
+              label: "Delete measure(s)",
+              onSelect: () => {
+                if (activeMeasureRange) {
+                  deleteMeasureRange(activeMeasureRange);
+                }
+              },
+              disabled: !editable || !activeMeasureRange,
+              title: "Delete the selected measure(s)",
+            },
+            {
+              label: "Add staff",
+              onSelect: onAddStaff,
+              disabled: !editable,
+              title: "Add a staff below the existing staves",
+            },
+            {
+              label: "Remove staff",
+              onSelect: onRemoveStaff,
+              disabled: !editable || staffCount <= 1,
+              title: "Remove the selected staff (or the bottom staff)",
+            },
+            {
+              label: "Redistribute across staves…",
+              onSelect: () => setRedistributeOpen(true),
+              disabled: !editable,
+              title:
+                "Redistribute all notes onto a treble + bass grand staff by pitch",
+            },
+          ]}
+        />
+      ) : null}
 
       {metadataOpen ? (
         <MetadataDialog

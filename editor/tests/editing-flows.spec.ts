@@ -114,10 +114,10 @@ test("tapping a note selects it; Delete removes it; undo/redo reverse that", asy
   // Tapping the first notehead selects it (Delete becomes enabled) without
   // changing the document.
   await page.locator("#p0-m1-n0-v0").click();
-  await expect(page.getByRole("button", { name: "Delete" })).toBeEnabled();
+  await expect(page.getByText(/Sel: .*· 1 note/)).toBeVisible();
   expect(pitchCount(await exportXml(page))).toBe(3);
 
-  await page.getByRole("button", { name: "Delete" }).click();
+  await page.keyboard.press("Delete");
   expect(pitchCount(await exportXml(page))).toBe(2);
 
   await page.keyboard.press("Control+z");
@@ -182,7 +182,7 @@ test("toggling a note's tie control draws and clears a tie arc, and persists on 
 test("tapping empty space clears the selection", async ({ page }) => {
   await loadSingleStaff(page);
   await page.locator("#p0-m1-n0-v0").click();
-  await expect(page.getByRole("button", { name: "Delete" })).toBeEnabled();
+  await expect(page.getByText(/Sel: .*· 1 note/)).toBeVisible();
 
   // A tap on an empty region of the staff deselects. The notes sit at the left
   // of the single measure; the top-right corner of the SVG is empty.
@@ -191,7 +191,7 @@ test("tapping empty space clears the selection", async ({ page }) => {
     throw new Error("staff SVG has no bounding box");
   }
   await page.mouse.click(box.x + box.width - 6, box.y + 6);
-  await expect(page.getByRole("button", { name: "Delete" })).toBeDisabled();
+  await expect(page.getByText("No selection")).toBeVisible();
 });
 
 test("the dirty indicator appears on edit and clears on export", async ({
@@ -203,7 +203,7 @@ test("the dirty indicator appears on edit and clears on export", async ({
   await expect(page.getByText("Unsaved")).toBeHidden();
 
   await page.locator("#p0-m1-n0-v0").click();
-  await page.getByRole("button", { name: "Delete" }).click();
+  await page.keyboard.press("Delete");
   await expect(page.getByText("Unsaved")).toBeVisible();
 
   await exportXml(page);

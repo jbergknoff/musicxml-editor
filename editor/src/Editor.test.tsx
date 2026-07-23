@@ -25,8 +25,9 @@ describe("Editor", () => {
     );
     expect(labels).toContain("Undo");
     expect(labels).toContain("Redo");
-    expect(labels).toContain("Delete");
     expect(labels).toContain("Export");
+    // Structure actions live behind the overflow menu now, not flat buttons.
+    expect(labels).toContain("⋯ More");
 
     // Undo/Redo start disabled (nothing in history yet).
     const button = (text: string) =>
