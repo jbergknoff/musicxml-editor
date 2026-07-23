@@ -6,6 +6,7 @@ import {
   addNote,
   addNoteToChord,
   addStaff,
+  addVoice,
   appendScore,
   copyMeasures,
   createBlankDocument,
@@ -1488,6 +1489,96 @@ const MULTI_VOICE_XML = `<?xml version="1.0" encoding="UTF-8"?>
     </measure>
   </part>
 </score-partwise>`;
+
+describe("addVoice", () => {
+  test("adds an empty second voice as a whole-measure rest, keeping existing notes", () => {
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    const before = voicesInMeasure(doc, 0);
+    const newVoice = addVoice(doc, 0, 0) as number;
+    expect(newVoice).not.toBeNull();
+    const after = voicesInMeasure(doc, 0);
+    expect(after.length).toBe(before.length + 1);
+    expect(after).toContain(newVoice);
+    // The added voice is a single whole-measure rest (16 divisions at 4/4).
+    const restEls = [...doc.querySelectorAll("note")].filter(
+      (n) =>
+        n.querySelector("rest") !== null &&
+        n.querySelector("voice")?.textContent === String(newVoice),
+    );
+    expect(restEls.length).toBe(1);
+    expect(restEls[0].querySelector("duration")?.textContent).toBe("16");
+    // The original C5 survives.
+    const steps = [...doc.querySelectorAll("note > pitch > step")].map(
+      (s) => s.textContent,
+    );
+    expect(steps).toContain("C");
+  });
+
+  test("a note entered into the new voice's rest lands on that voice", () => {
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    const newVoice = addVoice(doc, 0, 0) as number;
+    // Fill the added voice at beat 2 (its rest), asking for that voice explicitly.
+    const added = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 2,
+      durationBeats: 1,
+      pitch: { step: "G", alter: 0, octave: 4 },
+      voice: newVoice,
+    });
+    expect(added).not.toBeNull();
+    const gNote = [...doc.querySelectorAll("note")].find(
+      (n) => n.querySelector("step")?.textContent === "G",
+    );
+    expect(gNote?.querySelector("voice")?.textContent).toBe(String(newVoice));
+    // C5 (voice 1) and G4 (the new voice) coexist — two independent voices.
+    expect(voicesInMeasure(doc, 0).length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("adds the voice to the requested staff of a grand staff", () => {
+    const doc = parseDocument(MULTI_VOICE_XML);
+    const before2 = voicesInMeasure(doc, 0, 2);
+    const newVoice = addVoice(doc, 0, 2) as number;
+    expect(newVoice).not.toBeNull();
+    const after2 = voicesInMeasure(doc, 0, 2);
+    expect(after2.length).toBe(before2.length + 1);
+    // The new staff-2 rest carries <staff>2</staff>.
+    const restEls = [...doc.querySelectorAll("note")].filter(
+      (n) =>
+        n.querySelector("rest") !== null &&
+        n.querySelector("voice")?.textContent === String(newVoice),
+    );
+    expect(restEls.length).toBe(1);
+    expect(restEls[0].querySelector("staff")?.textContent).toBe("2");
+    // Staff-1 voices are untouched.
+    expect(voicesInMeasure(doc, 0, 1)).toEqual([1, 2]);
+  });
+
+  test("refuses a fifth voice on one staff", () => {
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    expect(addVoice(doc, 0, 0)).not.toBeNull(); // 2
+    expect(addVoice(doc, 0, 0)).not.toBeNull(); // 3
+    expect(addVoice(doc, 0, 0)).not.toBeNull(); // 4
+    expect(addVoice(doc, 0, 0)).toBeNull(); // 5 → refused
+  });
+});
 
 describe("multi-voice grand-staff editing", () => {
   test("removeNote on voice-1 staff-1 leaves voice-2 staff-1 and staff-2 intact", () => {

@@ -628,16 +628,24 @@ function writeMeasure(
   divisionsPerQuarter: number,
   staffCount = 1,
   requiredStaves?: number[],
+  // (staff, voice) groups to emit even when they hold no notes — a whole-measure
+  // rest is written for each. `addVoice` uses this to introduce an empty second
+  // voice the user can then fill in note by note. Staff is 0 for single-staff
+  // documents (matching the internal group key), 1-based on a grand staff.
+  requiredVoices?: Array<{ staff: number; voice: number }>,
 ): void {
   for (const noteEl of Array.from(measureEl.querySelectorAll("note"))) {
     noteEl.remove();
   }
 
   if (staffCount <= 1) {
-    // Single-staff: check for multiple voices.
-    const voices = [...new Set(notes.map((n) => n.voice))].sort(
-      (a, b) => a - b,
-    );
+    // Single-staff: check for multiple voices (an added empty voice counts).
+    const voices = [
+      ...new Set([
+        ...notes.map((n) => n.voice),
+        ...(requiredVoices ?? []).map((r) => r.voice),
+      ]),
+    ].sort((a, b) => a - b);
     if (voices.length <= 1) {
       writeStaffNotes(
         doc,
@@ -682,6 +690,16 @@ function writeMeasure(
         ![...groupKeys.values()].some((g) => g.staff === staff)
       ) {
         groupKeys.set(`${staff}:0`, { staff, voice: 0 });
+      }
+    }
+  }
+  // Ensure every explicitly-required (staff, voice) appears, even with no notes —
+  // it becomes a whole-measure rest the user can fill in (`addVoice`).
+  if (requiredVoices) {
+    for (const { staff, voice } of requiredVoices) {
+      const key = `${staff}:${voice}`;
+      if (!groupKeys.has(key)) {
+        groupKeys.set(key, { staff, voice });
       }
     }
   }
@@ -1596,8 +1614,10 @@ function setVoiceOnElement(
 }
 
 // The distinct voice numbers present on a staff of a measure, ascending. Staff 0
-// (single-staff documents) considers every note. Used by the editor to find a
-// staff's existing second voice (or that there is none yet).
+// (single-staff documents) considers every note. Rests count too, so a voice that
+// currently holds only rests (e.g. one just created by `addVoice`, before it is
+// filled in) is still reported — the editor needs it to pick the next free voice
+// number and to gate voice moves.
 export function voicesInMeasure(
   doc: Document,
   measureIndex: number,
@@ -1607,11 +1627,12 @@ export function voicesInMeasure(
   if (!measureEl) {
     return [];
   }
-  const { divisions } = measureMetrics(doc);
   const voices = new Set<number>();
-  for (const note of readRealNotes(measureEl, divisions)) {
-    if (staff === 0 || staffOf(note.element) === staff) {
-      voices.add(note.voice);
+  for (const noteEl of Array.from(measureEl.querySelectorAll("note"))) {
+    if (staff === 0 || staffOf(noteEl) === staff) {
+      voices.add(
+        Number.parseInt(noteEl.querySelector("voice")?.textContent ?? "1", 10),
+      );
     }
   }
   return [...voices].sort((a, b) => a - b);
@@ -2792,6 +2813,69 @@ export function addStaff(doc: Document): number | null {
     );
   }
   return newCount;
+}
+
+// Add an independent voice to one measure's staff as a whole-measure rest, which
+// the user then fills in note by note (the manual-entry counterpart to the `v`
+// key, which can only *move* existing notes between voices). This is the piece
+// the OMR-cleanup flow was missing: two lines that overlap — a sustained voice
+// and a moving one that both sound on the downbeat, or whose notes span beats the
+// other subdivides — can't be entered as a single voice with rests, so there was
+// no way to build them from scratch. `staff` is 1-based on a grand staff, or 0
+// (the whole part) for a single-staff document. Returns the new voice number, or
+// null when the measure is missing or the staff already carries four voices (the
+// conventional per-staff ceiling). Only the target measure is touched — voices
+// are local, unlike `addStaff`.
+export function addVoice(
+  doc: Document,
+  measureIndex: number,
+  staff = 0,
+): number | null {
+  const measureEl = measuresOf(doc)[measureIndex];
+  if (!measureEl) {
+    return null;
+  }
+  const staffCount = staffCountOf(doc);
+  const lookupStaff = staffCount > 1 ? staff : 0;
+  if (voicesInMeasure(doc, measureIndex, lookupStaff).length >= 4) {
+    return null;
+  }
+  const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+  const measureLength =
+    measureContentDivisions(measureEl) || divisionsPerMeasure;
+  const notes = readRealNotes(measureEl, divisions);
+  // A voice number unused by any staff in the measure keeps the streams distinct.
+  const newVoice = Math.max(0, ...voicesInMeasure(doc, measureIndex)) + 1;
+  // Re-require every voice already present (including rest-only ones — they are
+  // absent from `notes`, so without this a second added voice would erase the
+  // first) plus the new voice on the target staff. Staff key is 0 single-staff.
+  const requiredVoices: Array<{ staff: number; voice: number }> = [];
+  if (staffCount > 1) {
+    for (let s = 1; s <= staffCount; s++) {
+      for (const v of voicesInMeasure(doc, measureIndex, s)) {
+        requiredVoices.push({ staff: s, voice: v });
+      }
+    }
+    requiredVoices.push({ staff, voice: newVoice });
+  } else {
+    for (const v of voicesInMeasure(doc, measureIndex, 0)) {
+      requiredVoices.push({ staff: 0, voice: v });
+    }
+    requiredVoices.push({ staff: 0, voice: newVoice });
+  }
+  writeMeasure(
+    doc,
+    measureEl,
+    notes,
+    measureLength,
+    divisions,
+    staffCount,
+    staffCount > 1
+      ? Array.from({ length: staffCount }, (_, i) => i + 1)
+      : undefined,
+    requiredVoices,
+  );
+  return newVoice;
 }
 
 // Set (or create) a note/rest element's `<staff>` child. Reused by

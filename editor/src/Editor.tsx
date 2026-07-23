@@ -58,6 +58,7 @@ import {
   addNote,
   addNoteToChord,
   addStaff,
+  addVoice,
   appendScore,
   chordHasFermata,
   copyMeasures,
@@ -1448,6 +1449,32 @@ export function Editor() {
     }
   }, [editable, score, documentRef, commit, dropFlagsInMeasure]);
 
+  // Add an independent second voice to the selected measure's staff as a whole-
+  // measure rest (see `addVoice`) — the manual-entry counterpart to "Move to
+  // other voice", used when two overlapping lines can't be laid out as one voice
+  // with rests (so there is nothing to move). After adding, select the new
+  // voice's rest so the user can start entering its notes immediately.
+  const addVoiceToStaff = useCallback(() => {
+    const slot = slotInfoRef.current;
+    if (!editable || !slot) {
+      return;
+    }
+    const staffNumber = score.parts.length > 1 ? slot.partIndex + 1 : 0;
+    const newVoice = addVoice(
+      documentRef.current,
+      slot.measureIndex,
+      staffNumber,
+    );
+    if (newVoice === null) {
+      setEditHint("Can't add a voice — this staff already has four.");
+      return;
+    }
+    setMenu(null);
+    commit();
+    // The new voice is a whole-measure rest; the user clicks it (rest glyphs are
+    // per-voice selectable) to start entering its notes.
+  }, [editable, score, documentRef, commit]);
+
   // A pointer-down on the canvas around/below the staves (not on the staff
   // SVG) clears the selection; taps that reach the SVG are handleTap's.
   const clearSelectionOffStaff = useCallback((event: PointerEvent) => {
@@ -2743,6 +2770,16 @@ export function Editor() {
       label: "Move to other voice",
       onSelect: moveSelectionToOtherVoice,
       disabled: !slotInfo || slotInfo.isRest,
+    },
+    // Add a fresh voice (whole-measure rest) to this staff to enter a second,
+    // independent line — see `addVoiceToStaff`. Available whenever a slot is
+    // selected; "Move to other voice" only relocates existing notes.
+    {
+      label: "Add voice",
+      onSelect: addVoiceToStaff,
+      disabled: !slotInfo,
+      title:
+        "Add an independent voice (a whole-measure rest) to this staff to enter a second line",
     },
     // Drop trailing rest padding from an over-full bar back to its real content
     // (see `trimSelectedMeasure`); enabled only when there is padding to remove.
