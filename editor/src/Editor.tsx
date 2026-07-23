@@ -44,6 +44,7 @@ import {
   type InspectorModel,
   type InspectorNoteGroup,
 } from "./components/Inspector";
+import { KeyboardHelp } from "./components/KeyboardHelp";
 import { MetadataDialog } from "./components/MetadataDialog";
 import {
   type MidiImportChoice,
@@ -388,6 +389,7 @@ export function Editor() {
   selectionRef.current = selection;
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [metadataOpen, setMetadataOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   // Whether the "Redistribute across staves" confirmation modal is showing.
   const [redistributeOpen, setRedistributeOpen] = useState(false);
   const imageImport = useImageImport();
@@ -2287,6 +2289,14 @@ export function Editor() {
         return;
       }
 
+      // "?" opens the keyboard-shortcut reference (the on-demand replacement for
+      // the old always-on cheat-sheet strip).
+      if (event.key === "?") {
+        event.preventDefault();
+        setHelpOpen((open) => !open);
+        return;
+      }
+
       const key = event.key;
       if (key === " ") {
         event.preventDefault();
@@ -3107,6 +3117,15 @@ export function Editor() {
         ) : null}
         <button
           type="button"
+          onClick={() => setHelpOpen(true)}
+          title="Keyboard shortcuts (?)"
+          aria-label="Keyboard shortcuts"
+          style={toolbarButtonStyle(true)}
+        >
+          ?
+        </button>
+        <button
+          type="button"
           onClick={() => setMetadataOpen(true)}
           style={toolbarButtonStyle(true)}
         >
@@ -3135,31 +3154,6 @@ export function Editor() {
         >
           {listen.playing ? "■ Stop" : "▶ Listen"}
         </button>
-      </div>
-
-      {/* Instruction strip — keyboard cheat sheet. */}
-      <div
-        style={{
-          minHeight: LAYOUT.instructionStripHeight,
-          display: "flex",
-          alignItems: "center",
-          padding: "0 14px",
-          background: COLORS.instructionStrip,
-          borderBottom: `1px solid ${COLORS.borderLight}`,
-          fontFamily: FONTS.mono,
-          fontSize: 11.5,
-          color: COLORS.textSecondary,
-          gap: 14,
-          flexWrap: "wrap",
-        }}
-      >
-        <span>Click: select beat · ⇧Click: select measures</span>
-        <span>Enter: drill in · Esc: out</span>
-        <span>↑↓: pitch (⇧ octave)</span>
-        <span>←→: beat · ⇧←→: measures · Tab: cycle</span>
-        <span>A–G: add · −/=/0: ♭♯♮ · ,/.: shift in time · v: voice</span>
-        <span>⌘C/X/V: copy/cut/paste measures</span>
-        <span>Space: listen</span>
       </div>
 
       {/* Import status / error. */}
@@ -3407,6 +3401,8 @@ export function Editor() {
           onClose={() => setMenu(null)}
         />
       ) : null}
+
+      {helpOpen ? <KeyboardHelp onClose={() => setHelpOpen(false)} /> : null}
 
       {metadataOpen ? (
         <MetadataDialog
