@@ -20,7 +20,9 @@ import {
   beatFromX,
   type NoteheadHit,
   pickNoteAtPoint,
+  pickRestAtPoint,
   pitchFromY,
+  type RestHit,
 } from "../hit-test";
 import {
   type NoteHighlight,
@@ -38,6 +40,11 @@ export interface EditorGesture {
    *  every staff, so it is authoritative about which note (and which staff)
    *  was clicked even for ledger-line notes between two staves. */
   hit: NoteheadHit | null;
+  /** The rest glyph under the pointer, when no notehead was hit — picked in
+   *  screen space per staff AND voice, so a tap on a secondary voice's rest
+   *  selects that exact rest (the beat-nearest fallback can only ever reach
+   *  the primary voice's slot). */
+  restHit: RestHit | null;
   /** The parsed part (staff) the tap belongs to: the hit note's own staff when
    *  a notehead was clicked, else the staff whose vertical band is nearest.
    *  0 for a single staff, or the treble (0) / bass (1) staff of a grand
@@ -79,6 +86,10 @@ function resolveGesture(info: StagePointerInfo): EditorGesture {
   // between the staves belongs to the bass staff even if the treble staff's
   // band is vertically closer to the pointer.
   const hit = pickNoteAtPoint(info.score, info.layout, info.svgX, info.svgY);
+  // Only consulted when no notehead was hit — noteheads take priority.
+  const restHit = hit
+    ? null
+    : pickRestAtPoint(info.score, info.layout, info.svgX, info.svgY);
   // For grand staff there are multiple parts (one per staff), each at a
   // different Y. Find the staff whose vertical extent is nearest the click: for
   // a click within a staff the distance is zero; for a click between staves it
@@ -96,7 +107,7 @@ function resolveGesture(info: StagePointerInfo): EditorGesture {
       nearestPartIndex = i;
     }
   }
-  const partIndex = hit?.partIndex ?? nearestPartIndex;
+  const partIndex = hit?.partIndex ?? restHit?.partIndex ?? nearestPartIndex;
   const clef = info.score.parts[partIndex]?.clef ?? {
     sign: "G" as const,
     line: 2,
@@ -108,11 +119,13 @@ function resolveGesture(info: StagePointerInfo): EditorGesture {
     info.layout.staffSpace,
     clef,
   );
-  // A click on a notehead is never "off staff", no matter how many ledger
-  // lines out the note sits.
+  // A click on a notehead or rest glyph is never "off staff", no matter how
+  // many ledger lines out the note sits.
   const offStaff =
-    hit === null && minDist > OFF_STAFF_MARGIN_SPACES * info.layout.staffSpace;
-  return { beat, pitch, hit, partIndex, offStaff };
+    hit === null &&
+    restHit === null &&
+    minDist > OFF_STAFF_MARGIN_SPACES * info.layout.staffSpace;
+  return { beat, pitch, hit, restHit, partIndex, offStaff };
 }
 
 export function EditableSheetMusic({

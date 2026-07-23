@@ -628,16 +628,24 @@ function writeMeasure(
   divisionsPerQuarter: number,
   staffCount = 1,
   requiredStaves?: number[],
+  // (staff, voice) groups to emit even when they hold no notes — a whole-measure
+  // rest is written for each. `addVoice` uses this to introduce an empty second
+  // voice the user can then fill in note by note. Staff is 0 for single-staff
+  // documents (matching the internal group key), 1-based on a grand staff.
+  requiredVoices?: Array<{ staff: number; voice: number }>,
 ): void {
   for (const noteEl of Array.from(measureEl.querySelectorAll("note"))) {
     noteEl.remove();
   }
 
   if (staffCount <= 1) {
-    // Single-staff: check for multiple voices.
-    const voices = [...new Set(notes.map((n) => n.voice))].sort(
-      (a, b) => a - b,
-    );
+    // Single-staff: check for multiple voices (an added empty voice counts).
+    const voices = [
+      ...new Set([
+        ...notes.map((n) => n.voice),
+        ...(requiredVoices ?? []).map((r) => r.voice),
+      ]),
+    ].sort((a, b) => a - b);
     if (voices.length <= 1) {
       writeStaffNotes(
         doc,
@@ -682,6 +690,16 @@ function writeMeasure(
         ![...groupKeys.values()].some((g) => g.staff === staff)
       ) {
         groupKeys.set(`${staff}:0`, { staff, voice: 0 });
+      }
+    }
+  }
+  // Ensure every explicitly-required (staff, voice) appears, even with no notes —
+  // it becomes a whole-measure rest the user can fill in (`addVoice`).
+  if (requiredVoices) {
+    for (const { staff, voice } of requiredVoices) {
+      const key = `${staff}:${voice}`;
+      if (!groupKeys.has(key)) {
+        groupKeys.set(key, { staff, voice });
       }
     }
   }
@@ -1053,8 +1071,28 @@ export function removeNotes(doc: Document, handles: NoteHandle[]): void {
     const notes = readRealNotes(measureEl, divisions).filter(
       (note) => !removeSet.has(note.element),
     );
-    writeMeasure(doc, measureEl, notes, measureLength, divisions, sc);
+    // Every staff must survive the rewrite even if this removal emptied it —
+    // without the requiredStaves list an emptied staff (or a fully emptied
+    // measure) would vanish from the document: no rests, no slots, invisible
+    // and unreachable in the editor.
+    writeMeasure(
+      doc,
+      measureEl,
+      notes,
+      measureLength,
+      divisions,
+      sc,
+      allStaves(sc),
+    );
   }
+}
+
+// The 1..staffCount list writeMeasure needs to keep emptied staves alive, or
+// undefined for a single staff (where writeStaffNotes always emits the bar).
+function allStaves(staffCount: number): number[] | undefined {
+  return staffCount > 1
+    ? Array.from({ length: staffCount }, (_, index) => index + 1)
+    : undefined;
 }
 
 // Remove a note; its span becomes rest (rebalanced by writeMeasure).
@@ -1075,7 +1113,16 @@ export function removeNote(doc: Document, handle: NoteHandle): void {
   const notes = readRealNotes(measureEl, divisions).filter(
     (note) => note.element !== target,
   );
-  writeMeasure(doc, measureEl, notes, measureLength, divisions, sc);
+  // Keep emptied staves alive (see removeNotes).
+  writeMeasure(
+    doc,
+    measureEl,
+    notes,
+    measureLength,
+    divisions,
+    sc,
+    allStaves(sc),
+  );
 }
 
 // Move a note to a new pitch and/or onset (possibly a different measure). The
@@ -1124,11 +1171,16 @@ export function moveNote(
   const destNotes = readRealNotes(destMeasureEl, divisions).filter(
     (note) => note.element !== element,
   );
-  // Gap detection looks only at notes in the moving note's own staff — a busier
-  // staff alongside it (grand staff) must not shorten this note's duration.
+  // Gap detection looks only at notes in the moving note's own staff *and*
+  // voice — a busier staff alongside it (grand staff), or another voice sharing
+  // its staff, must not shorten this note's duration. Voices overlap by design,
+  // so a half note in voice 2 keeps its length even when voice 1 subdivides the
+  // same beats (otherwise a pitch nudge would truncate it to the next voice-1
+  // onset).
   const nextOnset = destNotes.reduce(
     (min, note) =>
       staffOf(note.element) === movingStaff &&
+      note.voice === movingVoice &&
       note.onsetDivisions > onsetDivisions
         ? Math.min(min, note.onsetDivisions)
         : min,
@@ -1155,6 +1207,7 @@ export function moveNote(
   });
   writeMeasure(doc, destMeasureEl, destNotes, destLength, divisions, sc);
   // A cross-measure move leaves a hole in the source measure to backfill.
+  // Keep emptied staves alive (see removeNotes).
   if (sourceMeasureEl !== destMeasureEl) {
     const sourceLength =
       measureContentDivisions(sourceMeasureEl) || divisionsPerMeasure;
@@ -1166,6 +1219,7 @@ export function moveNote(
       sourceLength,
       divisions,
       sc,
+      allStaves(sc),
     );
   }
   return handleFor(measuresOf(doc), target.measureIndex, element);
@@ -1354,6 +1408,110 @@ export function shiftNotesInTime(
   return handleFor(measuresOf(doc), handle.measureIndex, target);
 }
 
+// Resolve the rest space at a slot: the next real note in the same staff and
+// voice after `onsetBeat`, and how many divisions of silence separate them.
+// Null when a note in that voice is still sounding at (or across) the slot —
+// not rest space — or when nothing follows in the measure (a trailing rest;
+// trimming covers those).
+function resolveRestGap(
+  doc: Document,
+  measureIndex: number,
+  staffNumber: number,
+  voiceNumber: number,
+  onsetBeat: number,
+): { next: RealNote; gapDivisions: number; divisions: number } | null {
+  const measureEl = measuresOf(doc)[measureIndex];
+  if (!measureEl) {
+    return null;
+  }
+  const { divisions } = measureMetrics(doc);
+  const slotDivisions = Math.round(onsetBeat * divisions);
+  const sc = staffCountOf(doc);
+  const inGroup = (note: RealNote) =>
+    (sc <= 1 || staffOf(note.element) === staffNumber) &&
+    note.voice === voiceNumber;
+  let next: RealNote | null = null;
+  for (const note of readRealNotes(measureEl, divisions)) {
+    if (!inGroup(note)) {
+      continue;
+    }
+    if (note.onsetDivisions <= slotDivisions) {
+      if (note.onsetDivisions + note.durationDivisions > slotDivisions) {
+        return null;
+      }
+      continue;
+    }
+    if (!next || note.onsetDivisions < next.onsetDivisions) {
+      next = note;
+    }
+  }
+  if (!next) {
+    return null;
+  }
+  const gapDivisions = next.onsetDivisions - slotDivisions;
+  return gapDivisions > 0 ? { next, gapDivisions, divisions } : null;
+}
+
+// How many beats of rest space `deleteRestAt` would close at this slot. The
+// editor uses `> 0` to enable Delete on a rest selection. `staffNumber` is the
+// 1-based MusicXML staff (ignored for single-staff documents); `voiceNumber`
+// is the MusicXML voice number the rest belongs to.
+export function restGapBeats(
+  doc: Document,
+  measureIndex: number,
+  staffNumber: number,
+  voiceNumber: number,
+  onsetBeat: number,
+): number {
+  const resolved = resolveRestGap(
+    doc,
+    measureIndex,
+    staffNumber,
+    voiceNumber,
+    onsetBeat,
+  );
+  return resolved ? resolved.gapDivisions / resolved.divisions : 0;
+}
+
+// Delete the rest space at a slot: pull the next note in the slot's staff and
+// voice — and everything after it in the bar — earlier, so it starts where the
+// rest did. This is the fix for the spurious mid-bar gaps OMR recovery leaves
+// behind: the rest itself has no stable element to remove (`writeMeasure`
+// regenerates rest filler on every rewrite), so the gap is closed by shifting
+// the following notes back over it instead. A trailing rest has nothing to
+// pull earlier — that's `trimMeasure`'s territory. Returns false when there is
+// no gap to close.
+export function deleteRestAt(
+  doc: Document,
+  measureIndex: number,
+  staffNumber: number,
+  voiceNumber: number,
+  onsetBeat: number,
+): boolean {
+  const resolved = resolveRestGap(
+    doc,
+    measureIndex,
+    staffNumber,
+    voiceNumber,
+    onsetBeat,
+  );
+  if (!resolved) {
+    return false;
+  }
+  const handle = handleFor(
+    measuresOf(doc),
+    measureIndex,
+    resolved.next.element,
+  );
+  return (
+    shiftNotesInTime(
+      doc,
+      handle,
+      -resolved.gapDivisions / resolved.divisions,
+    ) !== null
+  );
+}
+
 // The length a measure would keep after trimming: as far as its real notes
 // reach, but never below the time signature's nominal bar (so a bar that ends
 // on a legitimate rest keeps it, and a genuinely over-full bar stays as long as
@@ -1456,8 +1614,10 @@ function setVoiceOnElement(
 }
 
 // The distinct voice numbers present on a staff of a measure, ascending. Staff 0
-// (single-staff documents) considers every note. Used by the editor to find a
-// staff's existing second voice (or that there is none yet).
+// (single-staff documents) considers every note. Rests count too, so a voice that
+// currently holds only rests (e.g. one just created by `addVoice`, before it is
+// filled in) is still reported — the editor needs it to pick the next free voice
+// number and to gate voice moves.
 export function voicesInMeasure(
   doc: Document,
   measureIndex: number,
@@ -1467,11 +1627,12 @@ export function voicesInMeasure(
   if (!measureEl) {
     return [];
   }
-  const { divisions } = measureMetrics(doc);
   const voices = new Set<number>();
-  for (const note of readRealNotes(measureEl, divisions)) {
-    if (staff === 0 || staffOf(note.element) === staff) {
-      voices.add(note.voice);
+  for (const noteEl of Array.from(measureEl.querySelectorAll("note"))) {
+    if (staff === 0 || staffOf(noteEl) === staff) {
+      voices.add(
+        Number.parseInt(noteEl.querySelector("voice")?.textContent ?? "1", 10),
+      );
     }
   }
   return [...voices].sort((a, b) => a - b);
@@ -1660,6 +1821,7 @@ interface TieCandidate {
   measureIndex: number;
   onsetDivisions: number;
   staff: number;
+  voice: number;
   pitch: Pitch;
 }
 
@@ -1679,6 +1841,7 @@ function tieCandidates(doc: Document): TieCandidate[] {
         measureIndex,
         onsetDivisions: note.onsetDivisions,
         staff: staffOf(note.element),
+        voice: note.voice,
         pitch,
       });
     }
@@ -1702,7 +1865,19 @@ function findTiePartner(
     return null;
   }
   const src = candidates[sourceIndex];
-  const sameStaff = candidates.filter((c) => c.staff === src.staff);
+  // Time order, not document order: in a multi-voice measure a later voice's
+  // early notes appear after an earlier voice's late notes in the document, so
+  // walking document order would let "the next onset" be an earlier beat in
+  // another voice. Sort is stable, so same-onset notes keep document order.
+  // Ties are voice-internal: another voice's intervening onsets on the same
+  // staff (a moving line under a held note) must not block the held note from
+  // reaching its own voice's next onset.
+  const sameStaff = candidates
+    .filter((c) => c.staff === src.staff && c.voice === src.voice)
+    .sort(
+      (a, b) =>
+        a.measureIndex - b.measureIndex || a.onsetDivisions - b.onsetDivisions,
+    );
   const srcStaffIndex = sameStaff.findIndex((c) => c.element === source);
   const sequence =
     direction === "forward"
@@ -1789,13 +1964,16 @@ function setTieMark(
   }
 }
 
-// Toggle a tie on `handle`'s note: if it already ties to its neighbor (in
-// either direction — the handle may be the tie's start or stop endpoint),
-// remove the tie from both notes; otherwise tie it forward to the next
+// Toggle the FORWARD tie on `handle`'s note: if it already ties into the next
+// chord, remove that tie from both notes; otherwise tie it forward to the next
 // same-pitch note on its staff, if one exists at the immediately following
-// onset. Mutated in place (no measure rewrite) so every other child survives.
-// Returns false on a bad handle, a rest, or a forward tie with no eligible
-// partner.
+// onset. Forward-biased on purpose — the note may also be a tie's *target* (a
+// chain link like 8th→half→next bar), and that backward tie must not block
+// adding or removing the forward one; a backward tie is removed from its own
+// start note's toggle. A note with only a stray stop mark (no forward partner
+// at all) still clears it, so damaged one-sided ties remain fixable from
+// either end. Mutated in place (no measure rewrite) so every other child
+// survives. Returns false on a bad handle, a rest, or no tie to add/remove.
 export function toggleTie(doc: Document, handle: NoteHandle): boolean {
   const element = elementForHandle(doc, handle);
   if (!element || !readPitch(element)) {
@@ -1810,22 +1988,128 @@ export function toggleTie(doc: Document, handle: NoteHandle): boolean {
     }
     return true;
   }
-  if (hasTieMark(element, "stop")) {
-    const partner = findTiePartner(doc, element, "backward");
-    setTieMark(doc, element, "stop", false);
-    if (partner) {
-      setTieMark(doc, partner, "start", false);
-    }
+
+  const partner = findTiePartner(doc, element, "forward");
+  if (partner) {
+    setTieMark(doc, element, "start", true);
+    setTieMark(doc, partner, "stop", true);
     return true;
   }
 
-  const partner = findTiePartner(doc, element, "forward");
-  if (!partner) {
+  if (hasTieMark(element, "stop")) {
+    const backwardPartner = findTiePartner(doc, element, "backward");
+    setTieMark(doc, element, "stop", false);
+    if (backwardPartner) {
+      setTieMark(doc, backwardPartner, "start", false);
+    }
+    return true;
+  }
+  return false;
+}
+
+// The `<notations><fermata>` child of a note element, if any. Direct-child
+// walk (not querySelector) so a nested element can't false-positive.
+function fermataEl(noteEl: Element): Element | null {
+  for (const notations of Array.from(noteEl.children)) {
+    if (notations.tagName.toLowerCase() !== "notations") {
+      continue;
+    }
+    for (const mark of Array.from(notations.children)) {
+      if (mark.tagName.toLowerCase() === "fermata") {
+        return mark;
+      }
+    }
+  }
+  return null;
+}
+
+// Whether any member of the chord at `handle` carries a fermata (hold) mark.
+export function chordHasFermata(doc: Document, handle: NoteHandle): boolean {
+  const ctx = noteDurationContext(doc, handle);
+  return ctx?.members.some((m) => fermataEl(m.element) !== null) ?? false;
+}
+
+// Toggle a fermata on the chord at `handle`. The mark is written on the
+// chord's base note element (first in document order); toggling off removes it
+// from every member so a chord never keeps a stale duplicate. Mutates in place
+// — no measure rewrite — so all other children survive. Returns false on a bad
+// handle, a rest, or a grace note.
+export function toggleFermata(doc: Document, handle: NoteHandle): boolean {
+  const ctx = noteDurationContext(doc, handle);
+  if (!ctx || ctx.members.length === 0) {
     return false;
   }
-  setTieMark(doc, element, "start", true);
-  setTieMark(doc, partner, "stop", true);
+  const marked = ctx.members.filter((m) => fermataEl(m.element) !== null);
+  if (marked.length > 0) {
+    for (const member of marked) {
+      const fermata = fermataEl(member.element);
+      const notationsParent = fermata?.parentElement;
+      fermata?.remove();
+      if (notationsParent && notationsParent.children.length === 0) {
+        notationsParent.remove();
+      }
+    }
+    return true;
+  }
+  const base = ctx.members[0].element;
+  let notationsEl = Array.from(base.children).find(
+    (c) => c.tagName.toLowerCase() === "notations",
+  );
+  if (!notationsEl) {
+    notationsEl = doc.createElement("notations");
+    base.insertBefore(notationsEl, base.querySelector("lyric"));
+  }
+  notationsEl.appendChild(doc.createElement("fermata"));
   return true;
+}
+
+// Normalize structurally broken notation that OMR recovery can emit, so a
+// recovered document behaves like hand-written MusicXML in the editor:
+//   - A rest carrying a `<chord>` flag (a "chord member rest") is invalid —
+//     it's dropped outright.
+//   - A tie mark whose partner note exists but lacks the reciprocal mark is
+//     repaired (the missing start/stop is added); a tie mark with no
+//     same-pitch note at the adjacent onset at all is dropped, so no tie
+//     dangles into silence (which would render as a hanging curve and replay
+//     the note on playback).
+// Idempotent; run at import time. Returns true when anything changed.
+export function normalizeRecoveredNotation(doc: Document): boolean {
+  let changed = false;
+  for (const note of Array.from(doc.querySelectorAll("note"))) {
+    if (note.querySelector("chord") && note.querySelector("rest")) {
+      note.remove();
+      changed = true;
+    }
+  }
+  for (const measureEl of measuresOf(doc)) {
+    for (const note of readRealNotes(measureEl, 0)) {
+      const element = note.element;
+      if (!readPitch(element)) {
+        continue;
+      }
+      if (hasTieMark(element, "start")) {
+        const partner = findTiePartner(doc, element, "forward");
+        if (partner === null) {
+          setTieMark(doc, element, "start", false);
+          changed = true;
+        } else if (!hasTieMark(partner, "stop")) {
+          setTieMark(doc, partner, "stop", true);
+          changed = true;
+        }
+      }
+      if (hasTieMark(element, "stop")) {
+        const partner = findTiePartner(doc, element, "backward");
+        if (partner === null) {
+          setTieMark(doc, element, "stop", false);
+          changed = true;
+        } else if (!hasTieMark(partner, "start")) {
+          setTieMark(doc, partner, "start", true);
+          changed = true;
+        }
+      }
+    }
+  }
+  return changed;
 }
 
 // Mutate a grace note's pitch in place. Grace notes carry no rhythmic span, so
@@ -2529,6 +2813,69 @@ export function addStaff(doc: Document): number | null {
     );
   }
   return newCount;
+}
+
+// Add an independent voice to one measure's staff as a whole-measure rest, which
+// the user then fills in note by note (the manual-entry counterpart to the `v`
+// key, which can only *move* existing notes between voices). This is the piece
+// the OMR-cleanup flow was missing: two lines that overlap — a sustained voice
+// and a moving one that both sound on the downbeat, or whose notes span beats the
+// other subdivides — can't be entered as a single voice with rests, so there was
+// no way to build them from scratch. `staff` is 1-based on a grand staff, or 0
+// (the whole part) for a single-staff document. Returns the new voice number, or
+// null when the measure is missing or the staff already carries four voices (the
+// conventional per-staff ceiling). Only the target measure is touched — voices
+// are local, unlike `addStaff`.
+export function addVoice(
+  doc: Document,
+  measureIndex: number,
+  staff = 0,
+): number | null {
+  const measureEl = measuresOf(doc)[measureIndex];
+  if (!measureEl) {
+    return null;
+  }
+  const staffCount = staffCountOf(doc);
+  const lookupStaff = staffCount > 1 ? staff : 0;
+  if (voicesInMeasure(doc, measureIndex, lookupStaff).length >= 4) {
+    return null;
+  }
+  const { divisions, divisionsPerMeasure } = measureMetrics(doc);
+  const measureLength =
+    measureContentDivisions(measureEl) || divisionsPerMeasure;
+  const notes = readRealNotes(measureEl, divisions);
+  // A voice number unused by any staff in the measure keeps the streams distinct.
+  const newVoice = Math.max(0, ...voicesInMeasure(doc, measureIndex)) + 1;
+  // Re-require every voice already present (including rest-only ones — they are
+  // absent from `notes`, so without this a second added voice would erase the
+  // first) plus the new voice on the target staff. Staff key is 0 single-staff.
+  const requiredVoices: Array<{ staff: number; voice: number }> = [];
+  if (staffCount > 1) {
+    for (let s = 1; s <= staffCount; s++) {
+      for (const v of voicesInMeasure(doc, measureIndex, s)) {
+        requiredVoices.push({ staff: s, voice: v });
+      }
+    }
+    requiredVoices.push({ staff, voice: newVoice });
+  } else {
+    for (const v of voicesInMeasure(doc, measureIndex, 0)) {
+      requiredVoices.push({ staff: 0, voice: v });
+    }
+    requiredVoices.push({ staff: 0, voice: newVoice });
+  }
+  writeMeasure(
+    doc,
+    measureEl,
+    notes,
+    measureLength,
+    divisions,
+    staffCount,
+    staffCount > 1
+      ? Array.from({ length: staffCount }, (_, i) => i + 1)
+      : undefined,
+    requiredVoices,
+  );
+  return newVoice;
 }
 
 // Set (or create) a note/rest element's `<staff>` child. Reused by

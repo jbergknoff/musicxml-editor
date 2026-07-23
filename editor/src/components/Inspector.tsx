@@ -68,6 +68,8 @@ export interface InspectorNoteGroup {
   maxDurationBeats: number;
   /** True when this staff's slot is a rest (no notes). */
   isRest: boolean;
+  /** True when this staff's chord carries a fermata (hold) mark. */
+  hasFermata: boolean;
   /** Index of this group's first note in the flat handles array. */
   noteOffset: number;
   /** Top-first (descending pitch) note rows; empty for a rest. */
@@ -79,12 +81,16 @@ export interface InspectorNoteGroup {
   graceOffset: number;
 }
 
-// Standard, undotted note values offered by the duration selector, largest
-// first — mirrors `dom-edit`'s own standard-duration table.
+// Standard note values offered by the duration selector, largest first —
+// mirrors `dom-edit`'s own standard-duration table (dotted values included, so
+// the dotted rhythms OMR sources are full of can be entered directly).
 const DURATION_OPTIONS: Array<{ label: string; beats: number }> = [
   { label: "Whole", beats: 4 },
+  { label: "Half ·", beats: 3 },
   { label: "Half", beats: 2 },
+  { label: "Quarter ·", beats: 1.5 },
   { label: "Quarter", beats: 1 },
+  { label: "Eighth ·", beats: 0.75 },
   { label: "Eighth", beats: 0.5 },
   { label: "16th", beats: 0.25 },
 ];
@@ -328,6 +334,40 @@ function GraceStyleControl({
   );
 }
 
+// Chord-level fermata (hold) toggle — same look as TieToggle. Lives next to
+// the duration selector because, like duration, a fermata belongs to the whole
+// chord rather than to one member note.
+function FermataToggle({
+  hasFermata,
+  onToggle,
+}: {
+  hasFermata: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={hasFermata ? "Remove fermata" : "Add fermata (hold)"}
+      onClick={onToggle}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        border: `1px solid ${COLORS.borderLight}`,
+        borderRadius: 5,
+        padding: "2px 7px",
+        background: hasFermata ? COLORS.accent : "transparent",
+        color: hasFermata ? "#fff" : COLORS.textPlaceholder,
+        cursor: "pointer",
+        fontSize: 13,
+        lineHeight: 1.4,
+      }}
+    >
+      𝄐
+    </button>
+  );
+}
+
 // Toggle button for tying this note into the next chord's matching pitch —
 // same look as the accidental/grace-style segmented controls, but a single
 // toggle rather than a set of mutually exclusive options.
@@ -405,6 +445,8 @@ export interface InspectorProps {
   /** Toggle a tie from the note at `index` into the next chord's matching
    *  pitch (or remove the tie touching this note, if any). */
   onToggleTie: (index: number) => void;
+  /** Toggle a fermata on the chord whose first note is at `index`. */
+  onToggleFermata: (index: number) => void;
   onAddNote: (partIndex: number) => void;
   /** Set the duration (in quarter-note beats) of the chord at `index`'s onset —
    *  every chord member is resized together. */
@@ -541,6 +583,7 @@ function NoteGroupSection({
   onStep,
   onRemove,
   onToggleTie,
+  onToggleFermata,
   onAddNote,
   onSetDuration,
   onSetNoteDuration,
@@ -558,6 +601,7 @@ function NoteGroupSection({
   onStep: (flatIndex: number, delta: number) => void;
   onRemove: (flatIndex: number) => void;
   onToggleTie: (flatIndex: number) => void;
+  onToggleFermata: (flatIndex: number) => void;
   onAddNote: (partIndex: number) => void;
   onSetDuration: (flatIndex: number, durationBeats: number) => void;
   onSetNoteDuration: (flatIndex: number, durationBeats: number) => void;
@@ -687,11 +731,19 @@ function NoteGroupSection({
           >
             Duration
           </span>
-          <DurationSelect
-            value={group.durationBeats}
-            maxBeats={group.maxDurationBeats}
-            onChange={(beats) => onSetDuration(group.noteOffset, beats)}
-          />
+          <span
+            style={{ display: "inline-flex", alignItems: "center", gap: 7 }}
+          >
+            <DurationSelect
+              value={group.durationBeats}
+              maxBeats={group.maxDurationBeats}
+              onChange={(beats) => onSetDuration(group.noteOffset, beats)}
+            />
+            <FermataToggle
+              hasFermata={group.hasFermata}
+              onToggle={() => onToggleFermata(group.noteOffset)}
+            />
+          </span>
         </div>
       )}
       {group.notes.length > 0 && (
@@ -817,6 +869,7 @@ export function Inspector({
   onStep,
   onRemove,
   onToggleTie,
+  onToggleFermata,
   onAddNote,
   onSetDuration,
   onSetNoteDuration,
@@ -920,6 +973,7 @@ export function Inspector({
                 onStep={onStep}
                 onRemove={onRemove}
                 onToggleTie={onToggleTie}
+                onToggleFermata={onToggleFermata}
                 onAddNote={onAddNote}
                 onSetDuration={onSetDuration}
                 onSetNoteDuration={onSetNoteDuration}

@@ -6,6 +6,7 @@ import {
   addNote,
   addNoteToChord,
   addStaff,
+  addVoice,
   appendScore,
   copyMeasures,
   createBlankDocument,
@@ -19,9 +20,14 @@ import {
   parseDocument,
   pasteMeasures,
   redistributeStaves,
+  chordHasFermata,
+  deleteRestAt,
+  normalizeRecoveredNotation,
   removeNote,
   removeNotes,
   removeStaff,
+  restGapBeats,
+  toggleFermata,
   serializeDocument,
   setAccidental,
   setChordMemberDuration,
@@ -1484,6 +1490,96 @@ const MULTI_VOICE_XML = `<?xml version="1.0" encoding="UTF-8"?>
   </part>
 </score-partwise>`;
 
+describe("addVoice", () => {
+  test("adds an empty second voice as a whole-measure rest, keeping existing notes", () => {
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    const before = voicesInMeasure(doc, 0);
+    const newVoice = addVoice(doc, 0, 0) as number;
+    expect(newVoice).not.toBeNull();
+    const after = voicesInMeasure(doc, 0);
+    expect(after.length).toBe(before.length + 1);
+    expect(after).toContain(newVoice);
+    // The added voice is a single whole-measure rest (16 divisions at 4/4).
+    const restEls = [...doc.querySelectorAll("note")].filter(
+      (n) =>
+        n.querySelector("rest") !== null &&
+        n.querySelector("voice")?.textContent === String(newVoice),
+    );
+    expect(restEls.length).toBe(1);
+    expect(restEls[0].querySelector("duration")?.textContent).toBe("16");
+    // The original C5 survives.
+    const steps = [...doc.querySelectorAll("note > pitch > step")].map(
+      (s) => s.textContent,
+    );
+    expect(steps).toContain("C");
+  });
+
+  test("a note entered into the new voice's rest lands on that voice", () => {
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    const newVoice = addVoice(doc, 0, 0) as number;
+    // Fill the added voice at beat 2 (its rest), asking for that voice explicitly.
+    const added = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 2,
+      durationBeats: 1,
+      pitch: { step: "G", alter: 0, octave: 4 },
+      voice: newVoice,
+    });
+    expect(added).not.toBeNull();
+    const gNote = [...doc.querySelectorAll("note")].find(
+      (n) => n.querySelector("step")?.textContent === "G",
+    );
+    expect(gNote?.querySelector("voice")?.textContent).toBe(String(newVoice));
+    // C5 (voice 1) and G4 (the new voice) coexist — two independent voices.
+    expect(voicesInMeasure(doc, 0).length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("adds the voice to the requested staff of a grand staff", () => {
+    const doc = parseDocument(MULTI_VOICE_XML);
+    const before2 = voicesInMeasure(doc, 0, 2);
+    const newVoice = addVoice(doc, 0, 2) as number;
+    expect(newVoice).not.toBeNull();
+    const after2 = voicesInMeasure(doc, 0, 2);
+    expect(after2.length).toBe(before2.length + 1);
+    // The new staff-2 rest carries <staff>2</staff>.
+    const restEls = [...doc.querySelectorAll("note")].filter(
+      (n) =>
+        n.querySelector("rest") !== null &&
+        n.querySelector("voice")?.textContent === String(newVoice),
+    );
+    expect(restEls.length).toBe(1);
+    expect(restEls[0].querySelector("staff")?.textContent).toBe("2");
+    // Staff-1 voices are untouched.
+    expect(voicesInMeasure(doc, 0, 1)).toEqual([1, 2]);
+  });
+
+  test("refuses a fifth voice on one staff", () => {
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    expect(addVoice(doc, 0, 0)).not.toBeNull(); // 2
+    expect(addVoice(doc, 0, 0)).not.toBeNull(); // 3
+    expect(addVoice(doc, 0, 0)).not.toBeNull(); // 4
+    expect(addVoice(doc, 0, 0)).toBeNull(); // 5 → refused
+  });
+});
+
 describe("multi-voice grand-staff editing", () => {
   test("removeNote on voice-1 staff-1 leaves voice-2 staff-1 and staff-2 intact", () => {
     const doc = parseDocument(MULTI_VOICE_XML);
@@ -1513,6 +1609,30 @@ describe("multi-voice grand-staff editing", () => {
     expect(
       bassChords.some((c) => c.notes.some((n) => n.pitch.step === "G")),
     ).toBe(true);
+  });
+
+  test("nudging a voice-1 half note keeps its duration when another voice subdivides the staff", () => {
+    // Regression: gap detection in moveNote was staff-only, so a pitch nudge of
+    // the voice-1 D5 half note (beats 1-2) was truncated to a quarter by voice
+    // 2's onset at beat 2 on the same staff. Voices overlap by design.
+    const doc = parseDocument(MULTI_VOICE_XML);
+    const moved = moveNote(
+      doc,
+      { measureIndex: 0, noteElementIndex: 0 },
+      {
+        measureIndex: 0,
+        onsetBeatInMeasure: 0,
+        pitch: { step: "E", alter: 0, octave: 5 },
+      },
+    );
+    expect(moved).not.toBeNull();
+    const notes = [...doc.querySelectorAll("note")];
+    const eNote = notes.find(
+      (n) => n.querySelector("step")?.textContent === "E",
+    );
+    // Still a half note (duration 8 at divisions=4), not clamped to a quarter.
+    expect(eNote?.querySelector("duration")?.textContent).toBe("8");
+    expect(eNote?.querySelector("type")?.textContent).toBe("half");
   });
 
   test("addNote on staff 2 of a multi-voice score leaves staff-1 voices intact", () => {
@@ -2368,5 +2488,369 @@ describe("voices", () => {
     expect((measure.voices[0].events[0] as ChordGroup).duration).toBe(16);
     // Voice 2 now opens with a rest (the quarter moved to beat 1).
     expect(isRest(measure.voices[1].events[0])).toBe(true);
+  });
+});
+
+describe("restGapBeats / deleteRestAt", () => {
+  // C5 quarter at beat 0, E5 quarter at beat 2 — a one-beat rest gap at beat 1.
+  function docWithGap(): Document {
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 2,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+    });
+    return doc;
+  }
+
+  test("reports the closable gap between the rest and the next note", () => {
+    const doc = docWithGap();
+    expect(restGapBeats(doc, 0, 1, 1, 1)).toBe(1);
+  });
+
+  test("deleting the rest pulls the later notes earlier", () => {
+    const doc = docWithGap();
+    expect(deleteRestAt(doc, 0, 1, 1, 1)).toBe(true);
+    const onsets = chords(reparse(doc)).map((entry) => entry.onsetBeat);
+    expect(onsets).toEqual([0, 1]);
+  });
+
+  test("a leading rest is deletable too", () => {
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    expect(restGapBeats(doc, 0, 1, 1, 0)).toBe(1);
+    expect(deleteRestAt(doc, 0, 1, 1, 0)).toBe(true);
+    const onsets = chords(reparse(doc)).map((entry) => entry.onsetBeat);
+    expect(onsets).toEqual([0]);
+  });
+
+  test("refuses a trailing rest — nothing after it to pull earlier", () => {
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    expect(restGapBeats(doc, 0, 1, 1, 1)).toBe(0);
+    const before = serializeDocument(doc);
+    expect(deleteRestAt(doc, 0, 1, 1, 1)).toBe(false);
+    expect(serializeDocument(doc)).toBe(before);
+  });
+
+  test("refuses a slot a note is still sounding across", () => {
+    const doc = createBlankDocument();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 2,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 3,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+    });
+    expect(restGapBeats(doc, 0, 1, 1, 1)).toBe(0);
+    expect(deleteRestAt(doc, 0, 1, 1, 1)).toBe(false);
+  });
+
+  test("closes the gap only in the addressed voice", () => {
+    const doc = createBlankDocument();
+    // Voice 1: whole-bar C5. Voice 2: quarter at beat 0, quarter at beat 2.
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 4,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    const low = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 4 },
+      voice: 2,
+    }) as NoteHandle;
+    expect(low).not.toBeNull();
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 2,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 4 },
+      voice: 2,
+    });
+    expect(deleteRestAt(doc, 0, 1, 2, 1)).toBe(true);
+    const measure = reparse(doc).parts[0].measures[0];
+    // Voice 1's whole note is untouched; voice 2's second note moved to beat 1.
+    expect((measure.voices[0].events[0] as ChordGroup).duration).toBe(16);
+    const movingOnsets: number[] = [];
+    let cursor = 0;
+    for (const event of measure.voices[1].events) {
+      if (!isRest(event)) {
+        movingOnsets.push(cursor);
+      }
+      cursor += event.duration / 4;
+    }
+    expect(movingOnsets).toEqual([0, 1]);
+  });
+});
+
+describe("toggleFermata", () => {
+  test("adds a fermata to the chord and the parser surfaces it", () => {
+    const doc = createBlankDocument();
+    const handle = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    addNoteToChord(doc, handle, { step: "E", alter: 0, octave: 5 });
+    expect(chordHasFermata(doc, handle)).toBe(false);
+    expect(toggleFermata(doc, handle)).toBe(true);
+    expect(chordHasFermata(doc, handle)).toBe(true);
+    const placed = chords(reparse(doc));
+    expect(placed[0].chord.notes.some((n) => n.fermata)).toBe(true);
+
+    expect(toggleFermata(doc, handle)).toBe(true);
+    expect(chordHasFermata(doc, handle)).toBe(false);
+    expect(serializeDocument(doc)).not.toContain("<fermata");
+  });
+
+  test("survives a measure rewrite (duration change)", () => {
+    const doc = createBlankDocument();
+    const handle = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    toggleFermata(doc, handle);
+    expect(setNoteDuration(doc, handle, 2)).toBe(true);
+    expect(serializeDocument(doc)).toContain("<fermata");
+  });
+
+  test("refuses a rest handle", () => {
+    const doc = createBlankDocument();
+    // The blank measure's only note element is the whole-bar rest.
+    expect(toggleFermata(doc, { measureIndex: 0, noteElementIndex: 0 })).toBe(
+      false,
+    );
+  });
+});
+
+describe("normalizeRecoveredNotation", () => {
+  test("drops chord-member rests", () => {
+    const doc = createBlankDocument();
+    const handle = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    // Inject the invalid construct OMR recovery can emit: a rest flagged as a
+    // chord member of the C5.
+    const measureEl = doc.querySelectorAll("measure")[0];
+    const noteEl = measureEl.querySelectorAll("note")[handle.noteElementIndex];
+    const restMember = doc.createElement("note");
+    restMember.appendChild(doc.createElement("chord"));
+    restMember.appendChild(doc.createElement("rest"));
+    const durationEl = doc.createElement("duration");
+    durationEl.textContent = "4";
+    restMember.appendChild(durationEl);
+    noteEl.parentElement?.insertBefore(restMember, noteEl.nextSibling);
+
+    expect(normalizeRecoveredNotation(doc)).toBe(true);
+    const serialized = serializeDocument(doc);
+    expect(serialized).not.toContain("<chord/><rest/>");
+    // The real note is untouched.
+    expect(chords(reparse(doc))[0].chord.notes).toHaveLength(1);
+  });
+
+  test("drops a dangling tie start with no same-pitch successor", () => {
+    const doc = createBlankDocument();
+    const first = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 5 },
+    });
+    // Force a one-sided start mark (toggleTie would refuse: no partner).
+    const noteEl = doc.querySelectorAll("measure")[0].querySelectorAll("note")[
+      first.noteElementIndex
+    ];
+    const tieEl = doc.createElement("tie");
+    tieEl.setAttribute("type", "start");
+    noteEl.appendChild(tieEl);
+
+    expect(normalizeRecoveredNotation(doc)).toBe(true);
+    expect(serializeDocument(doc)).not.toContain("<tie ");
+  });
+
+  test("repairs a one-sided tie whose partner exists", () => {
+    const doc = createBlankDocument();
+    const first = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    const noteEl = doc.querySelectorAll("measure")[0].querySelectorAll("note")[
+      first.noteElementIndex
+    ];
+    const tieEl = doc.createElement("tie");
+    tieEl.setAttribute("type", "start");
+    noteEl.appendChild(tieEl);
+
+    expect(normalizeRecoveredNotation(doc)).toBe(true);
+    const placed = chords(reparse(doc));
+    expect(placed[0].chord.notes[0].tieStart).toBe(true);
+    expect(placed[1].chord.notes[0].tieStop).toBe(true);
+    // Idempotent: a second pass changes nothing.
+    expect(normalizeRecoveredNotation(doc)).toBe(false);
+  });
+
+  test("leaves a well-formed document untouched", () => {
+    const doc = createBlankDocument();
+    const first = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    toggleTie(doc, first);
+    const before = serializeDocument(doc);
+    expect(normalizeRecoveredNotation(doc)).toBe(false);
+    expect(serializeDocument(doc)).toBe(before);
+  });
+});
+
+describe("toggleTie across voices", () => {
+  test("forward partner search walks time order, not document order", () => {
+    const doc = createBlankDocument({ measureCount: 2 });
+    // Voice 1: A4 quarter on beat 4 of measure 1; voice 2: A4 whole at beat 1
+    // (its <note> appears AFTER voice 1's in the document). The tie from the
+    // beat-4 A4 must reach measure 2's A4 — not voice 2's earlier whole note.
+    const late = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 3,
+      durationBeats: 1,
+      pitch: { step: "A", alter: 0, octave: 4 },
+    }) as NoteHandle;
+    addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 4,
+      pitch: { step: "A", alter: 0, octave: 4 },
+      voice: 2,
+    });
+    addNote(doc, {
+      measureIndex: 1,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "A", alter: 0, octave: 4 },
+    });
+    expect(toggleTie(doc, late)).toBe(true);
+    const placed = chords(reparse(doc));
+    // measure 2's A4 carries the stop; voice 2's whole note carries nothing.
+    const m2 = placed.find((entry) => entry.measureIndex === 1);
+    expect(m2?.chord.notes[0].tieStop).toBe(true);
+    const whole = placed.find(
+      (entry) => entry.measureIndex === 0 && entry.chord.duration === 16,
+    );
+    expect(whole?.chord.notes[0].tieStart).toBe(false);
+    expect(whole?.chord.notes[0].tieStop).toBe(false);
+  });
+
+  test("a chain link's forward tie can be added despite its stop mark", () => {
+    const doc = createBlankDocument({ measureCount: 2 });
+    const first = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 2,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    const middle = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 2,
+      durationBeats: 2,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    }) as NoteHandle;
+    addNote(doc, {
+      measureIndex: 1,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+    });
+    expect(toggleTie(doc, first)).toBe(true);
+    // `middle` now carries a stop; toggling it must ADD the forward tie into
+    // measure 2 (not tear down the first tie).
+    expect(toggleTie(doc, middle)).toBe(true);
+    const placed = chords(reparse(doc));
+    expect(placed[0].chord.notes[0].tieStart).toBe(true);
+    expect(placed[1].chord.notes[0].tieStop).toBe(true);
+    expect(placed[1].chord.notes[0].tieStart).toBe(true);
+    expect(placed[2].chord.notes[0].tieStop).toBe(true);
+  });
+});
+
+describe("removing a staff's last notes", () => {
+  test("an emptied grand-staff measure keeps blank bars on both staves", () => {
+    const doc = parseDocument(
+      serializeDocument(createBlankDocument({ measureCount: 2 })),
+    );
+    addStaff(doc);
+    const first = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 0,
+      durationBeats: 1,
+      pitch: { step: "C", alter: 0, octave: 5 },
+      staff: 1,
+    }) as NoteHandle;
+    const second = addNote(doc, {
+      measureIndex: 0,
+      onsetBeatInMeasure: 1,
+      durationBeats: 1,
+      pitch: { step: "E", alter: 0, octave: 2 },
+      staff: 2,
+    }) as NoteHandle;
+    removeNotes(doc, [second, first]);
+    const measure = reparse(doc).parts.map(
+      (part) => part.measures[0].voices.flatMap((v) => v.events).length,
+    );
+    // Both staves still carry (rest) events — the measure did not vanish.
+    expect(measure.length).toBe(2);
+    expect(measure[0]).toBeGreaterThan(0);
+    expect(measure[1]).toBeGreaterThan(0);
   });
 });
