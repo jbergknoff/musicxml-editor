@@ -22,6 +22,13 @@ const GRAND_STAFF_SHIFT_SPINE = fileURLToPath(
 const GRAND_STAFF = fileURLToPath(
   new URL("./fixtures/grand-staff.musicxml", import.meta.url),
 );
+// Treble: quarter C5, quarter rest, quarter E5, quarter G5. Bass: half chord
+// C3+E3 (beats 1-2), half G2 (beats 3-4). Beat 4 has a treble onset (G5) but no
+// bass onset (the G2 half sustains through it) — used to test adding a note to a
+// staff that is resting/sustaining through the selected beat.
+const GRAND_STAFF_REST_COVER = fileURLToPath(
+  new URL("./fixtures/grand-staff-rest-cover.musicxml", import.meta.url),
+);
 
 async function exportXml(page: Page): Promise<string> {
   const [download] = await Promise.all([
@@ -105,6 +112,49 @@ test("a note can be added onto the bass staff of a grand staff", async ({
   expect(pitchedNotesOnStaff(after, 2)).toBe(2);
   // It was placed near the bass staff (an E in octave 2–3), not treble range.
   expect(after).toMatch(/<step>E<\/step>\s*<octave>[23]<\/octave>/);
+});
+
+test("the inspector can add a note to a staff resting through the selected beat", async ({
+  page,
+}) => {
+  await page
+    .locator('input[type="file"]')
+    .first()
+    .setInputFiles(GRAND_STAFF_REST_COVER);
+  await expect(page.locator("#p0-m1-n0-v0")).toBeVisible(); // treble C5
+  await expect(page.locator("#p1-m1-n0-v0")).toBeVisible(); // bass chord
+  const inspector = page.locator("aside");
+
+  const before = await exportXml(page);
+  expect(pitchedNotesOnStaff(before, 1)).toBe(3); // C5, E5, G5
+  expect(pitchedNotesOnStaff(before, 2)).toBe(3); // C3, E3, G2
+
+  // Select the treble G5 at beat 4. The bass G2 (a half note) began at beat 3
+  // and merely sustains through beat 4 — it has no onset here, so previously the
+  // inspector offered no way to add a note to the bass staff at this beat.
+  await clickNotehead(page, "#p0-m1-n2-v0");
+  await expect(page.getByText(/Sel: m\.1 .*b4 /)).toBeVisible();
+  await expect(inspector.getByText("G5", { exact: true })).toBeVisible();
+
+  // The bass staff now appears as an "add-only" group: labelled, marked resting,
+  // and offering its own "+ Add note" — so both staves can be added to.
+  await expect(inspector.getByText("Bass")).toBeVisible();
+  await expect(inspector.getByText("resting")).toBeVisible();
+  const addButtons = inspector.getByRole("button", { name: "+ Add note" });
+  await expect(addButtons).toHaveCount(2);
+
+  // Click the bass staff's Add note (the second group). A note is started on the
+  // bass staff at beat 4, splitting the sustained G2's coverage to make room.
+  await addButtons.last().click();
+
+  const after = await exportXml(page);
+  // The new note landed on the bass staff (staff 2); the treble is untouched.
+  expect(pitchedNotesOnStaff(after, 1)).toBe(3);
+  expect(pitchedNotesOnStaff(after, 2)).toBe(4);
+  // It was placed in bass range (the F-clef reference pitch, D3), not treble.
+  expect(after).toMatch(
+    /<step>D<\/step>\s*<octave>3<\/octave>[\s\S]*?<staff>2<\/staff>/,
+  );
 });
 
 test("a ledger-line bass note selects the bass staff even when the click is nearer the treble staff", async ({

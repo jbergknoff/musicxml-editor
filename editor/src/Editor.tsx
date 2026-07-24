@@ -657,6 +657,35 @@ export function Editor() {
       };
     });
 
+    // Any staff with no onset at this beat (resting, or sustaining a note begun
+    // earlier) gets a placeholder "add-only" group so a note can still be
+    // started on it here — otherwise a beat where only one staff of a grand
+    // staff sounds would offer no way to add to the silent staff.
+    const presentParts = new Set(beatStaffSlots.map((s) => s.partIndex));
+    for (let partIndex = 0; partIndex < score.parts.length; partIndex += 1) {
+      if (presentParts.has(partIndex)) {
+        continue;
+      }
+      noteGroups.push({
+        partIndex,
+        voiceIndex: 0,
+        label: groupLabels[partIndex] ?? "",
+        durationLabel: "",
+        durationBeats: 0,
+        maxDurationBeats: 0,
+        isRest: true,
+        addOnly: true,
+        hasFermata: false,
+        noteOffset: flatHandles.length,
+        notes: [],
+        graceOffset: flatGraceHandles.length,
+        graces: [],
+      });
+    }
+    // Keep the panel in staff order (treble above bass) regardless of which
+    // staff the selection landed on.
+    noteGroups.sort((a, b) => a.partIndex - b.partIndex);
+
     const allNoteRows = noteGroups.flatMap((g) => g.notes);
     const measureStart = measureStartBeats[slotInfo.measureIndex] ?? 0;
     const beatType = score.parts[0]?.timeSig?.beatType ?? 4;
@@ -1597,6 +1626,49 @@ export function Editor() {
         slot.notes[0].handle,
         pitch,
       );
+      if (added) {
+        dropFlagsInMeasure(slot.measureIndex);
+        setSelection({ kind: "note", handle: added });
+        commit();
+      }
+    },
+    [
+      editable,
+      score,
+      measureStartBeats,
+      documentRef,
+      commit,
+      dropFlagsInMeasure,
+    ],
+  );
+
+  // Start a note on a staff that has *no* onset at the selected beat (it's
+  // resting or sustaining a note begun earlier). `addNote` splits the covering
+  // rest to make room, so this works even mid-sustain. Used by the inspector's
+  // add-only groups.
+  const addNoteToStaffAtBeat = useCallback(
+    (partIndex: number) => {
+      const slot = slotInfoRef.current;
+      if (!editable || !slot) {
+        return;
+      }
+      const measureStart = measureStartBeats[slot.measureIndex] ?? 0;
+      const clef = score.parts[partIndex]?.clef;
+      const staffNumber = score.parts.length > 1 ? partIndex + 1 : 0;
+      const voice =
+        voicesInMeasure(
+          documentRef.current,
+          slot.measureIndex,
+          staffNumber,
+        )[0] ?? 1;
+      const added = addNote(documentRef.current, {
+        measureIndex: slot.measureIndex,
+        onsetBeatInMeasure: slot.onsetBeat - measureStart,
+        durationBeats: 1,
+        pitch: staffReferencePitch(clef),
+        staff: partIndex + 1,
+        voice,
+      });
       if (added) {
         dropFlagsInMeasure(slot.measureIndex);
         setSelection({ kind: "note", handle: added });
@@ -3178,13 +3250,19 @@ export function Editor() {
             }
           }}
           onAddNote={(partIndex) => {
-            // `allSlots` is onset-exact, so this staff's row (and its Add-note
-            // button) only exists when it truly has an onset at the selected
-            // beat — the target slot's own onset is always that beat already.
+            // `allSlots` is onset-exact, so this staff's row exists only when it
+            // truly has an onset at the selected beat. When it does, add to that
+            // slot (its onset is already this beat). When it doesn't — the
+            // add-only group for a staff resting/sustaining through the beat —
+            // start a fresh note on that staff instead.
             const targetSlot = inspector?.allSlots.find(
               (s) => s.partIndex === partIndex,
             );
-            addNoteAtSlot(undefined, targetSlot);
+            if (targetSlot) {
+              addNoteAtSlot(undefined, targetSlot);
+            } else {
+              addNoteToStaffAtBeat(partIndex);
+            }
           }}
           onGraceAccidental={(index, alter) => {
             const handle = inspector?.graceHandles[index];
