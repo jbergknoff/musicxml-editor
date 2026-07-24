@@ -3,13 +3,14 @@
 // counter forces a re-render after each in-place mutation, and the serialized
 // string is recomputed from it.
 //
-// Interaction is selection-first and keyboard-driven (per the Claude Design
-// handoff): a click selects the whole chord at a beat (Level 1); a second click
-// on a notehead — or Enter — drills to a single note (Level 2); Esc steps back
-// out. The right-hand inspector mirrors the selection and edits pitch /
-// accidental / chord membership with discrete commands. Arrow keys re-pitch the
-// drilled note (↑/↓) or move between beats (←/→); A–G add a note; -/=/0 set
-// accidentals; Space plays/stops. A plain drag only scrolls the staff.
+// Interaction is selection-first and keyboard-driven: clicking a notehead
+// selects that note directly, clicking a rest selects that rest, and the scope
+// of an edit (one note vs the whole chord at a beat) comes from which inspector
+// control you use — not from a mode you step into and out of. The right-hand
+// inspector mirrors the selection and edits pitch / accidental / chord
+// membership with discrete commands. Arrow keys re-pitch the selected note
+// (↑/↓) or move between beats (←/→); A–G add a note; -/=/0 set accidentals;
+// Space plays/stops. A plain drag only scrolls the staff.
 
 import { parseMidi } from "midi-file";
 import type { MidiData } from "midi-file";
@@ -44,6 +45,7 @@ import {
   type InspectorModel,
   type InspectorNoteGroup,
 } from "./components/Inspector";
+import { KeyboardHelp } from "./components/KeyboardHelp";
 import { MetadataDialog } from "./components/MetadataDialog";
 import {
   type MidiImportChoice,
@@ -198,24 +200,6 @@ function sameHandle(a: NoteHandle, b: NoteHandle): boolean {
   return (
     a.measureIndex === b.measureIndex &&
     a.noteElementIndex === b.noteElementIndex
-  );
-}
-
-function sameSlot(
-  selection: Selection,
-  slot: {
-    partIndex: number;
-    voiceIndex?: number;
-    measureIndex: number;
-    onsetBeat: number;
-  },
-): boolean {
-  return (
-    selection?.kind === "slot" &&
-    selection.partIndex === slot.partIndex &&
-    (selection.voiceIndex ?? 0) === (slot.voiceIndex ?? 0) &&
-    selection.measureIndex === slot.measureIndex &&
-    Math.abs(selection.onsetBeat - slot.onsetBeat) < 1e-6
   );
 }
 
@@ -388,6 +372,13 @@ export function Editor() {
   selectionRef.current = selection;
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [metadataOpen, setMetadataOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  // Anchor for the toolbar's "More" overflow menu (structure/append actions).
+  const [overflowMenu, setOverflowMenu] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const appendInputRef = useRef<HTMLInputElement>(null);
   // Whether the "Redistribute across staves" confirmation modal is showing.
   const [redistributeOpen, setRedistributeOpen] = useState(false);
   const imageImport = useImageImport();
@@ -666,6 +657,35 @@ export function Editor() {
       };
     });
 
+    // Any staff with no onset at this beat (resting, or sustaining a note begun
+    // earlier) gets a placeholder "add-only" group so a note can still be
+    // started on it here — otherwise a beat where only one staff of a grand
+    // staff sounds would offer no way to add to the silent staff.
+    const presentParts = new Set(beatStaffSlots.map((s) => s.partIndex));
+    for (let partIndex = 0; partIndex < score.parts.length; partIndex += 1) {
+      if (presentParts.has(partIndex)) {
+        continue;
+      }
+      noteGroups.push({
+        partIndex,
+        voiceIndex: 0,
+        label: groupLabels[partIndex] ?? "",
+        durationLabel: "",
+        durationBeats: 0,
+        maxDurationBeats: 0,
+        isRest: true,
+        addOnly: true,
+        hasFermata: false,
+        noteOffset: flatHandles.length,
+        notes: [],
+        graceOffset: flatGraceHandles.length,
+        graces: [],
+      });
+    }
+    // Keep the panel in staff order (treble above bass) regardless of which
+    // staff the selection landed on.
+    noteGroups.sort((a, b) => a.partIndex - b.partIndex);
+
     const allNoteRows = noteGroups.flatMap((g) => g.notes);
     const measureStart = measureStartBeats[slotInfo.measureIndex] ?? 0;
     const beatType = score.parts[0]?.timeSig?.beatType ?? 4;
@@ -877,30 +897,21 @@ export function Editor() {
         partIndex: slot.partIndex,
         measureIndex: slot.measureIndex,
       };
-      setSelection((prev) => {
-        const onThisSlot =
-          sameSlot(prev, slot) ||
-          (prev?.kind === "note" &&
-            slot.handles.some((handle) => sameHandle(handle, prev.handle)));
-        // A repeat tap that landed on a notehead drills into that note.
-        if (onThisSlot && gesture.hit) {
-          return { kind: "note", handle: gesture.hit.handle };
-        }
-        // Already drilled to note level: a tap on another notehead stays at
-        // note level (matching ←/→, which keeps the drill level while
-        // moving) instead of popping back out to the beat and demanding a
-        // second click on every note.
-        if (prev?.kind === "note" && gesture.hit) {
-          return { kind: "note", handle: gesture.hit.handle };
-        }
-        return {
-          kind: "slot",
-          partIndex: slot.partIndex,
-          voiceIndex: slot.voiceIndex,
-          measureIndex: slot.measureIndex,
-          onsetBeat: slot.onsetBeat,
-        };
-      });
+      // A tap on a notehead selects that note directly — no drill step, no
+      // second click. A tap on a rest (or an empty beat) selects the beat/rest
+      // slot. Chord-wide vs single-note scope comes from which inspector control
+      // you use, not from a selection mode you have to step into and out of.
+      setSelection(
+        gesture.hit
+          ? { kind: "note", handle: gesture.hit.handle }
+          : {
+              kind: "slot",
+              partIndex: slot.partIndex,
+              voiceIndex: slot.voiceIndex,
+              measureIndex: slot.measureIndex,
+              onsetBeat: slot.onsetBeat,
+            },
+      );
     },
     [editable, score],
   );
@@ -1631,6 +1642,49 @@ export function Editor() {
     ],
   );
 
+  // Start a note on a staff that has *no* onset at the selected beat (it's
+  // resting or sustaining a note begun earlier). `addNote` splits the covering
+  // rest to make room, so this works even mid-sustain. Used by the inspector's
+  // add-only groups.
+  const addNoteToStaffAtBeat = useCallback(
+    (partIndex: number) => {
+      const slot = slotInfoRef.current;
+      if (!editable || !slot) {
+        return;
+      }
+      const measureStart = measureStartBeats[slot.measureIndex] ?? 0;
+      const clef = score.parts[partIndex]?.clef;
+      const staffNumber = score.parts.length > 1 ? partIndex + 1 : 0;
+      const voice =
+        voicesInMeasure(
+          documentRef.current,
+          slot.measureIndex,
+          staffNumber,
+        )[0] ?? 1;
+      const added = addNote(documentRef.current, {
+        measureIndex: slot.measureIndex,
+        onsetBeatInMeasure: slot.onsetBeat - measureStart,
+        durationBeats: 1,
+        pitch: staffReferencePitch(clef),
+        staff: partIndex + 1,
+        voice,
+      });
+      if (added) {
+        dropFlagsInMeasure(slot.measureIndex);
+        setSelection({ kind: "note", handle: added });
+        commit();
+      }
+    },
+    [
+      editable,
+      score,
+      measureStartBeats,
+      documentRef,
+      commit,
+      dropFlagsInMeasure,
+    ],
+  );
+
   const addLetter = useCallback(
     (step: Pitch["step"]) => {
       const slot = slotInfoRef.current;
@@ -1967,33 +2021,14 @@ export function Editor() {
     });
   }, [score]);
 
-  const stepOut = useCallback(() => {
+  // Escape clears the selection outright — there is no drill hierarchy to step
+  // back through anymore. A measure range is exempted so the natural "right-
+  // click a range, press Escape to dismiss the menu" gesture doesn't also wipe
+  // the range (Escape reaches this global handler alongside ContextMenu's own).
+  const clearSelectionOnEscape = useCallback(() => {
     setMenu(null);
-    setSelection((prev) => {
-      // A measure range isn't part of the slot→note drill hierarchy Escape
-      // steps back out of, so it isn't Escape's to clear. Without this, the
-      // very natural "right-click a range, then press Escape to dismiss the
-      // menu without picking anything" gesture would silently wipe the
-      // range: Escape reaches this global handler before (or as well as)
-      // ContextMenu's own Escape-closes-the-menu listener.
-      if (prev?.kind === "measureRange") {
-        return prev;
-      }
-      if (prev?.kind !== "note") {
-        return null;
-      }
-      const info = chordInfoForHandle(score, prev.handle);
-      return info
-        ? {
-            kind: "slot",
-            partIndex: info.partIndex,
-            voiceIndex: info.voiceIndex,
-            measureIndex: info.measureIndex,
-            onsetBeat: info.onsetBeat,
-          }
-        : null;
-    });
-  }, [score]);
+    setSelection((prev) => (prev?.kind === "measureRange" ? prev : null));
+  }, []);
 
   const cycleChord = useCallback(
     (dir: number) => {
@@ -2287,6 +2322,14 @@ export function Editor() {
         return;
       }
 
+      // "?" opens the keyboard-shortcut reference (the on-demand replacement for
+      // the old always-on cheat-sheet strip).
+      if (event.key === "?") {
+        event.preventDefault();
+        setHelpOpen((open) => !open);
+        return;
+      }
+
       const key = event.key;
       if (key === " ") {
         event.preventDefault();
@@ -2298,7 +2341,7 @@ export function Editor() {
         if (listen.playing) {
           listen.stop();
         }
-        stepOut();
+        clearSelectionOnEscape();
         return;
       }
 
@@ -2393,7 +2436,7 @@ export function Editor() {
     editable,
     listen,
     onListen,
-    stepOut,
+    clearSelectionOnEscape,
     drillIn,
     cycleChord,
     deleteSelection,
@@ -2820,23 +2863,6 @@ export function Editor() {
     },
   ];
 
-  // Accidental toolbar buttons act on the drilled note.
-  const accidentalButtonStyle = (enabled: boolean) =>
-    ({
-      width: 30,
-      height: 28,
-      display: "inline-flex",
-      alignItems: "center",
-      justifyContent: "center",
-      borderRadius: RADIUS.button,
-      border: `1px solid ${COLORS.borderButton}`,
-      background: COLORS.canvas,
-      color: enabled ? COLORS.textPrimary : COLORS.textPlaceholder,
-      cursor: enabled ? "pointer" : "default",
-      fontFamily: FONTS.music,
-      fontSize: 15,
-    }) as const;
-
   // The status readout names the full slot address — staff, within-measure
   // beat, and voice — so multi-voice cleanup always shows exactly which line
   // an edit will hit (two voices' slots at one beat are otherwise
@@ -2927,21 +2953,6 @@ export function Editor() {
         >
           Redo
         </button>
-        <button
-          type="button"
-          onClick={deleteSelection}
-          disabled={!canDelete}
-          title={
-            slotInfo?.isRest
-              ? restDeletable
-                ? "Delete this rest — the notes after it slide earlier"
-                : "Nothing after this rest to pull earlier — trailing padding is removed with Trim measure"
-              : undefined
-          }
-          style={toolbarButtonStyle(hasSelection)}
-        >
-          Delete
-        </button>
         <span
           style={{ width: 1, height: 22, background: COLORS.borderLight }}
         />
@@ -2972,94 +2983,35 @@ export function Editor() {
         >
           Paste
         </button>
-        {/* Scoped to the current file: appends onto the end of the live
-            document (e.g. a series of page screenshots that should all land
-            in one score) rather than replacing it. Undoable like any other
-            edit. */}
-        <label
-          style={toolbarButtonStyle(editable && !imageImport.busy)}
-          title="Append an imported file onto the end of this score"
-        >
-          Append Import
-          <input
-            type="file"
-            accept=".musicxml,.xml,.mxl,.mid,.midi,audio/midi,.pdf,image/*"
-            onChange={onAppendImport}
-            disabled={!editable || imageImport.busy}
-            style={{ display: "none" }}
-          />
-        </label>
         <span
           style={{ width: 1, height: 22, background: COLORS.borderLight }}
         />
-        {(
-          [
-            { glyph: "♭", value: -1, title: "Flat" },
-            { glyph: "♮", value: 0, title: "Natural" },
-            { glyph: "♯", value: 1, title: "Sharp" },
-          ] as const
-        ).map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            title={option.title}
-            onClick={() => accidentalOnFocus(option.value)}
-            disabled={!canNudge}
-            style={accidentalButtonStyle(canNudge)}
-          >
-            {option.glyph}
-          </button>
-        ))}
-        <span
-          style={{ width: 1, height: 22, background: COLORS.borderLight }}
+        {/* Structure & append-import — the rarer, document-shape actions live
+            in an overflow menu so the toolbar stays focused on the common ones.
+            A hidden file input (triggered from the menu) handles Append Import,
+            which needs a picker rather than a plain click. */}
+        <input
+          ref={appendInputRef}
+          type="file"
+          accept=".musicxml,.xml,.mxl,.mid,.midi,audio/midi,.pdf,image/*"
+          onChange={onAppendImport}
+          disabled={!editable || imageImport.busy}
+          style={{ display: "none" }}
         />
         <button
           type="button"
-          onClick={onInsertMeasure}
+          aria-label="More actions"
+          title="More: staves, measures, append import"
           disabled={!editable}
-          style={toolbarButtonStyle(editable)}
-        >
-          + Measure
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            if (activeMeasureRange) {
-              deleteMeasureRange(activeMeasureRange);
-            }
+          onClick={(event) => {
+            const rect = (
+              event.currentTarget as HTMLElement
+            ).getBoundingClientRect();
+            setOverflowMenu({ x: rect.left, y: rect.bottom + 4 });
           }}
-          disabled={!editable || !activeMeasureRange}
-          title="Delete the selected measure(s)"
-          style={toolbarButtonStyle(editable && activeMeasureRange !== null)}
-        >
-          − Measure
-        </button>
-        <button
-          type="button"
-          onClick={onAddStaff}
-          disabled={!editable}
-          title="Add a staff below the existing staves"
           style={toolbarButtonStyle(editable)}
         >
-          + Staff
-        </button>
-        <button
-          type="button"
-          onClick={onRemoveStaff}
-          disabled={!editable || staffCount <= 1}
-          title="Remove the selected staff (or the bottom staff)"
-          style={toolbarButtonStyle(editable && staffCount > 1)}
-        >
-          − Staff
-        </button>
-        <button
-          type="button"
-          onClick={() => setRedistributeOpen(true)}
-          disabled={!editable}
-          title="Redistribute all notes onto a treble + bass grand staff by pitch"
-          style={toolbarButtonStyle(editable)}
-        >
-          Redistribute
+          ⋯ More
         </button>
         <span style={{ flex: 1 }} />
         {/* Always rendered (hidden when clean) so the first edit doesn't
@@ -3107,6 +3059,15 @@ export function Editor() {
         ) : null}
         <button
           type="button"
+          onClick={() => setHelpOpen(true)}
+          title="Keyboard shortcuts (?)"
+          aria-label="Keyboard shortcuts"
+          style={toolbarButtonStyle(true)}
+        >
+          ?
+        </button>
+        <button
+          type="button"
           onClick={() => setMetadataOpen(true)}
           style={toolbarButtonStyle(true)}
         >
@@ -3135,31 +3096,6 @@ export function Editor() {
         >
           {listen.playing ? "■ Stop" : "▶ Listen"}
         </button>
-      </div>
-
-      {/* Instruction strip — keyboard cheat sheet. */}
-      <div
-        style={{
-          minHeight: LAYOUT.instructionStripHeight,
-          display: "flex",
-          alignItems: "center",
-          padding: "0 14px",
-          background: COLORS.instructionStrip,
-          borderBottom: `1px solid ${COLORS.borderLight}`,
-          fontFamily: FONTS.mono,
-          fontSize: 11.5,
-          color: COLORS.textSecondary,
-          gap: 14,
-          flexWrap: "wrap",
-        }}
-      >
-        <span>Click: select beat · ⇧Click: select measures</span>
-        <span>Enter: drill in · Esc: out</span>
-        <span>↑↓: pitch (⇧ octave)</span>
-        <span>←→: beat · ⇧←→: measures · Tab: cycle</span>
-        <span>A–G: add · −/=/0: ♭♯♮ · ,/.: shift in time · v: voice</span>
-        <span>⌘C/X/V: copy/cut/paste measures</span>
-        <span>Space: listen</span>
       </div>
 
       {/* Import status / error. */}
@@ -3314,13 +3250,19 @@ export function Editor() {
             }
           }}
           onAddNote={(partIndex) => {
-            // `allSlots` is onset-exact, so this staff's row (and its Add-note
-            // button) only exists when it truly has an onset at the selected
-            // beat — the target slot's own onset is always that beat already.
+            // `allSlots` is onset-exact, so this staff's row exists only when it
+            // truly has an onset at the selected beat. When it does, add to that
+            // slot (its onset is already this beat). When it doesn't — the
+            // add-only group for a staff resting/sustaining through the beat —
+            // start a fresh note on that staff instead.
             const targetSlot = inspector?.allSlots.find(
               (s) => s.partIndex === partIndex,
             );
-            addNoteAtSlot(undefined, targetSlot);
+            if (targetSlot) {
+              addNoteAtSlot(undefined, targetSlot);
+            } else {
+              addNoteToStaffAtBeat(partIndex);
+            }
           }}
           onGraceAccidental={(index, alter) => {
             const handle = inspector?.graceHandles[index];
@@ -3405,6 +3347,58 @@ export function Editor() {
           y={menu.y}
           items={menuItems}
           onClose={() => setMenu(null)}
+        />
+      ) : null}
+
+      {helpOpen ? <KeyboardHelp onClose={() => setHelpOpen(false)} /> : null}
+
+      {overflowMenu ? (
+        <ContextMenu
+          x={overflowMenu.x}
+          y={overflowMenu.y}
+          onClose={() => setOverflowMenu(null)}
+          items={[
+            {
+              label: "Append import…",
+              onSelect: () => appendInputRef.current?.click(),
+              disabled: !editable || imageImport.busy,
+              title: "Append an imported file onto the end of this score",
+            },
+            {
+              label: "Add measure",
+              onSelect: onInsertMeasure,
+              disabled: !editable,
+            },
+            {
+              label: "Delete measure(s)",
+              onSelect: () => {
+                if (activeMeasureRange) {
+                  deleteMeasureRange(activeMeasureRange);
+                }
+              },
+              disabled: !editable || !activeMeasureRange,
+              title: "Delete the selected measure(s)",
+            },
+            {
+              label: "Add staff",
+              onSelect: onAddStaff,
+              disabled: !editable,
+              title: "Add a staff below the existing staves",
+            },
+            {
+              label: "Remove staff",
+              onSelect: onRemoveStaff,
+              disabled: !editable || staffCount <= 1,
+              title: "Remove the selected staff (or the bottom staff)",
+            },
+            {
+              label: "Redistribute across staves…",
+              onSelect: () => setRedistributeOpen(true),
+              disabled: !editable,
+              title:
+                "Redistribute all notes onto a treble + bass grand staff by pitch",
+            },
+          ]}
         />
       ) : null}
 

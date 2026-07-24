@@ -68,6 +68,11 @@ export interface InspectorNoteGroup {
   maxDurationBeats: number;
   /** True when this staff's slot is a rest (no notes). */
   isRest: boolean;
+  /** True for a placeholder group standing in for a staff that has *no* onset
+   *  at the selected beat (it is resting or sustaining a note begun earlier).
+   *  Such a group carries no editable content — only the staff label and a
+   *  "+ Add note" affordance so a note can be started on that staff here. */
+  addOnly?: boolean;
   /** True when this staff's chord carries a fermata (hold) mark. */
   hasFermata: boolean;
   /** Index of this group's first note in the flat handles array. */
@@ -154,32 +159,6 @@ export interface InspectorModel {
   notes: InspectorNoteRow[];
   /** Per-staff note groups; length 1 for single-staff, 2 for grand staff. */
   noteGroups: InspectorNoteGroup[];
-}
-
-const LEVEL_LABEL: Record<InspectorLevel, string> = {
-  idle: "Idle",
-  beat: "Beat",
-  note: "Note",
-};
-
-function LevelBadge({ level }: { level: InspectorLevel }) {
-  const active = level !== "idle";
-  return (
-    <span
-      style={{
-        fontFamily: FONTS.mono,
-        fontSize: 10.5,
-        letterSpacing: ".06em",
-        textTransform: "uppercase",
-        color: active ? COLORS.accent : COLORS.textFaint,
-        border: `1px solid ${active ? COLORS.accent : COLORS.borderLight}`,
-        borderRadius: 5,
-        padding: "2px 7px",
-      }}
-    >
-      {LEVEL_LABEL[level]}
-    </span>
-  );
 }
 
 // The ♭ ♮ ♯ segmented control. The applied accidental highlights in accent;
@@ -614,6 +593,69 @@ function NoteGroupSection({
    *  this flat note index. */
   onAddGrace: (noteIndex: number) => void;
 }) {
+  // A staff resting (or sustaining) through the selected beat has no editable
+  // content here — just offer to start a note on it. This is what lets a note be
+  // added to the *other* staff of a grand staff when only one staff sounds on
+  // the beat.
+  if (group.addOnly) {
+    return (
+      <div style={{ marginBottom: 12 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "baseline",
+            marginBottom: 6,
+            paddingBottom: 4,
+            borderBottom: `1px solid ${COLORS.borderLight}`,
+          }}
+        >
+          <span
+            style={{
+              fontFamily: FONTS.mono,
+              fontSize: 11,
+              letterSpacing: ".06em",
+              textTransform: "uppercase",
+              color: COLORS.textFaint,
+            }}
+          >
+            {group.label}
+          </span>
+          <span
+            style={{
+              fontFamily: FONTS.mono,
+              fontSize: 11,
+              color: COLORS.textPlaceholder,
+            }}
+          >
+            resting
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => onAddNote(group.partIndex)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6,
+            width: "100%",
+            border: `1px dashed ${COLORS.accentBorderFaint}`,
+            color: COLORS.accent,
+            background: "transparent",
+            borderRadius: RADIUS.row,
+            padding: 8,
+            fontSize: 12.5,
+            fontFamily: FONTS.mono,
+            cursor: "pointer",
+          }}
+        >
+          + Add note
+        </button>
+      </div>
+    );
+  }
+
   // A polyphonic staff shows a "Voice N" badge even without a Treble/Bass label
   // (single-staff two-voice music), so the header appears whenever it would.
   const showHeader = showLabel || group.voiceIndex > 0;
@@ -906,24 +948,15 @@ export function Inspector({
     >
       <div
         style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
+          fontFamily: FONTS.mono,
+          fontSize: 10.5,
+          letterSpacing: ".08em",
+          textTransform: "uppercase",
+          color: COLORS.textFaint,
           marginBottom: 4,
         }}
       >
-        <span
-          style={{
-            fontFamily: FONTS.mono,
-            fontSize: 10.5,
-            letterSpacing: ".08em",
-            textTransform: "uppercase",
-            color: COLORS.textFaint,
-          }}
-        >
-          Selection
-        </span>
-        <LevelBadge level={model?.level ?? "idle"} />
+        Selection
       </div>
 
       {!editable ? (
@@ -941,17 +974,20 @@ export function Inspector({
             marginTop: 40,
           }}
         >
-          Click a beat on the score to select it.
+          Click a note or rest to select it.
         </p>
       ) : (
         <>
+          {/* The measure/beat position lives in the transport bar's readout;
+              here we name only the note value, so the two don't duplicate. */}
           <div
-            style={{ fontSize: 14, fontWeight: 600, color: COLORS.textPrimary }}
-          >
-            Measure {model.measureNumber} · Beat {model.beatNumber}
-          </div>
-          <div
-            style={{ fontSize: 12, color: COLORS.textMuted, marginBottom: 14 }}
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color: COLORS.textPrimary,
+              marginBottom: 14,
+              textTransform: "capitalize",
+            }}
           >
             {subtitle}
           </div>

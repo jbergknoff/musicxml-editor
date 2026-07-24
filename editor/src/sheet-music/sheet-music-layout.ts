@@ -39,11 +39,20 @@ export function resolveLayout(
   score: ParsedScore,
   config: LayoutConfig = {},
 ): ResolvedLayout {
-  const staffSpace = config.staffLineSpacing ?? 10;
+  // Staff line spacing is the fundamental notation unit: staff height, notehead
+  // size, stem length, clef/accidental glyphs, and ledger reach all derive from
+  // it, while the horizontal onset step (noteUnitWidth) does not — so a larger
+  // value makes the staff taller and the notation bigger without stretching the
+  // score horizontally, filling more of the editor's vertical space.
+  const staffSpace = config.staffLineSpacing ?? 13;
   const noteUnitWidth = config.noteUnitWidth ?? 48;
-  const partGap = config.partGap ?? 40;
+  // partGap (grand-staff clearance) and ledgerMargin (ledger-line reach above
+  // the top / below the bottom staff) were tuned as 4× and 3.5× the old
+  // staffSpace of 10; derive them from staffSpace so they stay proportional when
+  // it changes and tall/low notes don't poke into the margins.
+  const partGap = config.partGap ?? 4 * staffSpace;
   const canvasPadding = config.canvasPadding ?? 20;
-  const ledgerMargin = config.ledgerMargin ?? 35;
+  const ledgerMargin = config.ledgerMargin ?? 3.5 * staffSpace;
 
   const firstPart = score.parts[0];
   const numMeasures = firstPart?.measures.length ?? 0;

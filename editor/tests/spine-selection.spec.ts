@@ -67,15 +67,17 @@ test("→ walks rest slots across empty measures", async ({ page }) => {
   const aside = page.locator("aside");
   for (let measure = 1; measure <= 4; measure++) {
     await page.keyboard.press("ArrowRight");
-    await expect(aside.getByText(`Measure ${measure} · Beat 1`)).toBeVisible();
+    await expect(
+      page.getByText(new RegExp(`Sel: m\\.${measure} .*b1 `)),
+    ).toBeVisible();
     await expect(aside.getByText("Rest · whole")).toBeVisible();
   }
 
   // → at the last slot clamps (stays on measure 4); ← steps back.
   await page.keyboard.press("ArrowRight");
-  await expect(aside.getByText("Measure 4 · Beat 1")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.4 .*b1 /)).toBeVisible();
   await page.keyboard.press("ArrowLeft");
-  await expect(aside.getByText("Measure 3 · Beat 1")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.3 .*b1 /)).toBeVisible();
 });
 
 test("→ reaches the trailing rest of an imported measure", async ({ page }) => {
@@ -85,14 +87,14 @@ test("→ reaches the trailing rest of an imported measure", async ({ page }) =>
 
   // C5(beat1) E5(beat2) G5(beat3) then a quarter REST(beat4).
   await page.keyboard.press("ArrowRight");
-  await expect(aside.getByText("Measure 1 · Beat 1")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*b1 /)).toBeVisible();
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowRight");
-  await expect(aside.getByText("Measure 1 · Beat 3")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*b3 /)).toBeVisible();
 
   // The 4th slot is the rest — note-only navigation would have stopped at G5.
   await page.keyboard.press("ArrowRight");
-  await expect(aside.getByText("Measure 1 · Beat 4")).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*b4 /)).toBeVisible();
   await expect(aside.getByText("Rest · quarter")).toBeVisible();
 });
 
@@ -127,9 +129,7 @@ test("a melody can be built in a blank measure with letters and →", async ({
   // Select measure 1's whole rest, then type a run of notes, advancing the
   // selection to the next (rest) slot between each.
   await page.keyboard.press("ArrowRight");
-  await expect(
-    page.locator("aside").getByText("Measure 1 · Beat 1"),
-  ).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*b1 /)).toBeVisible();
 
   await page.keyboard.press("c");
   await page.keyboard.press("ArrowRight");

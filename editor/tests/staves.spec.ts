@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { type Page, expect, test } from "@playwright/test";
+import { moreAction } from "./toolbar";
 
 // Adding a staff turns a single-staff score into a grand staff (a second,
 // vertically aligned staff appears) and removing a staff reverses it. The new
@@ -31,7 +32,7 @@ test("adding a staff creates a second staff; removing it reverts", async ({
   const initial = await exportXml(page);
   expect(initial).not.toMatch(/<staves>/);
 
-  await page.getByRole("button", { name: "+ Staff" }).click();
+  await moreAction(page, "Add staff");
 
   // The export now declares two staves with a treble (G) and a bass (F) clef.
   const grand = await exportXml(page);
@@ -41,7 +42,7 @@ test("adding a staff creates a second staff; removing it reverts", async ({
   // The score stays editable (no view-only banner).
   await expect(page.getByText(/view-only/i)).toHaveCount(0);
 
-  await page.getByRole("button", { name: "− Staff" }).click();
+  await moreAction(page, "Remove staff");
 
   // Back to a single staff.
   const single = await exportXml(page);
@@ -56,7 +57,7 @@ test("removing a staff drops that staff's notes and keeps the other", async ({
   await expect(page.locator("#p1-m1-n0-v0")).toBeVisible();
 
   // Remove the bottom (bass) staff — nothing selected, so it targets the bottom.
-  await page.getByRole("button", { name: "− Staff" }).click();
+  await moreAction(page, "Remove staff");
 
   await expect(page.locator("#p1-m1-n0-v0")).toHaveCount(0);
   const xml = await exportXml(page);

@@ -2,10 +2,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { type Page, expect, test } from "@playwright/test";
 
-// Integration tests for the selection overlay chrome (PR #28):
-//   - Level 1 beat-box: a tinted rect column over the selected beat.
-//   - Level 2 note ring: a circle over the drilled notehead, beat-box becomes
-//     dashed.
+// Integration tests for the selection overlay chrome:
+//   - Note ring: clicking a notehead rings that note (with a dashed beat-box
+//     behind it marking the beat).
+//   - Beat-box: selecting a rest slot draws a solid tinted column, no ring.
 //   - Reselect after chord-member removal: removing one note from a multi-note
 //     chord re-selects the remaining chord rather than clearing to null.
 //   - Key-signature-aware pitch stepping: ↑/↓ stays diatonic in the active key
@@ -47,38 +47,28 @@ test.beforeEach(async ({ page }) => {
 
 // ── Screenshots: beat-box and note ring ─────────────────────────────────────
 
-test("Level 1: beat-box column appears over the selected beat", async ({
-  page,
-}) => {
+test("clicking a notehead rings that note", async ({ page }) => {
   await loadFile(page, SINGLE_STAFF);
 
-  // Click the first notehead → Level 1 (whole-chord selection).
+  // A single click selects the note directly — no drill step.
   await page.locator("#p0-m1-n0-v0").click();
-  await expect(
-    page.locator("aside").getByText("Beat", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText(/Sel: m\.1 .*· 1 note/)).toBeVisible();
 
-  // The staff SVG should show a tinted beat-box over the C5 column.
-  await expect(page.locator("svg").first()).toHaveScreenshot(
-    "beat-box-level1.png",
-  );
+  // The staff SVG shows a ring over the C5 notehead (dashed beat-box behind).
+  await expect(page.locator("svg").first()).toHaveScreenshot("note-ring.png");
 });
 
-test("Level 2: dashed beat-box and note ring over the drilled note", async ({
-  page,
-}) => {
+test("selecting a rest slot draws a beat-box, no ring", async ({ page }) => {
   await loadFile(page, SINGLE_STAFF);
 
-  // First click → Level 1; second click on same notehead → Level 2.
-  await page.locator("#p0-m1-n0-v0").click();
-  await page.locator("#p0-m1-n0-v0").click();
-  await expect(
-    page.locator("aside").getByText("Note", { exact: true }),
-  ).toBeVisible();
+  // Select the last note, then step right onto the beat-4 quarter rest — a slot
+  // (not note) selection, which draws a solid beat-box and no note ring.
+  await page.locator("#p0-m1-n2-v0").click();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator("aside").getByText(/Rest · /)).toBeVisible();
 
-  // The staff SVG should show a dashed beat-box + a ring over the notehead.
   await expect(page.locator("svg").first()).toHaveScreenshot(
-    "beat-box-and-ring-level2.png",
+    "beat-box-rest.png",
   );
 });
 
@@ -90,24 +80,20 @@ test("removing one note from a chord keeps the inspector on the remaining chord"
   await loadFile(page, SINGLE_STAFF);
   const inspector = page.locator("aside");
 
-  // Select beat 1 (C5), then add E5 to form a two-note chord.
+  // Select C5, then add E5 to form a two-note chord.
   await page.locator("#p0-m1-n0-v0").click();
   await page.keyboard.press("e");
 
   // Two note rows appear: E5 (top) and C5 (bottom).
   await expect(pitchButtons(page)).toHaveCount(2);
 
-  // Drill to Level 2 (focuses the top note, E5).
-  await page.keyboard.press("Enter");
-  await expect(inspector.getByText("Note", { exact: true })).toBeVisible();
-
-  // Remove the focused note via the ✕ button in its inspector row.
+  // Remove the top note via the ✕ button in its inspector row.
   await inspector.getByTitle("Remove note").first().click();
 
-  // The inspector must stay open at Level 1 on the remaining chord (C5),
-  // not close to idle — that was the bug.
-  await expect(inspector.getByText("Beat", { exact: true })).toBeVisible();
+  // The inspector must stay open on the remaining chord (C5), not close to
+  // idle — that was the bug.
   await expect(pitchButtons(page)).toHaveCount(1);
+  await expect(pitchButtons(page).first()).toHaveText("C5");
 });
 
 // ── Key-signature-aware pitch stepping ──────────────────────────────────────
@@ -117,14 +103,10 @@ test("↑ steps into F♯ (not F♮) when the key signature is G major", async (
 }) => {
   await loadFile(page, G_MAJOR); // E5 is note 0; key = G major (F♯)
 
-  // Select E5 (Level 1) then drill in to Level 2.
+  // Select E5 directly.
   await page.locator("#p0-m1-n0-v0").click();
   await expect(
-    page.locator("aside").getByText("Beat", { exact: true }),
-  ).toBeVisible();
-  await page.keyboard.press("Enter");
-  await expect(
-    page.locator("aside").getByText("Note", { exact: true }),
+    page.locator("aside").getByText("E5", { exact: true }),
   ).toBeVisible();
 
   // Step up once: E → F, and F is ♯ in G major.
